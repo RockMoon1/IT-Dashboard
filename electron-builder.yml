@@ -1,0 +1,19 @@
+appId: com.arh.itdashboard
+productName: ARH IT Dashboard
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - node_modules/ssh2/**
+  - node_modules/cpu-features/**
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
