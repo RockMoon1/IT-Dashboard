@@ -37,6 +37,11 @@ diagnostics always target a **network host**. Hosts come from the IPv4 neighbour
 (`Get-NetNeighbor`, i.e. machines this PC has already exchanged packets with), reverse DNS, a
 port probe, and manual entry.
 
+The "connect via cord" workflow still works, through a different cord: an Ethernet cable between
+the two PCs, or a Thunderbolt/USB4 cable on machines that support host-to-host networking, forms
+a two-node network where both ends self-assign link-local `169.254.x.x` addresses. Those
+neighbours are deliberately kept in discovery and labelled as link-local.
+
 ### There is no consent prompt on the target
 
 WinRM and SSH authenticate with credentials and run non-interactively. The target shows nothing.

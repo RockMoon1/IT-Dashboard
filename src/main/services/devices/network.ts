@@ -6,6 +6,10 @@ import { protocolsFromProbe } from './probe.ts'
 /**
  * Passive LAN discovery from the host's IPv4 neighbour (ARP) table, plus reverse DNS and a port
  * probe per host. Nothing is scanned beyond hosts the OS has already talked to.
+ *
+ * Link-local 169.254.x.x neighbours are kept on purpose: a direct Ethernet or Thunderbolt/USB4
+ * cable between the technician's PC and a device gives both ends an address in that range, so
+ * it is exactly how a "cabled" device shows up.
  */
 
 export const NET_NEIGHBOR_SCRIPT = String.raw`
@@ -16,7 +20,7 @@ $n = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     $_.LinkLayerAddress -and
     ([string]$_.LinkLayerAddress -notin @('00-00-00-00-00-00', 'FF-FF-FF-FF-FF-FF', 'ff-ff-ff-ff-ff-ff')) -and
     $_.IPAddress -notlike '224.*' -and $_.IPAddress -notlike '239.*' -and $_.IPAddress -notlike '*.255' -and
-    $_.IPAddress -ne '255.255.255.255' -and $_.IPAddress -notlike '169.254.*'
+    $_.IPAddress -ne '255.255.255.255'
   } |
   Select-Object IPAddress, LinkLayerAddress, @{ n = 'State'; e = { [string]$_.State } }, InterfaceAlias)
 ConvertTo-Json -InputObject ([pscustomobject]@{ hostname = $env:COMPUTERNAME; local = $local; neighbors = $n }) -Depth 3 -Compress
@@ -53,6 +57,10 @@ export function networkDeviceId(ip: string): string {
   return `net:${ip}`
 }
 
+export function isLinkLocal(ip: string): boolean {
+  return ip.startsWith('169.254.')
+}
+
 export function neighborToDevice(
   n: RawNeighbor,
   now: string,
@@ -60,6 +68,13 @@ export function neighborToDevice(
 ): Device {
   const probe = opts.probe
   const os = probe?.os ?? opts.previous?.os ?? 'unknown'
+  const baseHint =
+    probe?.osHint ??
+    opts.previous?.osHint ??
+    `Neighbour state ${n.State ?? 'unknown'} on ${n.InterfaceAlias ?? 'unknown interface'}`
+  const osHint = isLinkLocal(n.IPAddress)
+    ? `${baseHint} · link-local address (direct cable or no DHCP)`
+    : baseHint
   return {
     id: networkDeviceId(n.IPAddress),
     kind: 'network',
@@ -68,10 +83,7 @@ export function neighborToDevice(
     firstSeen: opts.previous?.firstSeen ?? now,
     lastSeen: now,
     os,
-    osHint:
-      probe?.osHint ??
-      opts.previous?.osHint ??
-      `Neighbour state ${n.State ?? 'unknown'} on ${n.InterfaceAlias ?? 'unknown interface'}`,
+    osHint,
     protocols: probe ? protocolsFromProbe(probe) : (opts.previous?.protocols ?? []),
     host: n.IPAddress,
     mac: n.LinkLayerAddress ?? undefined,

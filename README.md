@@ -48,6 +48,10 @@ Use HTTPS (5986) with a proper certificate if you prefer not to widen TrustedHos
 
 1. Devices appear in the left pane: this PC, hosts added by hand, LAN neighbours from the ARP
    table, and USB peripherals (via `Get-PnpDevice`, refreshed on WMI device-change events).
+   A device cabled directly to the technician PC (Ethernet cable, or a Thunderbolt/USB4 cable
+   between two PCs that support host-to-host networking) shows up as a link-local
+   `169.254.x.x` neighbour once either side sends a packet; it can be probed and remoted like
+   any other host.
 2. Double-click a device → choose the purpose (System Diagnostics, Security Check, Email Setup,
    Hardware Issues, Slow Performance, Phishing Assessment, Other).
 3. Probe the host (ports 22/5985/5986/3389/445 plus SSH banner) to get a protocol and OS

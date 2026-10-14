@@ -10,9 +10,11 @@ import {
 } from '../src/main/services/devices/usb.ts'
 import { inferOs, protocolsFromProbe } from '../src/main/services/devices/probe.ts'
 import {
+  NET_NEIGHBOR_SCRIPT,
+  isLinkLocal,
+  mapLimit,
   neighborToDevice,
-  parseNeighborJson,
-  mapLimit
+  parseNeighborJson
 } from '../src/main/services/devices/network.ts'
 import {
   DeviceRegistry,
@@ -220,6 +222,25 @@ test("neighbour JSON becomes network devices without the host's own addresses", 
   assert.equal(d.host, '192.168.1.20')
   assert.equal(d.os, 'unknown')
   assert.deepEqual(parseNeighborJson('garbage'), { hostname: '', local: [], neighbors: [] })
+})
+
+test('link-local neighbours (direct cable) are kept and labelled', () => {
+  assert.ok(
+    !NET_NEIGHBOR_SCRIPT.includes('169.254'),
+    'script must not filter out link-local addresses'
+  )
+  const d = neighborToDevice(
+    {
+      IPAddress: '169.254.12.34',
+      LinkLayerAddress: 'AA-BB',
+      State: 'Reachable',
+      InterfaceAlias: 'Ethernet 2'
+    },
+    '2026-10-14T10:00:00Z'
+  )
+  assert.equal(isLinkLocal(d.host ?? ''), true)
+  assert.ok(d.osHint?.includes('link-local address (direct cable or no DHCP)'))
+  assert.equal(isLinkLocal('192.168.1.5'), false)
 })
 
 test('mapLimit preserves order while bounding concurrency', async () => {
