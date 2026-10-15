@@ -61,7 +61,8 @@ function run(
   id: string,
   status: ScanRun['status'],
   findings: NonNullable<ScanRun['health']>['findings'],
-  at: string
+  at: string,
+  profile = 'windows-security-check'
 ): ScanRun {
   return {
     runId: id,
@@ -69,8 +70,8 @@ function run(
     serial: 'SN-TEST-01',
     hostname: 'EXAM2-LT',
     os: 'windows',
-    purpose: 'security-check',
-    profile: 'windows-security-check',
+    purpose: profile === 'windows-security-check' ? 'security-check' : 'slow-performance',
+    profile,
     version: 1,
     title: 'Security Check',
     technician: 'Lisandro',
@@ -106,6 +107,7 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
       vaultLive: true
     }
     const paths = notePaths(settings)
+    const targets = [paths.assets, paths.openLoops, paths.workLog, paths.hub]
     const first = run(
       'r_1',
       'ok',
@@ -127,7 +129,7 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
       ],
       '2026-10-14T14:05:00.000Z'
     )
-    // a scan that failed part way still gets logged and its partial findings recorded
+    // a scan that failed part way still gets logged; its scan error is not an open loop
     const partial = run(
       'r_2',
       'failed',
@@ -140,23 +142,19 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
           loop: false
         }
       ],
-      '2026-10-14T15:10:00.000Z'
+      '2026-10-14T15:10:00.000Z',
+      'windows-slow-performance'
     )
-    const plans = await buildWritePlans({
-      settings,
-      devices: [device],
-      connected: () => true,
-      runs: [partial, first],
-      now: new Date(2026, 9, 14)
-    })
+    const plan = (runs: ScanRun[]): ReturnType<typeof buildWritePlans> =>
+      buildWritePlans({ settings, devices: [device], runs, now: new Date('2026-10-14T18:00:00Z') })
 
     const writer = new VaultWriter({ appDataDir: appData, live: false })
-    const preview = await writer.preview(plans)
-    assert.equal(preview.length, 3)
+    const preview = await writer.preview(await plan([partial, first]))
+    assert.equal(preview.length, 4, 'Asset Inventory, Open Loops, Work Log and the hub')
     for (const n of preview) {
       assert.equal(n.exists, true, `${n.notePath} should exist in the fixture`)
       assert.equal(n.changed, true)
-      assert.ok(n.markersCreated.length >= 1, 'fixture notes have no markers yet')
+      assert.equal(n.markersCreated.length, 1, 'fixture notes have no markers yet')
       assert.ok(n.diff.length > 0)
       assert.equal(n.removed, 0, 'first write only adds lines')
     }
@@ -164,7 +162,7 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
       assert.equal(await readFile(join(vault, f), 'utf8'), text, `dry-run changed ${f}`)
 
     writer.setLive(true)
-    const results = await writer.apply(plans)
+    const results = await writer.apply(await plan([partial, first]))
     assert.ok(
       results.every((r) => r.written && !r.error),
       JSON.stringify(results)
@@ -173,51 +171,121 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
 
     for (const [f, original] of before) {
       const now = await readFile(join(vault, f), 'utf8')
-      if (![paths.hub, paths.workLog, paths.openLoops].includes(join(vault, f))) {
+      if (!targets.includes(join(vault, f))) {
         assert.equal(now, original, `${f} must not change`)
         continue
       }
       assert.equal(stripBlocks(now), original, `${f}: text outside markers changed`)
     }
+    const hubText = await readFile(paths.hub!, 'utf8')
+    assert.ok(!/[^\r]\n/.test(hubText), 'the hub keeps its CRLF line endings')
+    assert.ok(
+      hubText.includes(
+        '| EXAM2-LT | 🔴 critical | 2026-10-14 09:10 MT · Slow Performance · failed | 2 |'
+      )
+    )
 
     const loopsText = await readFile(paths.openLoops, 'utf8')
     const tasks = parseTasks(loopsText, 'ARH Open Loops.md', '2026-10-14')
-    const generated = tasks.filter((t) => t.text.startsWith('EXAM2-LT:'))
+    const generated = tasks.filter((t) => t.raw.includes('**EXAM2-LT — '))
     assert.equal(generated.length, 2, 'two loop findings become tasks; the scan error does not')
-    assert.equal(generated[0]?.due, '2026-10-15', 'critical: due next day')
-    assert.equal(generated[1]?.due, '2026-10-21', 'warning: due in 7 days')
-    const logBlock = findBlock(await readFile(paths.workLog, 'utf8'), BLOCK_KEYS.log)!.body
-    assert.equal(logBlock.split(/\r?\n/).length, 2)
-    assert.ok(logBlock.includes('· failed ·') && logBlock.includes('r_2'))
-    const hubText = await readFile(paths.hub, 'utf8')
-    assert.ok(hubText.includes('| Exam room 2 laptop 🟢 | SN-TEST-01 | windows |'))
+    assert.deepEqual(
+      generated.map((t) => [t.priority, t.due]),
+      [
+        ['🔴', undefined],
+        ['🟠', undefined]
+      ]
+    )
+    assert.deepEqual(
+      tasks.filter((t) => !t.raw.includes('EXAM2-LT')).map((t) => t.raw),
+      parseTasks(before.get('ARH Open Loops.md') ?? '', 'x').map((t) => t.raw),
+      "Lisandro's own tasks are untouched"
+    )
 
-    // the technician ticks a generated task; a rerun keeps it ticked and adds nothing twice
+    const logBlock = findBlock(await readFile(paths.workLog, 'utf8'), BLOCK_KEYS.log)!.body
+    const entries = logBlock.split(/\r?\n/).filter((l) => l.startsWith('- '))
+    assert.equal(entries.length, 2)
+    assert.ok(
+      entries[0]?.startsWith('- 2026-10-14 09:10 MT · **EXAM2-LT**') &&
+        entries[0].includes('· failed: ')
+    )
+    assert.ok(entries[1]?.includes('run r_1') && entries[1].includes('42 s'))
+
+    const assets = findBlock(await readFile(paths.assets, 'utf8'), BLOCK_KEYS.devices)!.body
+    assert.ok(assets.includes('| EXAM2-LT |  | Exam room 2 laptop |'))
+    assert.ok(assets.includes('| SN-TEST-01 |'))
+
+    // the technician fills a column in the table and ticks a loop; a rerun keeps both
+    const stale = await plan([partial, first])
     await writeFile(
-      paths.openLoops,
-      loopsText.replace('- [ ] EXAM2-LT: Microsoft Defender', '- [x] EXAM2-LT: Microsoft Defender'),
+      paths.assets,
+      (await readFile(paths.assets, 'utf8')).replace('| EXAM2-LT |  |', '| EXAM2-LT | Site A |'),
       'utf8'
     )
-    const again = await buildWritePlans({
-      settings,
-      devices: [device],
-      connected: () => false,
-      runs: [partial, first],
-      now: new Date(2026, 9, 14)
-    })
-    const second = await writer.apply(again)
-    const loops2 = await readFile(paths.openLoops, 'utf8')
-    assert.ok(loops2.includes('- [x] EXAM2-LT: Microsoft Defender'))
-    assert.equal(parseTasks(loops2, 'x').filter((t) => t.text.startsWith('EXAM2-LT:')).length, 2)
-    assert.equal(
-      second.find((r) => r.notePath === paths.workLog)?.written,
-      false,
-      'work log unchanged on rerun'
+    await writeFile(
+      paths.openLoops,
+      loopsText.replace(
+        '- [ ] 🔴 **EXAM2-LT — Microsoft Defender',
+        '- [x] 🔴 **EXAM2-LT — Microsoft Defender'
+      ),
+      'utf8'
     )
+    const refused = await writer.apply(stale)
+    for (const note of [paths.assets, paths.openLoops])
+      assert.match(
+        refused.find((r) => r.notePath === note)?.error ?? '',
+        /changed after the preview/,
+        'a plan built before the edit is refused instead of overwriting it'
+      )
+    assert.ok((await readFile(paths.openLoops, 'utf8')).includes('- [x] 🔴 **EXAM2-LT'))
+    const second = await writer.apply(await plan([partial, first]))
+    const loops2 = await readFile(paths.openLoops, 'utf8')
+    assert.ok(loops2.includes('- [x] 🔴 **EXAM2-LT — Microsoft Defender'))
+    assert.equal(parseTasks(loops2, 'x').filter((t) => t.raw.includes('**EXAM2-LT — ')).length, 2)
+    assert.ok((await readFile(paths.assets, 'utf8')).includes('| EXAM2-LT | Site A |'))
+    for (const note of [paths.workLog, paths.assets, paths.openLoops])
+      assert.equal(
+        second.find((r) => r.notePath === note)?.written,
+        false,
+        `${note} unchanged on rerun`
+      )
     assert.ok(
       results.every((r) => r.backupPath && r.backupPath.startsWith(appData)),
       'backups live in app data'
     )
+
+    // the problem shows up again on a later scan: a new line, the ticked one stays
+    const later = run(
+      'r_3',
+      'ok',
+      [
+        { ...first.health!.findings[0]! },
+        { ...first.health!.findings[1]!, message: 'Disk C: has 10% free (23 GB)' }
+      ],
+      '2026-10-20T16:00:00.000Z'
+    )
+    await writer.apply(await plan([partial, first, later]))
+    const loops3 = parseTasks(await readFile(paths.openLoops, 'utf8'), 'x').filter((t) =>
+      t.raw.includes('**EXAM2-LT — ')
+    )
+    assert.deepEqual(
+      loops3.map((t) => [t.done, /occurrence 2/.test(t.raw)]),
+      [
+        [true, false],
+        [false, false],
+        [false, true]
+      ],
+      'Defender comes back once; the open disk loop is not doubled'
+    )
+
+    // an edit landing between read and replace is never overwritten
+    const current = await readFile(paths.workLog, 'utf8')
+    await assert.rejects(
+      writer.atomicWrite(paths.workLog, 'replacement', `${current}stale`),
+      /changed while/
+    )
+    assert.equal(await readFile(paths.workLog, 'utf8'), current)
+    assert.deepEqual(await readdir(join(appData, 'vault-tmp')), [], 'no temp file left behind')
 
     // a OneDrive conflict copy appearing next to a note is reported after the write
     await writeFile(
@@ -226,15 +294,18 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
       'utf8'
     )
     const third = await writer.apply(
-      await buildWritePlans({
-        settings,
-        devices: [device],
-        connected: () => true,
-        runs: [first],
-        now: new Date(2026, 9, 15)
-      })
+      await plan([first, run('r_4', 'ok', [], '2026-10-21T16:00:00.000Z')])
     )
     assert.equal(third.find((r) => r.notePath === paths.hub)?.conflictCopies.length, 1)
+
+    // an empty hub setting leaves the hub alone
+    const noHub = await buildWritePlans({
+      settings: { ...settings, hubNote: '' },
+      devices: [device],
+      runs: [first]
+    })
+    assert.equal(noHub.length, 3)
+    assert.ok(noHub.every((p) => !p.notePath.endsWith('ARH IT Hub.md')))
   } finally {
     await rm(tmp, { recursive: true, force: true })
     await rm(appData, { recursive: true, force: true })
@@ -246,7 +317,8 @@ test('the fixture source itself is never modified', async () => {
   assert.ok(
     files.includes('ARH IT Hub.md') &&
       files.includes('ARH Work Log.md') &&
-      files.includes('ARH Open Loops.md')
+      files.includes('ARH Open Loops.md') &&
+      files.includes(join('Assets', 'Asset Inventory.md'))
   )
   for (const f of files.filter((x) => x.endsWith('.md'))) {
     const text = await readFile(join(SOURCE, f), 'utf8')

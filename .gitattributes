@@ -4,3 +4,5 @@
 *.png binary
 *.ico binary
 *.exe binary
+# The real ARH IT Hub note uses CRLF (vault inspection 2026-10-15); keep the fixture's bytes as is.
+tests/fixtures/vault/ARH[[:space:]]IT/ARH[[:space:]]IT[[:space:]]Hub.md -text

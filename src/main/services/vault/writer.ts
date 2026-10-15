@@ -29,6 +29,12 @@ export interface WritePlan {
   notePath: string
   key: string
   body: string
+  /**
+   * The block's body when the plan was built (null: no block yet). Blocks that merge with what
+   * the technician typed (ticks, inventory columns) set it, and apply refuses if the block has
+   * changed since, instead of overwriting that edit with a plan built from older text.
+   */
+  basedOn?: string | null
 }
 
 export interface NotePreview {
@@ -191,7 +197,11 @@ export class VaultWriter {
         if (!(await exists(notePath)))
           throw new Error('note does not exist (the dashboard never creates notes)')
         const current = await readFile(notePath, 'utf8')
-        for (const p of notePlans) findBlock(current, p.key)
+        for (const p of notePlans)
+          if (p.basedOn !== undefined && (findBlock(current, p.key)?.body ?? null) !== p.basedOn)
+            throw new Error(
+              `the ${p.key} block changed after the preview was built; nothing was written, apply again`
+            )
         const { text } = VaultWriter.render(current, notePlans)
         if (text === current) {
           results.push({
@@ -202,7 +212,7 @@ export class VaultWriter {
           continue
         }
         const backupPath = await this.backupOnce(notePath)
-        await this.atomicWrite(notePath, text)
+        await this.atomicWrite(notePath, text, current)
         results.push({
           notePath,
           written: true,
@@ -230,11 +240,22 @@ export class VaultWriter {
     return target
   }
 
-  async atomicWrite(notePath: string, text: string): Promise<void> {
+  /**
+   * Writes the temp file, then replaces the note. When `expected` is given the note is read again
+   * just before the replace; if Obsidian or OneDrive changed it since it was read, nothing is
+   * written, so an edit made in the meantime is never overwritten.
+   */
+  async atomicWrite(notePath: string, text: string, expected?: string): Promise<void> {
     await mkdir(this.tmpDir(), { recursive: true })
     const stamp = (this.opts.now ?? (() => new Date()))().getTime().toString(36)
     const tmp = join(this.tmpDir(), `${basename(notePath)}.${process.pid}.${stamp}.tmp`)
     await writeFile(tmp, text, 'utf8')
+    if (expected !== undefined && (await readFile(notePath, 'utf8')) !== expected) {
+      await unlink(tmp).catch(() => undefined)
+      throw new Error(
+        'the note changed while the dashboard was preparing the write (edited in Obsidian or synced by OneDrive); nothing was written, apply again'
+      )
+    }
     for (let attempt = 0; ; attempt++) {
       try {
         await rename(tmp, notePath)

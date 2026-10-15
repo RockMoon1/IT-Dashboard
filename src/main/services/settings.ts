@@ -7,9 +7,11 @@ export const DEFAULT_SETTINGS: Settings = {
   hubNote: 'ARH IT Hub.md',
   workLogNote: 'ARH Work Log.md',
   openLoopsNote: 'ARH Open Loops.md',
+  assetNote: 'Assets/Asset Inventory.md',
   vaultLive: false,
   schemaApproved: false,
-  dueStyle: 'tasks-emoji',
+  // the vault uses no due dates (inspection 2026-10-15: 0 of 709 tasks carry one)
+  dueStyle: 'none',
   technician: '',
   beaconAllAdapters: false,
   usbPollMs: 10_000,

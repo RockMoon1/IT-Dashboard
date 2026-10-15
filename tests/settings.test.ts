@@ -27,7 +27,7 @@ test('mergeSettings accepts known keys, clamps intervals, ignores junk and keeps
   assert.ok(!('unknown' in merged))
   const approved = mergeSettings(DEFAULT_SETTINGS, { schemaApproved: true, vaultLive: true })
   assert.equal(approved.vaultLive, true)
-  assert.equal(mergeSettings(DEFAULT_SETTINGS, { dueStyle: 'weird' }).dueStyle, 'tasks-emoji')
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, { dueStyle: 'weird' }).dueStyle, 'none')
   assert.equal(mergeSettings(DEFAULT_SETTINGS, { linkPort: 80 }).linkPort, 47912)
 })
 

@@ -90,7 +90,16 @@ class Report {
       .replace(/[^a-z0-9]+/g, '-')
       .slice(0, 80)
     if (this.findings.some((f) => f.id === id)) return
-    this.findings.push({ id, severity, category, message, loop, checkId })
+    // Only warnings and criticals go to ARH Open Loops: that note is the technician's working
+    // list, and info items (reboot pending, long uptime, startup count) stay in the dashboard.
+    this.findings.push({
+      id,
+      severity,
+      category,
+      message,
+      loop: loop && severity !== 'info',
+      checkId
+    })
   }
   metric(key: string, value: string): void {
     if (value && value !== 'undefined' && value !== 'null') this.metrics[key] = value

@@ -11,9 +11,10 @@ const fallback: Settings = {
   hubNote: 'ARH IT Hub.md',
   workLogNote: 'ARH Work Log.md',
   openLoopsNote: 'ARH Open Loops.md',
+  assetNote: 'Assets/Asset Inventory.md',
   vaultLive: false,
   schemaApproved: false,
-  dueStyle: 'tasks-emoji',
+  dueStyle: 'none',
   technician: '',
   beaconAllAdapters: false,
   usbPollMs: 10000,
@@ -52,18 +53,22 @@ async function save(): Promise<void> {
         <span class="text-xs text-mist-500">Vault folder</span>
         <input v-model="form.vaultPath" class="field" spellcheck="false" />
       </label>
-      <div class="mb-3 grid grid-cols-3 gap-3">
+      <div class="mb-3 grid grid-cols-2 gap-3">
         <label class="block"
-          ><span class="text-xs text-mist-500">Hub note</span
-          ><input v-model="form.hubNote" class="field"
+          ><span class="text-xs text-mist-500">Computers table (asset note)</span
+          ><input v-model="form.assetNote" class="field"
+        /></label>
+        <label class="block"
+          ><span class="text-xs text-mist-500">Open loops note</span
+          ><input v-model="form.openLoopsNote" class="field"
         /></label>
         <label class="block"
           ><span class="text-xs text-mist-500">Work log note</span
           ><input v-model="form.workLogNote" class="field"
         /></label>
         <label class="block"
-          ><span class="text-xs text-mist-500">Open loops note</span
-          ><input v-model="form.openLoopsNote" class="field"
+          ><span class="text-xs text-mist-500">Hub note (empty: leave the hub alone)</span
+          ><input v-model="form.hubNote" class="field"
         /></label>
       </div>
       <label class="mb-3 block">
@@ -72,7 +77,7 @@ async function save(): Promise<void> {
           <option value="tasks-emoji">Tasks plugin · 📅 2026-10-21</option>
           <option value="dataview">Dataview · [due:: 2026-10-21]</option>
           <option value="plain">Plain · (due: 2026-10-21)</option>
-          <option value="none">No due date</option>
+          <option value="none">No due date (what the ARH vault uses)</option>
         </select>
       </label>
       <div class="mb-4 rounded-[3px] border border-gold-400/30 bg-ink-950 p-3 text-xs">

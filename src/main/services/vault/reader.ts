@@ -13,7 +13,10 @@ export interface VaultTask {
   due?: string
   overdue: boolean
   dueSoon: boolean
+  /** 🔴 🟠 🟡 ⚪ 🧊 from the line or its section heading, or a Tasks plugin priority emoji. */
   priority?: string
+  /** Nearest heading above the task, without the leading #s. */
+  section?: string
   raw: string
 }
 
@@ -26,7 +29,18 @@ const DUE_PATTERNS: RegExp[] = [
   /@(\d{4}-\d{2}-\d{2})\b/,
   /\bby\s+(\d{4}-\d{2}-\d{2})\b/i
 ]
-const PRIORITY_RE = /([⏫🔼🔽⏬🔺])/
+// The `u` flag matters: without it a class of astral emoji matches lone surrogate halves.
+const TASKS_PRIORITY_RE = /(⏫|🔼|🔽|⏬|🔺)/u
+const LEADING_LEVEL_RE = /^(?:[*_~\s]*)(🔴|🟠|🟡|⚪|🧊)/u
+
+/** Priority as the vault writes it: a level emoji leading the task, else its section's, else Tasks. */
+export function taskPriority(body: string, section: string | undefined): string | undefined {
+  return (
+    LEADING_LEVEL_RE.exec(body)?.[1] ??
+    (section ? LEADING_LEVEL_RE.exec(section)?.[1] : undefined) ??
+    TASKS_PRIORITY_RE.exec(body)?.[1]
+  )
+}
 
 export function parseDue(text: string): string | undefined {
   for (const re of DUE_PATTERNS) {
@@ -46,9 +60,15 @@ export function parseTasks(
   const lines = text.split(/\r?\n/)
   const soon = new Date(Date.parse(today) + soonDays * 86_400_000).toISOString().slice(0, 10)
   let inFence = false
+  let section: string | undefined
   lines.forEach((raw, idx) => {
     if (/^\s*(```|~~~)/.test(raw)) inFence = !inFence
     if (inFence) return
+    const h = /^#{1,6}\s+(.*)$/.exec(raw)
+    if (h) {
+      section = h[1]?.trim()
+      return
+    }
     const m = TASK_RE.exec(raw)
     if (!m) return
     const status = m[1] ?? ' '
@@ -64,7 +84,8 @@ export function parseTasks(
       due,
       overdue: !done && !!due && due < today,
       dueSoon: !done && !!due && due >= today && due <= soon,
-      priority: PRIORITY_RE.exec(body)?.[1],
+      priority: taskPriority(body, section),
+      section,
       raw
     })
   })
@@ -80,17 +101,28 @@ export interface LogEntry {
 
 const DATE_IN_HEADING = /(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{2,4})/
 
-/** Splits a note into dated sections (any heading containing a date). */
+/**
+ * Splits a note into dated sections: any heading containing a date starts one, and deeper
+ * headings under it (the Work Log's "### 08:14 MT — title") stay part of it. Entries come back
+ * newest first by date; entries with the same date keep note order.
+ */
 export function parseDatedEntries(text: string, file: string): LogEntry[] {
   const out: LogEntry[] = []
   let current: LogEntry | null = null
+  let level = 0
   for (const line of text.split(/\r?\n/)) {
-    const h = /^#{1,6}\s+(.*)$/.exec(line)
+    const h = /^(#{1,6})\s+(.*)$/.exec(line)
     if (h) {
-      const d = DATE_IN_HEADING.exec(h[1] ?? '')
-      if (d) {
-        current = { file, date: d[1] ?? d[2] ?? '', heading: h[1] ?? '', lines: [] }
+      const depth = h[1]?.length ?? 1
+      const d = DATE_IN_HEADING.exec(h[2] ?? '')
+      if (d && (!current || depth <= level)) {
+        current = { file, date: isoish(d[1] ?? d[2] ?? ''), heading: h[2] ?? '', lines: [] }
+        level = depth
         out.push(current)
+        continue
+      }
+      if (current && depth > level) {
+        current.lines.push(line)
         continue
       }
       current = null
@@ -99,6 +131,17 @@ export function parseDatedEntries(text: string, file: string): LogEntry[] {
     if (current && line.trim()) current.lines.push(line)
   }
   return out
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => b.e.date.localeCompare(a.e.date) || a.i - b.i)
+    .map((x) => x.e)
+}
+
+/** M/D/YYYY to YYYY-MM-DD so entries sort together; ISO dates pass through. */
+function isoish(date: string): string {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(date)
+  if (!m) return date
+  const y = (m[3] ?? '').length === 2 ? `20${m[3]}` : (m[3] ?? '')
+  return `${y}-${(m[1] ?? '').padStart(2, '0')}-${(m[2] ?? '').padStart(2, '0')}`
 }
 
 export interface SearchHit {

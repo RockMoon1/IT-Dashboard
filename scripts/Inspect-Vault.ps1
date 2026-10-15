@@ -44,8 +44,24 @@ Add-Line ""
 # ---------- Obsidian configuration ----------
 Add-Line "## Obsidian configuration"
 Add-Line ""
-$obs = Join-Path $vaultFull '.obsidian'
-if (Test-Path -LiteralPath $obs) {
+# The .obsidian folder lives at the vault root, which can be a parent of the ARH IT folder.
+# Walk up until one is found; only its JSON settings are read.
+function Find-ObsidianConfig([string]$start) {
+  $dir = Get-Item -LiteralPath $start
+  while ($dir) {
+    $candidate = Join-Path $dir.FullName '.obsidian'
+    if (Test-Path -LiteralPath $candidate -PathType Container) { return $candidate }
+    $dir = $dir.Parent
+  }
+  return $null
+}
+$obs = Find-ObsidianConfig $vaultFull
+if ($obs) {
+  $vaultRoot = Split-Path -Parent $obs
+  if ($vaultRoot -ne $vaultFull) {
+    Add-Line "- Obsidian vault root: ``$vaultRoot`` (the inspected folder is inside it)"
+  }
+  Add-Line "- Settings read from: ``$obs``"
   foreach ($cfg in 'core-plugins.json', 'community-plugins.json') {
     $p = Join-Path $obs $cfg
     if (Test-Path -LiteralPath $p) {
@@ -80,7 +96,7 @@ if (Test-Path -LiteralPath $obs) {
   $templates = Join-Path $obs 'templates.json'
   if (Test-Path -LiteralPath $templates) { Add-Line "- templates.json: $((Get-Content -LiteralPath $templates -Raw) -replace '\s+', ' ')" }
 } else {
-  Add-Line "- No .obsidian folder found (vault may be opened from a parent folder)."
+  Add-Line "- No .obsidian folder found in the folder or any parent folder."
 }
 Add-Line ""
 
@@ -126,13 +142,14 @@ $taskPatterns = [ordered]@{
   'done task "- [x]"'        = '^\s*[-*+]\s+\[[xX]\]\s'
   'other status "- [/]" etc' = '^\s*[-*+]\s+\[[^ xX\]]\]\s'
   'numbered task "1. [ ]"'   = '^\s*\d+[.)]\s+\[.\]\s'
+  'task led by 🔴 🟠 🟡 ⚪ 🧊' = '^\s*[-*+]\s+\[.\]\s+(🔴|🟠|🟡|⚪|🧊)'
 }
 $datePatterns = [ordered]@{
   'Tasks plugin due 📅 YYYY-MM-DD'      = '📅\s*\d{4}-\d{2}-\d{2}'
   'Tasks plugin scheduled ⏳'           = '⏳\s*\d{4}-\d{2}-\d{2}'
   'Tasks plugin start 🛫'               = '🛫\s*\d{4}-\d{2}-\d{2}'
   'Tasks plugin done ✅'                = '✅\s*\d{4}-\d{2}-\d{2}'
-  'Tasks plugin priority ⏫🔼🔽⏬🔺'       = '[⏫🔼🔽⏬🔺]'
+  'Tasks plugin priority ⏫🔼🔽⏬🔺'       = '⏫|🔼|🔽|⏬|🔺'
   'Dataview inline [due:: ...]'         = '\[due::'
   'Dataview inline (due:: ...)'         = '\(due::'
   'plain "due:" or "Due:"'              = '\bdue:\s*\d{4}'
@@ -140,6 +157,8 @@ $datePatterns = [ordered]@{
   'US date M/D/YYYY'                    = '\b\d{1,2}/\d{1,2}/\d{4}\b'
   '@date style @YYYY-MM-DD'             = '@\d{4}-\d{2}-\d{2}'
 }
+# Alternation above, not a [class]: 🔼 🔽 🔺 are surrogate pairs in .NET strings, and a class
+# matches any emoji sharing a surrogate half (🔴 📅 🚨 ...), which inflated the first report.
 $markerPattern = '<!--\s*DASH:[A-Z0-9_-]+:(START|END)\s*-->'
 
 $global:totals = @{}

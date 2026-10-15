@@ -1,9 +1,23 @@
+---
+tags: [arh, openloops]
+updated: 2026-10-13
+---
 # ARH Open Loops
 
-## Active
-- [ ] Renew domain certificate 📅 2026-10-20
-- [ ] Order replacement battery for exam room 2 laptop [due:: 2026-10-12]
-- [x] Rotate Wi-Fi guest password ✅ 2026-10-01
+## 🔴 Now — live incident
 
-## Waiting on vendor
-- [ ] EHR scanner driver update (due: 2026-11-01)
+- [ ] **Confirm which account was used.** Check from a clean device. → [[ARH Work Log]]
+- [ ] 🔴 **Ask whether the link was clicked.** The answer sets the scope.
+
+## 🟠 This week
+
+- [ ] **Label the closet switch ports.**
+- [x] ~~**Reset the guest Wi-Fi password.**~~ ✅ 2026-10-01
+
+## ⚪ Waiting on vendor
+
+- [ ] **Vendor to confirm the support contract.**
+
+## 🧊 Later
+
+- [ ] **Standardise computer names.** → [[Asset Inventory]]

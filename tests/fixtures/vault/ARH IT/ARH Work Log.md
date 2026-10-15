@@ -1,8 +1,21 @@
+---
+tags: [arh, worklog]
+updated: 2026-10-14
+---
 # ARH Work Log
 
-## 2026-10-13
-- 09:10 Replaced toner on front desk printer
-- 11:40 Reset MFA for reception account #ticket
+## 2026-10-14 (Wednesday)
 
-## 2026-10-14
-- 08:55 Checked backup job status: OK
+### 08:55 MT — Backup job checked
+
+- Status OK.
+
+## 2026-10-13 (Tuesday)
+
+### 09:10 MT — Front desk printer toner replaced
+
+- [[T-0001 Front desk printer]]
+
+### ~(time approx) — MFA reset for the reception account
+
+- Done by phone.

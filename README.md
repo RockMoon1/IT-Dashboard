@@ -55,9 +55,9 @@ npm run dev              # starts the dashboard
    `npm run verify-wmi`, or from an installed copy
    `powershell -ExecutionPolicy Bypass -File scripts\Verify-Wmi.ps1`.
    Every required line must say `OK`.
-2. **Inspect the vault** (read-only): `npm run inspect-vault`. Send the report from
-   `%TEMP%\arh-vault-report.md` back so the note mapping can be finalised.
-   Until you approve it, every vault write stays a preview (dry run).
+2. **Vault mapping**: read [docs/VAULT-SCHEMA.md](docs/VAULT-SCHEMA.md) (built from the
+   read-only `npm run inspect-vault` report). Until you tick **Vault schema approved** in
+   Settings, every vault write stays a preview (dry run).
 3. **Settings**: enter your name as the technician; check the vault path and note names.
 4. **Link tab → Create firewall rule (UAC)**: one admin prompt that lets agents connect
    to TCP 47912.
@@ -86,9 +86,9 @@ npm run dev              # starts the dashboard
 
 Double-click a green device → choose the purpose (a suggestion comes from its last scan) →
 **Run scan**. Checks stream in **Active scan**; **Results** shows them by category; **Health**
-lists findings by severity. **Preview vault write** shows the exact diff for the hub, work log
-and open loops notes. **Apply** is available only after the schema is approved and live writes
-are on in Settings.
+lists findings by severity. **Preview vault write** shows the exact diff for Asset Inventory,
+Open Loops, the Work Log and (optionally) the hub. **Apply** is available only after the schema
+is approved and live writes are on in Settings.
 
 ## Test on a virtual machine first
 

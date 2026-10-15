@@ -21,8 +21,12 @@ import {
 import {
   mergeLoops,
   mergeLog,
-  devicesTable,
-  scansBlock,
+  devicesBlock,
+  healthBlock,
+  deviceFacts,
+  lanAddress,
+  readTable,
+  zoned,
   DEFAULT_CONTENT_OPTIONS,
   countOpenLoops
 } from '../src/main/services/vault/content.ts'
@@ -193,10 +197,61 @@ test('reader parses tasks with several due-date conventions and dated log entrie
   assert.deepEqual(
     log.map((e) => [e.date, e.lines.length]),
     [
-      ['2026-10-13', 1],
-      ['2026-10-14', 2]
+      ['2026-10-14', 2],
+      ['2026-10-13', 1]
+    ],
+    'newest first whatever the note order'
+  )
+})
+
+test('reader follows the ARH vault: priority from the line or its section, sub-headings stay in the day', () => {
+  // Shapes taken from the 2026-10-15 inspection of the real vault (text is synthetic).
+  const loops = [
+    '# ARH Open Loops',
+    '## 🔴 Now — live incident',
+    '- [ ] **Confirm which account was compromised.** Check from a clean device.',
+    '## 🟠 This week',
+    '- [ ] 🔴 **Ask whether the link was clicked.** → [[Incident note]]',
+    '- [x] ~~**Old item**~~ ✅ 2026-10-01',
+    '## ⚪ Waiting on vendor',
+    '- [ ] **Vendor to confirm the BAA.**',
+    '## 🎫 Ticketing',
+    '- [ ] **Pick a ticketing tool** ⏫'
+  ].join('\n')
+  const tasks = parseTasks(loops, 'ARH Open Loops.md', '2026-10-15')
+  assert.deepEqual(
+    tasks.map((t) => [t.priority, [...(t.section ?? '')][0]]),
+    [
+      ['🔴', '🔴'],
+      ['🔴', '🟠'],
+      ['🟠', '🟠'],
+      ['⚪', '⚪'],
+      ['⏫', '🎫']
     ]
   )
+  assert.equal(tasks[2]?.done, true)
+  assert.ok(tasks.every((t) => t.due === undefined && !t.overdue))
+
+  const work = [
+    '# ARH Work Log',
+    '## 2026-10-13 (Tuesday)',
+    '### Documentation — phone work written up',
+    '- wrote it up',
+    '## 2026-10-09 (Friday)',
+    '### 08:14 MT — Training packets',
+    '- assembled packets',
+    '### ~(time approx) — Handsets registered',
+    '- two handsets'
+  ].join('\n')
+  const days = parseDatedEntries(work, 'ARH Work Log.md')
+  assert.deepEqual(
+    days.map((d) => [d.date, d.lines.length]),
+    [
+      ['2026-10-13', 2],
+      ['2026-10-09', 4]
+    ]
+  )
+  assert.equal(days[1]?.lines[0], '### 08:14 MT — Training packets')
 })
 
 test('searchVault finds lines with context and skips hidden folders', async () => {
@@ -268,67 +323,279 @@ function run(overrides: Partial<ScanRun> = {}): ScanRun {
   }
 }
 
-test('content: loops merge keeps ticked lines and only appends new findings; log is append-only', () => {
-  const today = new Date(2026, 9, 14)
+test('times are written in Mountain Time like the vault (MDT in October, MST in January)', () => {
+  assert.deepEqual(zoned(new Date('2026-10-14T14:05:00Z'), 'America/Denver'), {
+    date: '2026-10-14',
+    time: '08:05'
+  })
+  assert.deepEqual(zoned(new Date('2026-01-10T05:30:00Z'), 'America/Denver'), {
+    date: '2026-01-09',
+    time: '22:30'
+  })
+})
+
+test('content: open loops in vault style, no due dates, never duplicated, recurrence after a tick', () => {
+  const today = new Date('2026-10-14T18:00:00Z')
   const first = mergeLoops(null, [run()], DEFAULT_CONTENT_OPTIONS, today)
   assert.equal(first.added, 2, 'info findings are not loops')
   const lines = first.body.split('\n')
+  assert.equal(lines[0], '## 🩺 Device health findings — ARH IT Dashboard')
+  const tasks = lines.filter((l) => l.startsWith('- ['))
   assert.match(
-    lines[0] ?? '',
-    /^- \[ \] LAPTOP-01: Microsoft Defender antivirus is disabled .* ⏫ 📅 2026-10-15 \^loop-[a-z0-9]+$/
+    tasks[0] ?? '',
+    /^- \[ \] 🔴 \*\*LAPTOP-01 — Microsoft Defender antivirus is disabled\.\*\* Antivirus · Security Check scan 2026-10-14 08:05 MT · run r_1\. \^loop-[0-9a-f]{8}$/
   )
-  assert.match(lines[1] ?? '', /📅 2026-10-21 \^loop-/)
+  assert.match(tasks[1] ?? '', /^- \[ \] 🟠 \*\*LAPTOP-01 — Disk C: has 9% free\.\*\*/)
+  assert.ok(!first.body.includes('📅'), 'the vault uses no due dates')
 
-  const ticked = first.body.replace(
-    '- [ ] LAPTOP-01: Microsoft Defender',
-    '- [x] LAPTOP-01: Microsoft Defender'
+  // a newer scan with a different number is the same finding: no duplicate while it is open
+  const again = mergeLoops(
+    first.body,
+    [
+      run(),
+      run({
+        runId: 'r_2',
+        finishedAt: '2026-10-15T14:00:00.000Z',
+        health: {
+          ...run().health!,
+          findings: run().health!.findings.map((f) =>
+            f.category === 'Storage' ? { ...f, message: 'Disk C: has 7% free' } : f
+          )
+        }
+      })
+    ],
+    DEFAULT_CONTENT_OPTIONS,
+    today
   )
-  const second = mergeLoops(ticked, [run({ runId: 'r_2' })], DEFAULT_CONTENT_OPTIONS, today)
-  assert.equal(second.added, 0, 'same findings are not duplicated')
-  assert.ok(
-    second.body.startsWith('- [x] LAPTOP-01: Microsoft Defender'),
-    'technician progress is preserved'
-  )
-  assert.deepEqual(countOpenLoops(second.body), { open: 1, done: 1 })
+  assert.equal(again.added, 0)
+  assert.equal(again.body, first.body)
 
+  // ticked, then reported by the same scan again: nothing; by a later scan: a new line
+  const ticked = first.body.replace('- [ ] 🔴 **LAPTOP-01', '- [x] 🔴 **LAPTOP-01')
+  const same = mergeLoops(ticked, [run()], DEFAULT_CONTENT_OPTIONS, today)
+  assert.equal(same.added, 0)
+  assert.ok(same.body.includes('- [x] 🔴 **LAPTOP-01'), 'technician progress is preserved')
+  assert.deepEqual(countOpenLoops(same.body), { open: 1, done: 1 })
+  const later = mergeLoops(
+    ticked,
+    [run(), run({ runId: 'r_3', finishedAt: '2026-10-20T15:00:00.000Z' })],
+    DEFAULT_CONTENT_OPTIONS,
+    today
+  )
+  assert.equal(later.added, 1, 'only the ticked finding comes back; the open one is not doubled')
+  const back = later.body.split('\n').at(-1) ?? ''
+  assert.match(
+    back,
+    /^- \[ \] 🔴 \*\*LAPTOP-01 — Microsoft Defender.*run r_3\. Back after being ticked \(occurrence 2\)\. \^loop-[0-9a-f]{8}-2$/
+  )
+
+  // an older scan of the same profile no longer counts once a newer one exists
+  const fixed = run({
+    runId: 'r_4',
+    finishedAt: '2026-10-21T15:00:00.000Z',
+    health: { score: 'healthy', metrics: {}, findings: [] }
+  })
+  assert.equal(mergeLoops(null, [run(), fixed], DEFAULT_CONTENT_OPTIONS, today).added, 0)
+
+  // other due styles remain available
+  const withDue = mergeLoops(
+    null,
+    [run()],
+    { ...DEFAULT_CONTENT_OPTIONS, dueStyle: 'tasks-emoji' },
+    today
+  )
+  assert.match(withDue.body, /run r_1\. 📅 2026-10-15 \^loop-/)
+})
+
+test('content: work log entries newest first, MT times, duration, findings as sub-bullets, append-only', () => {
   const log1 = mergeLog(null, [run()])
   assert.equal(log1.added, 1)
-  assert.match(
-    log1.body,
-    /^- 2026-10-14 \d{2}:\d{2} · LAPTOP-01 \(SER1\) · Security Check · windows-security-check v1 · ok · 3 finding\(s\) · Lisandro · r_1$/
+  const l1 = log1.body.split('\n')
+  assert.equal(l1[0], '## 🖥️ Device scans — ARH IT Dashboard')
+  assert.equal(
+    l1[4],
+    '- 2026-10-14 08:05 MT · **LAPTOP-01** · serial SER1 · Security Check · windows-security-check v1 · ok · 5 min 0 s · 3 findings · Lisandro · run r_1'
   )
-  const log2 = mergeLog(log1.body, [run(), run({ runId: 'r_2' })])
-  assert.equal(log2.added, 1)
-  assert.equal(log2.body.split('\n').length, 2)
-
-  const table = devicesTable([
-    {
-      device: {
-        id: 'abc',
-        serial: 'SER1',
-        hostname: 'LAPTOP-01',
-        os: 'windows',
-        displayName: 'Front desk',
-        enrolledAt: '2026-10-01T00:00:00Z',
-        lastSeen: '2026-10-14T13:59:00Z',
-        agentVersion: '0.2.0',
-        profiles: []
-      },
-      connected: true,
-      lastScan: {
-        purpose: 'security-check',
-        at: '2026-10-14T14:05:00Z',
-        status: 'ok',
-        score: 'critical'
-      }
-    }
+  assert.deepEqual(l1.slice(5), [
+    '    - 🔴 Microsoft Defender antivirus is disabled',
+    '    - 🟠 Disk C: has 9% free'
   ])
+  const failed = run({
+    runId: 'r_2',
+    finishedAt: '2026-10-14T15:10:00.000Z',
+    status: 'failed',
+    error: 'link lost during check sec-logins',
+    durationMs: 42000,
+    health: { score: 'attention', metrics: {}, findings: [] }
+  })
+  const log2 = mergeLog(log1.body, [run(), failed])
+  assert.equal(log2.added, 1)
+  const entries = log2.body.split('\n').filter((l) => l.startsWith('- '))
+  assert.equal(entries.length, 2)
   assert.ok(
-    table.includes(
-      '| Front desk 🟢 | SER1 | windows | 0.2.0 | 2026-10-14 13:59 | 2026-10-14 · Security Check · ok | critical |'
-    )
+    entries[0]?.includes('09:10 MT') &&
+      entries[0].includes('failed: link lost during check sec-logins · 42 s · 0 findings')
   )
-  const scans = scansBlock([run()], DEFAULT_CONTENT_OPTIONS)
-  assert.ok(scans.startsWith('> [!info]- 2026-10-14 '))
-  assert.ok(scans.includes('> - 🔴 Microsoft Defender antivirus is disabled'))
+  assert.ok(entries[1]?.includes('run r_1'), 'older entry stays below')
+  assert.equal(mergeLog(log2.body, [run(), failed]).added, 0)
+  assert.equal(mergeLog(log2.body, [run(), failed]).body, log2.body)
+})
+
+const device = {
+  id: 'abc',
+  serial: 'SER1',
+  hostname: 'LAPTOP-01',
+  os: 'windows' as const,
+  displayName: 'Front desk',
+  enrolledAt: '2026-10-01T00:00:00Z',
+  lastSeen: '2026-10-14T13:59:00Z',
+  agentVersion: '0.2.0',
+  profiles: []
+}
+
+test('content: Asset Inventory computers table keeps the technician columns and unknown rows', () => {
+  const diag = run({
+    runId: 'r_d',
+    purpose: 'system-diagnostics',
+    profile: 'windows-system-diagnostics',
+    finishedAt: '2026-10-13T16:00:00.000Z',
+    health: {
+      score: 'healthy',
+      metrics: {
+        Model: 'Dell Inc. Latitude 3510',
+        OS: 'Microsoft Windows 11 Pro 10.0.22631 (64-bit)'
+      },
+      findings: []
+    },
+    checks: [
+      {
+        id: 'net-adapters',
+        title: 'Network adapters',
+        category: 'Network',
+        format: 'json',
+        optional: false,
+        status: 'ok',
+        exitCode: 0,
+        stdout: JSON.stringify([
+          {
+            name: 'USB link',
+            status: 'Up',
+            mac: '02-00-00-00-00-01',
+            ipv4: ['169.254.10.2/16'],
+            gateways: []
+          },
+          {
+            name: 'Wi-Fi',
+            status: 'Up',
+            mac: 'AA-BB-CC-DD-EE-FF',
+            ipv4: ['10.1.20.45/24'],
+            gateways: ['10.1.20.1']
+          }
+        ]),
+        stderr: '',
+        timedOut: false,
+        truncated: false,
+        durationMs: 900
+      }
+    ]
+  })
+  const facts = deviceFacts([run(), diag], DEFAULT_CONTENT_OPTIONS)
+  assert.deepEqual(facts, {
+    lastScan: '2026-10-14 08:05 MT · Security Check · ok',
+    health: '🔴 critical',
+    model: 'Dell Inc. Latitude 3510',
+    os: 'Windows 11',
+    mac: 'AA-BB-CC-DD-EE-FF',
+    ip: '10.1.20.45'
+  })
+  assert.deepEqual(lanAddress('not json'), {})
+
+  const first = devicesBlock(null, [{ device, facts }], DEFAULT_CONTENT_OPTIONS)
+  const t1 = readTable(first)
+  assert.deepEqual(t1.header.slice(0, 12), [
+    'Name',
+    'Location',
+    'Room / role',
+    'Model',
+    'Serial',
+    'MAC',
+    'IP',
+    'OS',
+    'Age',
+    'Warranty',
+    'PHI?',
+    'Notes'
+  ])
+  assert.equal(t1.rows[0]?.['Room / role'], 'Front desk', 'enrollment label seeds the room')
+  assert.equal(t1.rows[0]?.['PHI?'], '', 'PHI is never guessed')
+
+  // the technician fills their columns and adds a row by hand
+  const edited = first
+    .replace('| LAPTOP-01 |  | Front desk |', '| LAPTOP-01 | Centennial | Front desk 2 |')
+    .replace(
+      /(\| Windows 11 \|) {2}\| {2}\| {2}\| {2}\|/,
+      '$1 2021 | 2027-03 | yes | battery swapped |'
+    )
+    .concat(
+      '\n| PRINTER-PC | Thornton | Back office |  |  |  |  |  |  |  |  | typed by hand |  |  |'
+    )
+  const second = devicesBlock(
+    edited,
+    [
+      {
+        device: { ...device, hostname: 'ARH-CEN-FD2' },
+        facts: { ...facts, ip: '10.1.20.46', mac: undefined }
+      }
+    ],
+    DEFAULT_CONTENT_OPTIONS
+  )
+  const t2 = readTable(second)
+  assert.equal(t2.rows.length, 2)
+  const row = t2.rows[0]!
+  assert.equal(row['Name'], 'ARH-CEN-FD2', 'renamed computer matched by serial')
+  assert.equal(row['Location'], 'Centennial')
+  assert.equal(row['Room / role'], 'Front desk 2')
+  assert.equal(row['Age'], '2021')
+  assert.equal(row['Warranty'], '2027-03')
+  assert.equal(row['PHI?'], 'yes')
+  assert.equal(row['Notes'], 'battery swapped')
+  assert.equal(row['IP'], '10.1.20.46', 'scan values refresh')
+  assert.equal(row['MAC'], 'AA-BB-CC-DD-EE-FF', 'kept when the latest scans do not supply it')
+  assert.equal(t2.rows[1]?.['Name'], 'PRINTER-PC', 'rows the dashboard does not know are kept')
+  assert.equal(t2.rows[1]?.['Notes'], 'typed by hand')
+  assert.equal(
+    devicesBlock(
+      second,
+      [
+        {
+          device: { ...device, hostname: 'ARH-CEN-FD2' },
+          facts: { ...facts, ip: '10.1.20.46', mac: undefined }
+        }
+      ],
+      DEFAULT_CONTENT_OPTIONS
+    ),
+    second,
+    'stable on rerun'
+  )
+
+  const pipes = devicesBlock(
+    null,
+    [{ device: { ...device, displayName: 'Exam | 2' }, facts }],
+    DEFAULT_CONTENT_OPTIONS
+  )
+  assert.equal(
+    readTable(pipes).rows[0]?.['Room / role'],
+    'Exam \\| 2',
+    'pipes are escaped, not column breaks'
+  )
+
+  const hub = healthBlock(
+    [{ device, facts }],
+    mergeLoops(null, [run()], DEFAULT_CONTENT_OPTIONS).body,
+    DEFAULT_CONTENT_OPTIONS
+  )
+  assert.ok(
+    hub.includes('| LAPTOP-01 | 🔴 critical | 2026-10-14 08:05 MT · Security Check · ok | 2 |')
+  )
+  assert.ok(hub.includes('[[Asset Inventory]]'))
 })

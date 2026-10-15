@@ -278,7 +278,7 @@ export interface VaultApplyResult {
 }
 
 export interface VaultNoteStatus {
-  role: 'hub' | 'workLog' | 'openLoops'
+  role: 'hub' | 'workLog' | 'openLoops' | 'assets'
   name: string
   path: string
   exists: boolean
@@ -306,7 +306,10 @@ export interface VaultTask {
   due?: string
   overdue: boolean
   dueSoon: boolean
+  /** 🔴 🟠 🟡 ⚪ 🧊 from the line or its section heading, or a Tasks plugin priority emoji. */
   priority?: string
+  /** Nearest heading above the task, without the leading #s. */
+  section?: string
   raw: string
 }
 
@@ -344,9 +347,12 @@ export interface SearchHit {
 
 export interface Settings {
   vaultPath: string
+  /** Empty means the hub is not written. */
   hubNote: string
   workLogNote: string
   openLoopsNote: string
+  /** Path inside the vault, e.g. Assets/Asset Inventory.md */
+  assetNote: string
   /** Live writes stay off until the vault schema is approved. */
   vaultLive: boolean
   schemaApproved: boolean

@@ -5,15 +5,23 @@ import { useDashboard } from '../store'
 const dash = useDashboard()
 const { state } = dash
 const loops = computed(() => state.loops)
+// The vault ranks loops by section emoji (🔴 Now, 🟠 This week, 🟡, ⚪ waiting, 🧊 later), not by
+// due date: the inspection found no due dates in it. Due dates still sort first when present.
+const LEVELS = ['🔴', '🟠', '🟡', '⚪', '🧊']
+const rank = (p?: string): number => (p && LEVELS.includes(p) ? LEVELS.indexOf(p) : LEVELS.length)
 const sorted = computed(() =>
   [...(loops.value?.tasks ?? [])]
     .filter((t) => !t.done)
     .sort(
       (a, b) =>
-        Number(b.overdue) - Number(a.overdue) || (a.due ?? '9999').localeCompare(b.due ?? '9999')
+        Number(b.overdue) - Number(a.overdue) ||
+        rank(a.priority) - rank(b.priority) ||
+        a.line - b.line
     )
 )
 const done = computed(() => (loops.value?.tasks ?? []).filter((t) => t.done).length)
+const count = (p: string): number => sorted.value.filter((t) => t.priority === p).length
+const hasDue = computed(() => (loops.value?.tasks ?? []).some((t) => t.due))
 </script>
 
 <template>
@@ -32,14 +40,26 @@ const done = computed(() => (loops.value?.tasks ?? []).filter((t) => t.done).len
         <p class="eyebrow">Open</p>
         <p class="display text-3xl">{{ sorted.length }}</p>
       </div>
-      <div class="card p-3">
-        <p class="eyebrow text-bad-400">Overdue</p>
-        <p class="display text-3xl text-bad-400">{{ loops?.overdue ?? 0 }}</p>
-      </div>
-      <div class="card p-3">
-        <p class="eyebrow text-warn-400">Due within 3 days</p>
-        <p class="display text-3xl text-warn-400">{{ loops?.dueSoon ?? 0 }}</p>
-      </div>
+      <template v-if="hasDue">
+        <div class="card p-3">
+          <p class="eyebrow text-bad-400">Overdue</p>
+          <p class="display text-3xl text-bad-400">{{ loops?.overdue ?? 0 }}</p>
+        </div>
+        <div class="card p-3">
+          <p class="eyebrow text-warn-400">Due within 3 days</p>
+          <p class="display text-3xl text-warn-400">{{ loops?.dueSoon ?? 0 }}</p>
+        </div>
+      </template>
+      <template v-else>
+        <div class="card p-3">
+          <p class="eyebrow text-bad-400">🔴 Now</p>
+          <p class="display text-3xl text-bad-400">{{ count('🔴') }}</p>
+        </div>
+        <div class="card p-3">
+          <p class="eyebrow text-warn-400">🟠 This week</p>
+          <p class="display text-3xl text-warn-400">{{ count('🟠') }}</p>
+        </div>
+      </template>
     </div>
     <ul class="space-y-1">
       <li
@@ -47,9 +67,11 @@ const done = computed(() => (loops.value?.tasks ?? []).filter((t) => t.done).len
         :key="`${t.file}:${t.line}`"
         class="flex items-center gap-3 rounded-[3px] border border-white/5 bg-ink-900 px-3 py-2 text-sm"
       >
-        <span class="font-mono text-mist-700">[{{ t.status }}]</span>
-        <span class="flex-1">{{ t.text }}</span>
-        <span v-if="t.priority" class="text-gold-300">{{ t.priority }}</span>
+        <span class="w-5 text-center">{{ t.priority ?? '·' }}</span>
+        <span class="flex-1">
+          {{ t.text }}
+          <span v-if="t.section" class="block text-[10px] text-mist-700">{{ t.section }}</span>
+        </span>
         <span
           v-if="t.due"
           class="badge border"

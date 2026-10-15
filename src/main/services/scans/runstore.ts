@@ -4,7 +4,7 @@ import type { ScanRun } from '../../../shared/types.ts'
 
 /**
  * Persists finished runs (findings, metrics, trimmed output) in the app data folder so the
- * hub's "recent scans" block and the results view survive restarts. Never in the vault.
+ * vault blocks and the results view survive restarts. Never in the vault.
  */
 
 const MAX_OUTPUT_PER_CHECK = 64 * 1024

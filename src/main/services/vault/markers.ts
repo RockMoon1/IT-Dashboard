@@ -1,8 +1,8 @@
 /**
  * Marker-delimited blocks inside existing notes:
- *   <!-- DASH:DEVICE-SCANS:START -->
+ *   <!-- DASH:SCAN-LOG:START -->
  *   …managed text…
- *   <!-- DASH:DEVICE-SCANS:END -->
+ *   <!-- DASH:SCAN-LOG:END -->
  * The writer replaces only what lies between its own markers. Missing markers are appended once
  * at the end of the note. Text outside markers is never touched.
  */

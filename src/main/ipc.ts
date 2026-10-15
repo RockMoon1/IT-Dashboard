@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { IPC, type LogLine } from '../shared/api.ts'
 import type {
   AppInfo,
@@ -538,10 +538,11 @@ export class AppContext {
     if (!exists) problems.push(`vault folder not found: ${this.settings.vaultPath}`)
     const notes: VaultStatus['notes'] = []
     const roles: Array<[VaultStatus['notes'][number]['role'], string, string]> = [
-      ['hub', this.settings.hubNote, paths.hub],
-      ['workLog', this.settings.workLogNote, paths.workLog],
-      ['openLoops', this.settings.openLoopsNote, paths.openLoops]
+      ['assets', this.settings.assetNote, paths.assets],
+      ['openLoops', this.settings.openLoopsNote, paths.openLoops],
+      ['workLog', this.settings.workLogNote, paths.workLog]
     ]
+    if (paths.hub) roles.push(['hub', this.settings.hubNote, paths.hub])
     for (const [role, name, path] of roles) {
       const noteExists = existsSync(path)
       const markers: string[] = []
@@ -561,7 +562,7 @@ export class AppContext {
         exists: noteExists,
         markers,
         backupExists: existsSync(
-          join(this.writer.backupDir(), `${name.replace(/\.md$/i, '')}.first-write.md`)
+          join(this.writer.backupDir(), `${basename(name).replace(/\.md$/i, '')}.first-write.md`)
         )
       })
     }
@@ -593,12 +594,19 @@ export class AppContext {
       .slice(0, 20)
   }
 
+  /** Runs the vault blocks are built from: enough history that nothing is dropped in dry-run. */
+  private planRuns(): ScanRun[] {
+    const merged = new Map<string, ScanRun>()
+    for (const r of this.runStore.list(500)) merged.set(r.runId, r)
+    for (const r of this.runner.list()) if (r.status !== 'running') merged.set(r.runId, r)
+    return [...merged.values()]
+  }
+
   private async plans(): Promise<ReturnType<typeof buildWritePlans>> {
     return buildWritePlans({
       settings: this.settings,
       devices: this.devices.list(),
-      connected: (id) => this.link?.isConnected(id) ?? false,
-      runs: this.recentRuns()
+      runs: this.planRuns()
     })
   }
 
@@ -657,7 +665,7 @@ export class AppContext {
     const path = notePaths(this.settings).workLog
     try {
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
-      const entries = parseDatedEntries(text, this.settings.workLogNote).reverse().slice(0, limit)
+      const entries = parseDatedEntries(text, this.settings.workLogNote).slice(0, limit)
       return { source: path, entries }
     } catch (err) {
       return { source: path, entries: [], error: (err as Error).message }

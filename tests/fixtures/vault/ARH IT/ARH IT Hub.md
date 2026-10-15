@@ -1,21 +1,34 @@
----
-tags: [arh, hub]
----
 # ARH IT Hub
 
-Index of current IT state across ARH locations.
+## 🚨 Read this first — vault safety rule
 
-## Locations
-| Location | Network | Notes |
-| --- | --- | --- |
-| Main clinic | 10.10.0.0/24 | Fortinet edge |
-| Satellite | 10.20.0.0/24 | VPN to main |
+> [!danger] Synthetic fixture
+> Stand-in text. The real note's rule is not copied here.
 
-## Quick links
+## 🎯 Where this is going
+
+One paragraph of goals.
+
+## Folder map
+
+| Folder | What goes in it |
+| --- | --- |
+| Assets | Hardware records |
+| Tickets | One note per ticket |
+
+## Live work
+
 - [[ARH Open Loops]]
 - [[ARH Work Log]]
-- [[ARH Change Log]]
 
-## Systems
-- EHR: vendor-hosted
-- Email: Microsoft 365
+## Reference
+
+- [[Asset Inventory]]
+
+## Working method (per ticket)
+
+1. Write the issue down before touching anything.
+
+## Standing rules
+
+- Record the current state before a change.
