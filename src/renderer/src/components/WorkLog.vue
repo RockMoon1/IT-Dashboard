@@ -8,6 +8,13 @@ const { state } = dash
 function label(p: string): string {
   return purposeLabel(p as Purpose)
 }
+
+// Kept out of the template: Prettier strips the ';' between inline statements, which the Vue
+// compiler then parses as a single expression.
+function openRun(runId: string): void {
+  dash.showRun(runId)
+  state.tab = 'results'
+}
 </script>
 
 <template>
@@ -38,10 +45,7 @@ function label(p: string): string {
             v-for="h in state.history"
             :key="h.runId"
             class="cursor-pointer border-t border-white/5 hover:bg-ink-800"
-            @click="
-              dash.showRun(h.runId)
-              state.tab = 'results'
-            "
+            @click="openRun(h.runId)"
           >
             <td class="py-1 pr-3">{{ h.ts.replace('T', ' ').slice(0, 16) }}</td>
             <td class="py-1 pr-3">

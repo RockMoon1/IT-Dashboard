@@ -67,10 +67,17 @@ jobs:
           $dirty = git status --porcelain -- tests/fixtures
           if ($dirty) { throw "Inspect-Vault.ps1 modified the fixture: $dirty" }
           Get-Content $out -TotalCount 60
-      - name: Build and package (NSIS installer with bundled agents and profiles)
+      # Separate steps: a failed build must fail the job, not fall through to packaging.
+      - name: Build (main, preload, renderer)
+        run: npm run build
+      - name: Check the build output
+        shell: pwsh
         run: |
-          npm run build
-          npx electron-builder --win --publish never
+          foreach ($f in 'out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html') {
+            if (-not (Test-Path $f)) { throw "missing $f after the build" }
+          }
+      - name: Package (NSIS installer with bundled agents and profiles)
+        run: npx electron-builder --win --publish never
       - name: Check the package contents
         shell: pwsh
         run: |

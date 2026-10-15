@@ -10,6 +10,10 @@ async function enableFirewall(): Promise<void> {
   fwMessage.value = await dash.enableFirewall()
 }
 
+function toggleBeaconAll(event: Event): void {
+  void dash.saveSettings({ beaconAllAdapters: (event.target as HTMLInputElement).checked })
+}
+
 async function copy(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
@@ -104,9 +108,7 @@ async function copy(text: string): Promise<void> {
           <input
             type="checkbox"
             :checked="state.settings?.beaconAllAdapters"
-            @change="
-              dash.saveSettings({ beaconAllAdapters: ($event.target as HTMLInputElement).checked })
-            "
+            @change="toggleBeaconAll"
           />
           beacon on every adapter (testing on a LAN or VM)
         </label>
