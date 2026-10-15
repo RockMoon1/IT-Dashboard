@@ -1,0 +1,62 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-slow-performance",
+  "version": 1,
+  "os": "macos",
+  "purpose": "slow-performance",
+  "title": "Slow Performance",
+  "description": "CPU, memory and disk pressure, top processes, startup items and services",
+  "checks": [
+    {
+      "id": "perf-resources",
+      "title": "CPU, memory and disk pressure",
+      "category": "Performance",
+      "shell": "sh",
+      "command": [
+        "top -l 2 -n 0 -s 1 2>/dev/null | grep -E 'CPU usage|PhysMem|Load Avg' | tail -3",
+        "memory_pressure 2>/dev/null | tail -1",
+        "echo \"--- swap\"",
+        "sysctl -n vm.swapusage 2>/dev/null",
+        "echo \"--- disk\"",
+        "df -h / 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-top-processes",
+      "title": "Top processes by CPU and memory",
+      "category": "Processes",
+      "shell": "sh",
+      "command": [
+        "top -l 2 -n 12 -o cpu -stats pid,command,cpu,mem 2>/dev/null | tail -14",
+        "echo \"--- by memory\"",
+        "top -l 1 -n 12 -o mem -stats pid,command,cpu,mem 2>/dev/null | tail -13",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-startup",
+      "title": "Login items and third-party launch agents",
+      "category": "Startup",
+      "shell": "sh",
+      "command": [
+        "osascript -e 'tell application \"System Events\" to get the name of every login item' 2>/dev/null",
+        "echo \"--- launch agents/daemons (non-Apple)\"",
+        "ls ~/Library/LaunchAgents /Library/LaunchAgents /Library/LaunchDaemons 2>/dev/null | grep -v '^$' | grep -v com.apple | head -40",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

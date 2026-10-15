@@ -1,0 +1,72 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-phishing-assessment",
+  "version": 1,
+  "os": "linux",
+  "purpose": "phishing-assessment",
+  "title": "Phishing Assessment",
+  "description": "Browser extensions, protection settings, proxy/DNS/hosts tampering and risky downloads",
+  "checks": [
+    {
+      "id": "phish-extensions",
+      "title": "Browser extensions (Chrome, Chromium, Brave, Firefox)",
+      "category": "Browser",
+      "shell": "sh",
+      "command": [
+        "for root in \"$HOME/.config/google-chrome\" \"$HOME/.config/chromium\" \"$HOME/.config/BraveSoftware/Brave-Browser\" \"$HOME/.config/microsoft-edge\"; do",
+        "  [ -d \"$root\" ] || continue",
+        "  echo \"--- $root\"",
+        "  find \"$root\" -maxdepth 4 -path '*/Extensions/*' -name manifest.json 2>/dev/null | while read -r m; do",
+        "    id=$(basename \"$(dirname \"$(dirname \"$m\")\")\")",
+        "    name=$(grep -m1 '\"name\"' \"$m\" | sed 's/.*\"name\"[^\"]*\"\\([^\"]*\\)\".*/\\1/')",
+        "    echo \"$id | $name\"",
+        "  done",
+        "done",
+        "for p in \"$HOME\"/.mozilla/firefox/*/extensions.json \"$HOME\"/snap/firefox/common/.mozilla/firefox/*/extensions.json; do",
+        "  [ -f \"$p\" ] || continue",
+        "  echo \"--- firefox: $p\"",
+        "  tr ',' '\\n' < \"$p\" | grep -E '\"id\":|\"name\":' | grep -v '\"name\":\"\"' | head -40",
+        "done",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "phish-settings",
+      "title": "Proxy, DNS and hosts overrides",
+      "category": "Protection",
+      "shell": "sh",
+      "command": [
+        "echo \"--- proxy env\"",
+        "env | grep -i proxy",
+        "gsettings get org.gnome.system.proxy mode 2>/dev/null",
+        "echo \"--- dns\"",
+        "resolvectl status 2>/dev/null | grep -E 'DNS Servers' | head -5 || grep nameserver /etc/resolv.conf",
+        "echo \"--- hosts overrides\"",
+        "grep -v '^#' /etc/hosts | grep -v '^$' | grep -Ev 'localhost|ip6-'",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "phish-downloads",
+      "title": "Recent risky downloads",
+      "category": "Downloads",
+      "shell": "sh",
+      "command": [
+        "find \"$HOME/Downloads\" -maxdepth 1 -type f -mtime -14 \\( -name '*.sh' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.run' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.py' \\) -exec ls -la {} \\; 2>/dev/null | head -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

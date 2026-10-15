@@ -1,18 +1,19 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { AppContext } from './ipc.ts'
+import { AppContext, locateAgentBinary } from './ipc.ts'
 
 let ctx: AppContext | null = null
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1380,
-    height: 880,
-    minWidth: 1040,
-    minHeight: 660,
+    width: 1440,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 680,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0b0d12',
+    backgroundColor: '#060908',
     title: 'ARH IT Dashboard',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -32,11 +33,25 @@ function createWindow(): BrowserWindow {
   return win
 }
 
+function profilesDir(): string {
+  const packaged = join(process.resourcesPath, 'profiles')
+  if (app.isPackaged && existsSync(packaged)) return packaged
+  return join(app.getAppPath(), 'profiles')
+}
+
 void app.whenReady().then(async () => {
-  ctx = await AppContext.create(join(app.getPath('userData'), 'settings.json'))
+  const appDataDir = app.getPath('userData')
+  const agent = locateAgentBinary(app.getAppPath(), process.resourcesPath, app.isPackaged)
+  ctx = await AppContext.create({
+    settingsFile: join(appDataDir, 'settings.json'),
+    appDataDir,
+    profilesDir: profilesDir(),
+    agentBinary: agent.binary,
+    agentDistDir: agent.distDir
+  })
   ctx.registerIpc()
   ctx.attachWindow(createWindow())
-  ctx.start()
+  await ctx.start()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0 && ctx) ctx.attachWindow(createWindow())
@@ -48,5 +63,5 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  ctx?.stop()
+  void ctx?.stop()
 })

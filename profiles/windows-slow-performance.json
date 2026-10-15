@@ -1,0 +1,105 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "windows-slow-performance",
+  "version": 1,
+  "os": "windows",
+  "purpose": "slow-performance",
+  "title": "Slow Performance",
+  "description": "CPU, memory and disk pressure, top processes, startup items and services",
+  "checks": [
+    {
+      "id": "perf-resources",
+      "title": "CPU, memory and disk pressure (3-second sample)",
+      "category": "Performance",
+      "shell": "powershell",
+      "command": [
+        "$os = Get-CimInstance Win32_OperatingSystem",
+        "$cpu = $null; $diskQueue = $null; $diskTime = $null; $committed = $null",
+        "try {",
+        "  $samples = (Get-Counter -Counter '\\Processor(_Total)\\% Processor Time' -SampleInterval 1 -MaxSamples 3 -ErrorAction Stop).CounterSamples",
+        "  $cpu = [math]::Round(($samples | Measure-Object -Property CookedValue -Average).Average, 1)",
+        "} catch {}",
+        "try {",
+        "  $c = (Get-Counter -Counter '\\PhysicalDisk(_Total)\\Current Disk Queue Length', '\\PhysicalDisk(_Total)\\% Disk Time', '\\Memory\\% Committed Bytes In Use' -ErrorAction Stop).CounterSamples",
+        "  $diskQueue = [math]::Round(($c | Where-Object { $_.Path -like '*Queue Length' }).CookedValue, 2)",
+        "  $diskTime = [math]::Round(($c | Where-Object { $_.Path -like '*% Disk Time' }).CookedValue, 1)",
+        "  $committed = [math]::Round(($c | Where-Object { $_.Path -like '*Committed Bytes*' }).CookedValue, 1)",
+        "} catch {}",
+        "$o = [ordered]@{",
+        "  cpuPct = $cpu",
+        "  ramTotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)",
+        "  ramUsedPct = [math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize), 1)",
+        "  committedPct = $committed",
+        "  diskQueueLength = $diskQueue",
+        "  diskTimePct = $diskTime",
+        "  processCount = (Get-Process).Count",
+        "  uptimeHours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)",
+        "  disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { [pscustomobject]@{ drive = $_.DeviceID; freePct = if ($_.Size) { [math]::Round(100 * $_.FreeSpace / $_.Size, 1) } else { $null } } })",
+        "}",
+        "ConvertTo-Json -InputObject ([pscustomobject]$o) -Depth 3 -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-top-processes",
+      "title": "Top processes by CPU time and by working set",
+      "category": "Processes",
+      "shell": "powershell",
+      "command": [
+        "$cols = @('Name', 'Id', @{ n = 'cpuSeconds'; e = { if ($_.CPU) { [math]::Round($_.CPU, 1) } else { 0 } } }, @{ n = 'workingSetMB'; e = { [math]::Round($_.WorkingSet64 / 1MB) } })",
+        "$byCpu = @(Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 -Property $cols)",
+        "$byMem = @(Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10 -Property $cols)",
+        "ConvertTo-Json -InputObject ([pscustomobject]@{ byCpu = $byCpu; byMemory = $byMem }) -Depth 3 -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-startup",
+      "title": "Startup programs",
+      "category": "Startup",
+      "shell": "powershell",
+      "command": [
+        "$s = @(Get-CimInstance Win32_StartupCommand -ErrorAction SilentlyContinue | Select-Object Name, Command, Location, User)",
+        "ConvertTo-Json -InputObject $s -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-services",
+      "title": "Running third-party services",
+      "category": "Services",
+      "shell": "powershell",
+      "command": [
+        "Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |",
+        "  Where-Object { $_.State -eq 'Running' -and $_.PathName -and $_.PathName -notlike '*\\Windows\\*' } |",
+        "  Select-Object Name, DisplayName, StartMode, PathName | Format-Table -AutoSize | Out-String -Width 220"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-power",
+      "title": "Active power plan",
+      "category": "Performance",
+      "shell": "powershell",
+      "command": [
+        "powercfg /getactivescheme"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

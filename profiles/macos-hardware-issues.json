@@ -1,0 +1,72 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-hardware-issues",
+  "version": 1,
+  "os": "macos",
+  "purpose": "hardware-issues",
+  "title": "Hardware Issues",
+  "description": "Problem devices, disk health, battery, memory and hardware error events",
+  "checks": [
+    {
+      "id": "hw-storage",
+      "title": "Storage devices and SMART status",
+      "category": "Storage",
+      "shell": "sh",
+      "command": [
+        "diskutil list 2>/dev/null | head -40",
+        "for d in $(diskutil list 2>/dev/null | grep -Eo '^/dev/disk[0-9]+' | sort -u); do",
+        "  echo \"--- $d\"",
+        "  diskutil info \"$d\" 2>/dev/null | grep -E 'Device / Media Name|SMART Status|Solid State|Disk Size|Protocol'",
+        "done",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-battery",
+      "title": "Battery condition",
+      "category": "Power",
+      "shell": "sh",
+      "command": [
+        "system_profiler SPPowerDataType 2>/dev/null | grep -E 'Cycle Count|Condition|Maximum Capacity|Full Charge Capacity|State of Charge'",
+        "pmset -g batt 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "hw-usb",
+      "title": "USB devices",
+      "category": "Devices",
+      "shell": "sh",
+      "command": [
+        "system_profiler SPUSBDataType 2>/dev/null | grep -E '^\\s{4,8}[A-Za-z].*:$|Product ID|Vendor ID|Serial Number' | head -60",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "hw-errors",
+      "title": "Recent kernel/hardware errors (last hour)",
+      "category": "Events",
+      "shell": "sh",
+      "command": [
+        "log show --last 1h --predicate 'process == \"kernel\" AND (eventMessage CONTAINS[c] \"error\" OR eventMessage CONTAINS[c] \"fault\")' --style compact 2>/dev/null | tail -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 120,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

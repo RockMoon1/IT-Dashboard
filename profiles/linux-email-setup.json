@@ -1,0 +1,63 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-email-setup",
+  "version": 1,
+  "os": "linux",
+  "purpose": "email-setup",
+  "title": "Email Setup",
+  "description": "Mail client installation, profiles, Microsoft 365 reachability and DNS",
+  "checks": [
+    {
+      "id": "mail-clients",
+      "title": "Installed mail clients",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "for c in thunderbird evolution kmail geary mutt; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c: $(command -v $c)\"; done",
+        "flatpak list 2>/dev/null | grep -Ei 'thunderbird|evolution|geary'",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "mail-connectivity",
+      "title": "TCP reachability of Microsoft 365 endpoints",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "for t in outlook.office365.com:443 smtp.office365.com:587 login.microsoftonline.com:443 autodiscover-s.outlook.com:443; do",
+        "  h=$(echo \"$t\" | cut -d: -f1); p=$(echo \"$t\" | cut -d: -f2)",
+        "  if command -v nc >/dev/null 2>&1; then",
+        "    if nc -z -w 4 \"$h\" \"$p\" >/dev/null 2>&1; then echo \"$h:$p reachable\"; else echo \"$h:$p UNREACHABLE\"; fi",
+        "  elif command -v timeout >/dev/null 2>&1; then",
+        "    if timeout 4 sh -c \"exec 3<>/dev/tcp/$h/$p\" 2>/dev/null; then echo \"$h:$p reachable\"; else echo \"$h:$p UNREACHABLE\"; fi",
+        "  else",
+        "    echo \"$h:$p (no nc/timeout available to test)\"",
+        "  fi",
+        "done",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "mail-dns",
+      "title": "DNS resolver configuration",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "resolvectl status 2>/dev/null | grep -E 'DNS Servers|DNS Domain' | head -10 || cat /etc/resolv.conf",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

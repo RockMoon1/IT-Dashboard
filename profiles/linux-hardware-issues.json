@@ -1,0 +1,80 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-hardware-issues",
+  "version": 1,
+  "os": "linux",
+  "purpose": "hardware-issues",
+  "title": "Hardware Issues",
+  "description": "Problem devices, disk health, battery, memory and hardware error events",
+  "checks": [
+    {
+      "id": "hw-devices",
+      "title": "PCI and USB devices",
+      "category": "Devices",
+      "shell": "sh",
+      "command": [
+        "lspci 2>/dev/null | head -40",
+        "echo \"--- usb\"",
+        "lsusb 2>/dev/null | head -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-storage",
+      "title": "Block devices and SMART health",
+      "category": "Storage",
+      "shell": "sh",
+      "command": [
+        "lsblk -o NAME,MODEL,SIZE,TYPE,ROTA,TRAN,MOUNTPOINT 2>/dev/null",
+        "if command -v smartctl >/dev/null 2>&1; then",
+        "  for d in $(lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2==\"disk\"{print \"/dev/\"$1}'); do",
+        "    echo \"--- $d\"; smartctl -H \"$d\" 2>&1 | grep -Ei 'overall-health|SMART Health|Permission denied' || echo \"smartctl needs root for $d\"",
+        "  done",
+        "else",
+        "  echo \"smartctl not installed (apt install smartmontools) - SMART not checked\"",
+        "fi",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-battery",
+      "title": "Battery condition",
+      "category": "Power",
+      "shell": "sh",
+      "command": [
+        "if command -v upower >/dev/null 2>&1; then",
+        "  for b in $(upower -e 2>/dev/null | grep -i bat); do upower -i \"$b\" | grep -E 'state|percentage|energy-full|energy-full-design|capacity|cycle'; done",
+        "else",
+        "  for b in /sys/class/power_supply/BAT*; do [ -d \"$b\" ] && { echo \"$b\"; cat \"$b/status\" \"$b/capacity\" \"$b/cycle_count\" 2>/dev/null; }; done",
+        "fi",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "hw-errors",
+      "title": "Kernel and journal errors (last 7 days)",
+      "category": "Events",
+      "shell": "sh",
+      "command": [
+        "journalctl -p err -S -7d --no-pager 2>/dev/null | tail -40 || dmesg --level=err,crit,alert,emerg 2>/dev/null | tail -40",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-email-setup",
+  "version": 1,
+  "os": "macos",
+  "purpose": "email-setup",
+  "title": "Email Setup",
+  "description": "Mail client installation, profiles, Microsoft 365 reachability and DNS",
+  "checks": [
+    {
+      "id": "mail-clients",
+      "title": "Installed mail clients",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "ls /Applications 2>/dev/null | grep -Ei 'outlook|mail|thunderbird'",
+        "echo \"outlook_version: $(defaults read /Applications/Microsoft\\ Outlook.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null)\"",
+        "echo \"apple_mail_accounts: $(defaults read ~/Library/Preferences/com.apple.mail-shared 2>/dev/null | grep -c -i 'smtp' )\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "mail-connectivity",
+      "title": "TCP reachability of Microsoft 365 endpoints",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "for t in outlook.office365.com:443 smtp.office365.com:587 login.microsoftonline.com:443 autodiscover-s.outlook.com:443; do",
+        "  h=$(echo \"$t\" | cut -d: -f1); p=$(echo \"$t\" | cut -d: -f2)",
+        "  if nc -z -w 4 \"$h\" \"$p\" >/dev/null 2>&1; then echo \"$h:$p reachable\"; else echo \"$h:$p UNREACHABLE\"; fi",
+        "done",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "mail-dns",
+      "title": "DNS resolver configuration",
+      "category": "Email",
+      "shell": "sh",
+      "command": [
+        "scutil --dns 2>/dev/null | grep -E 'nameserver|search domain' | sort -u | head -10",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

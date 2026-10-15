@@ -1,125 +1,84 @@
-# Architecture and Phase 1 review
+# Architecture (Phase 2)
 
-This document records the Phase 1 foundation, what was verified, and where the implementation
-departs from the original plan because the plan assumed something that is not how the
-underlying technology works. Each departure states the fact and the resulting design.
-
-## 1. Obsidian vault integration
-
-Vault: `C:\Users\lpell\OneDrive\Documents\Obsidian Vault\ARH IT` (configurable).
-
-| Note              | Role in the schema        | What the app writes                                        |
-| ----------------- | ------------------------- | ---------------------------------------------------------- |
-| `ARH IT Hub.md`   | index / current state     | foldable callout per run under `## Device Scans` (H2)      |
-| `ARH Work Log.md` | append-only record, dated | one `- HH:MM · Device scan · …` line under `## YYYY-MM-DD` |
-
-Rules implemented in `src/main/services/vault/obsidian.ts`:
-
-- No file creation. Missing vault folder or missing note → `VaultError`, surfaced in the UI.
-- `## Device Scans` is created inside the hub note if absent; a section ends at the next heading
-  of level ≤ 2, fenced code blocks are skipped when scanning for headings.
-- The work-log date heading is matched by prefix (`## 2026-10-14 (Tue)` counts), consecutive
-  list items stay in one list, line endings (CRLF/LF) are preserved.
-- Entries are plain Markdown with Obsidian callouts (`> [!info]-`) and wikilinks; no plugins
-  required.
-
-## 2. Device detection and remoting: what changed and why
-
-### USB cannot discover computers
-
-USB is an asymmetric host/device bus. A PC connected to another PC with an ordinary USB cable
-does not enumerate as a device (that requires a bridge cable with its own chip). What
-`Get-PnpDevice` sees are peripherals: storage, phones in MTP mode, HID, USB network adapters.
-
-Design consequence: the USB pane is kept for hardware triage and identification (`usb.ts` groups
-PnP interfaces into one entry per physical device, with VID/PID/serial and status), but remote
-diagnostics always target a **network host**. Hosts come from the IPv4 neighbour table
-(`Get-NetNeighbor`, i.e. machines this PC has already exchanged packets with), reverse DNS, a
-port probe, and manual entry.
-
-The "connect via cord" workflow still works, through a different cord: an Ethernet cable between
-the two PCs, or a Thunderbolt/USB4 cable on machines that support host-to-host networking, forms
-a two-node network where both ends self-assign link-local `169.254.x.x` addresses. Those
-neighbours are deliberately kept in discovery and labelled as link-local.
-
-### There is no consent prompt on the target
-
-WinRM and SSH authenticate with credentials and run non-interactively. The target shows nothing.
-Instead of a fake "Allow remote commands? (Yes/No)" the UI has an authorisation checkbox that is
-required to start a session and recorded with it. If the technician is physically at the device,
-the local run path (`This PC` device) covers the on-site case without remoting.
-
-### Protocol per target OS
-
-| Target  | Protocol | Transport in this app                                                |
-| ------- | -------- | -------------------------------------------------------------------- |
-| Windows | WinRM    | local `Invoke-Command` driven by the host's PowerShell (`winrm.ts`)  |
-| Windows | SSH      | ssh2 → `powershell.exe -EncodedCommand …` (default shell can be cmd) |
-| macOS   | SSH      | ssh2 → script piped to `/bin/sh -s` (zsh never parses it)            |
-| Linux   | SSH      | same as macOS                                                        |
-
-OS detection is a heuristic (`probe.ts`): SSH banner text (`OpenSSH_for_Windows`, distro
-suffixes), then WinRM ports, then RDP/SMB. A bare `OpenSSH_9.x` banner cannot distinguish macOS
-from Linux, so the UI lets the technician choose; unknown + SSH runs the Linux set, which is the
-most portable.
-
-### Execution and streaming
-
-- Commands run one at a time per session with a per-command timeout (default 90 s) and an
-  abort signal; stdout/stderr chunks are forwarded over IPC as they arrive.
-- PowerShell scripts carry a preamble (`$ProgressPreference`, UTF-8 console output) and run via
-  `-EncodedCommand` so quoting never breaks.
-- WinRM: password and target script travel in the child process environment, the script runs in
-  a `[scriptblock]`, remote non-terminating errors are reported on stderr, transport errors give
-  exit 1.
-- SSH: host keys pinned per `host:port` (SHA-256) in settings; trust-on-first-use by default,
-  strict mode optional; a changed key aborts.
-
-## 3. Command catalog corrections
-
-| Plan item                  | Fact                                                                                                          | Implementation                                                                                                                                                                                                         |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Get-ComputerInfo`         | 10–30 s on many machines, output is huge                                                                      | CIM classes (`Win32_OperatingSystem`, `Win32_ComputerSystem`, …) emitted as JSON                                                                                                                                       |
-| "system temps (WMI)"       | `MSAcpi_ThermalZoneTemperature` is unsupported on most consumer PCs                                           | optional command, reports `supported: false` instead of failing                                                                                                                                                        |
-| `Get-Mailbox`              | Exchange Online cmdlet; needs the EXO module and admin consent on the technician's machine, not the target    | replaced by Outlook/M365 install + profile + OST checks on the target, TCP reachability of M365 endpoints, MX/autodiscover/SPF DNS for the UPN domain                                                                  |
-| "recent suspicious emails" | mailbox content is not readable over WinRM without Outlook COM in an interactive session or Graph permissions | client-side Outlook rules via COM when interactive (forward/redirect rules are the classic compromise indicator), plus proxy/DNS/hosts tampering, SmartScreen/PUA/macro settings, risky downloads with Mark-of-the-Web |
-| per-user state over WinRM  | HKCU and %LOCALAPPDATA% belong to the remoting account, not the console user                                  | every per-user command reports `evaluatedAs`; the UI explains it                                                                                                                                                       |
-| performance counters       | counter names are localised                                                                                   | wrapped in try/catch, nulls are tolerated in the summariser                                                                                                                                                            |
-| Express backend            | redundant inside Electron (IPC is already the RPC layer)                                                      | dropped; `ipcMain.handle` + `contextBridge`                                                                                                                                                                            |
-
-Every command's raw output is kept with the session; the "findings" are threshold rules in
-`summary.ts` (documented constants) so the technician can check the reasoning.
-
-## 4. Stack
-
-| Component        | Choice                                         | Note                                                            |
-| ---------------- | ---------------------------------------------- | --------------------------------------------------------------- |
-| Shell            | Electron ≥ 38, electron-vite 3                 | sandboxed renderer, CJS main/preload output                     |
-| UI               | Vue 3 `<script setup>`, Tailwind v4            | dark theme tokens in `src/renderer/src/styles.css`              |
-| Remoting         | host PowerShell (WinRM), ssh2 (SSH)            | no native modules required                                      |
-| Device detection | PowerShell/CIM, `Win32_DeviceChangeEvent`      | event-driven refresh with a slow polling fallback               |
-| Vault            | Node `fs`                                      | direct append to existing notes                                 |
-| Tests            | `node --test` with Node's TypeScript stripping | no test framework dependency; covers every Electron-free module |
+The dashboard is a local Windows application for one technician. A computer plugged into the
+technician's PC with a cable is detected, identified, and scanned through a small agent that
+runs on that computer. Results stream to the dashboard and are recorded in existing Obsidian
+notes. Phase 1's WinRM/SSH design was replaced; the reasons are below.
 
 ```
-Electron app
-├── Main process (src/main)
-│   ├── AppContext (ipc.ts): settings, DeviceRegistry, sessions
-│   ├── devices: UsbWatcher · NetworkDiscovery · probeHost
-│   ├── remoting: runPowerShell · WinRM executor · SshSession · runSession
-│   └── vault: writeSessionToVault
-├── Preload (src/preload): window.arh = typed IPC bridge
-└── Renderer (src/renderer): store.ts + DeviceList · DevicePanel · OutputConsole · SummaryCard
+ Technician PC (Windows)                                   Target computer (Win/macOS/Linux)
+ ┌──────────────────────────────────────────┐   cable     ┌───────────────────────────────┐
+ │ Electron main (Node)                     │  network    │ arh-agent (Go, one binary)     │
+ │  detection: WMI events → Get-NetAdapter  │◄──────────► │  listens for beacons (UDP)     │
+ │  beacon: UDP 47911 broadcast + ff02::…   │  link       │  dials out TLS 1.3 → tcp/47912 │
+ │  link server: TLS 1.3, mutual, pinned    │             │  key in DPAPI/Keychain/0600    │
+ │  enrollment tokens, device registry      │             │  runs only embedded profiles   │
+ │  scan runner → health → scan log         │             │  read-only checks, 1 MiB cap   │
+ │  vault writer (markers, dry-run, backup) │             └───────────────────────────────┘
+ │  secrets: Windows Credential Manager     │
+ ├──────────────────────────────────────────┤
+ │ Preload: typed window.arh bridge         │
+ │ Renderer: Vue 3 + Tailwind (dark)        │
+ └──────────────────────────────────────────┘
 ```
 
-## 5. Known limits and next steps
+## Decisions and reasons
 
-- The repository build was verified with `node --test` and `tsc` on the Electron-free modules.
-  The Electron/Vue bundle itself must be built on a machine with npm registry access; the
-  CI workflow (`.github/workflows/ci.yml`, windows-latest) runs install, typecheck, tests and build.
-- WinRM to a workgroup host by IP needs TrustedHosts on the technician PC (README).
-- Outlook rules over WinRM will report "unavailable" (COM needs an interactive session); for
-  Microsoft 365 use `Get-InboxRule` from an admin host — a candidate for a host-side command set.
-- No scheduling or multi-device batch runs yet; sessions are one device at a time.
-- The ChristFields visual language was not available in this repository; colours and fonts are
-  isolated as CSS theme tokens so they can be swapped without touching components.
+| Decision                                                            | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Agent in Go, standard library only**                              | One static binary per OS/arch (≈5 MB), no runtime on the target, cross-compiled from one machine. No third-party modules means nothing to audit or download. Considered: Node (needs a runtime or a 40+ MB bundle), PowerShell/bash only (no macOS/Linux parity for TLS pinning and a keystore), Rust (equal result, slower to iterate).                                                                                                                                   |
+| **The agent dials out; the host never connects in**                 | Matches the brief: no inbound SSH/WinRM on targets. The agent needs one inbound UDP rule for the beacon (added at install, which already needs admin). The host needs one inbound TCP rule for 47912 (one UAC prompt from the Link tab).                                                                                                                                                                                                                                   |
+| **"USB" means a network link over a cable**                         | USB is a host/device bus; two PCs on a plain USB-A cable do not talk. What works: an Ethernet cable through a USB-Ethernet adapter, a USB-C/Thunderbolt/USB4 host-to-host networking cable, or a USB bridge cable that exposes a network adapter. Each appears on Windows as a network adapter whose PnP id starts with `USB\` (or a Thunderbolt/USB4 networking adapter), and both ends self-assign link-local addresses (169.254/16 and fe80::/10).                      |
+| **Beacon on IPv4 broadcast and an IPv6 link-local multicast group** | Windows and macOS self-assign 169.254.x.x on a link with no DHCP; Linux usually does not, but always has an fe80:: address. The agent joins `ff02::4152:4831` on every interface (rescanned every 10 s, so a USB adapter that appears later is covered).                                                                                                                                                                                                                   |
+| **Mutual TLS with pinned fingerprints, not a CA**                   | Two parties only. The device id _is_ the SHA-256 of the agent's certificate; the agent pins the dashboard's certificate after enrollment. No certificate authority to run or expire.                                                                                                                                                                                                                                                                                       |
+| **Enrollment: one-time token + HMAC proof**                         | `ARH-<fp8>-<80-bit secret>`, valid 10 minutes, single use. The dashboard proves it knows the secret (HMAC over the agent's nonce and the dashboard fingerprint) before the agent pins it, so another machine on the link cannot impersonate the dashboard. Re-installing the agent on the same machine (same serial) moves the record to the new key.                                                                                                                      |
+| **Keys**                                                            | Dashboard: TLS private key in Windows Credential Manager (generic credential, local machine persistence, < 2560 bytes); fallback Electron safeStorage (DPAPI) if Credential Manager fails. Agent: Windows DPAPI machine scope in `C:\ProgramData\ARH Agent` (ACL: SYSTEM + Administrators), macOS System keychain, Linux root-only 0600 file (a system daemon has no Secret Service session; same posture as SSH host keys). Never in plaintext files, never in the vault. |
+| **Profiles are data, compiled into the agent**                      | The host sends only `{profile, version}`. The agent refuses unknown names, version mismatches and any check whose `access` is not `read`. Write/execute actions need a new agent build _and_ a per-action approval message that version 1 does not have.                                                                                                                                                                                                                   |
+| **Windows agent runs as a SYSTEM scheduled task**                   | No service-control dependency. Registered through the ScheduledTasks module because `schtasks /Create` cannot remove the default 72-hour execution limit. Restart on failure, runs on battery.                                                                                                                                                                                                                                                                             |
+| **Per-user data under SYSTEM**                                      | HKCU would be SYSTEM's hive. Per-user checks enumerate `Win32_UserProfile` and read each loaded `HKEY_USERS\<SID>` hive and each profile folder instead, and label results by user.                                                                                                                                                                                                                                                                                        |
+| **Express dropped (since Phase 1)**                                 | Electron IPC is already the RPC layer.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Vault writes behind markers + dry-run**                           | See `docs/VAULT-SCHEMA.md`.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+## Detection (WMI)
+
+`scripts/Verify-Wmi.ps1` checks every class and event subscription below on the machine it runs on;
+CI runs it on `windows-latest`. Run it once on the technician PC (`npm run verify-wmi`).
+
+| Purpose                       | Subscription                                                                                             | Why this one                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Any device arrival/removal    | `Win32_DeviceChangeEvent` (root/cimv2, extrinsic)                                                        | Pushed by the OS, no polling cost. Triggers a debounced `Get-PnpDevice` refresh.  |
+| Network adapter added/removed | `__InstanceCreationEvent` / `__InstanceDeletionEvent WITHIN 2` on `MSFT_NetAdapter` (root/StandardCimv2) | Adapter-level, carries `PnPDeviceID` and `InterfaceDescription`.                  |
+| Adapter link up/down          | `__InstanceModificationEvent WITHIN 2 … State <> PreviousInstance.State` on `MSFT_NetAdapter`            | The cable is plugged after the adapter exists.                                    |
+| (verified, not used)          | `__InstanceCreationEvent WITHIN 5` on `Win32_PnPEntity`                                                  | Polls every PnP entity; heavier than the device-change event for the same signal. |
+
+Polling fallbacks (15 s adapters, 10 s USB) cover a WMI listener that dies; the listener is restarted.
+
+## Scan flow
+
+1. Adapter comes up → beacon starts on its addresses → enrolled agent connects → device turns green.
+2. Double-click → purpose dialog, pre-selected from history (last purpose; Security Check if the
+   last scan had critical findings; repeat a failed scan).
+3. Confirm → profile `<os>-<purpose>` v1 runs immediately; each check streams `check-start`,
+   `check-output`, `check-end`. "Other" runs the baseline System Diagnostics profile in v1.
+4. Health evaluation applies the thresholds (`src/main/services/scans/health.ts`): disk < 15 %
+   free, AV or real-time protection off, no update in > 30 days, ≥ 20 failed sign-ins in 24 h,
+   SMART failure, firewall profile off, and more. Findings marked `loop` become Open Loop tasks.
+5. Scan log (JSONL in app data): timestamp, run id, device id, serial, hostname, OS, purpose,
+   profile and version, technician, duration, status, exit status, check and finding counts.
+6. Vault: preview diff (default) → apply when live writes are on.
+
+## Data collected and not collected
+
+Configuration and health only: OS, hardware, storage, drivers, services, security settings,
+update state, event counts, installed software names, extension names and permissions, names of
+executable files in Downloads (counts only for archives and macro documents). No document
+contents, no email content, no browser history, no patient data. Event log checks return counts
+and first lines of System/Security events, not message bodies of application logs.
+
+## Known limits
+
+- Outlook client rules need an interactive Outlook session; they are not read in v1.
+- `MSAcpi_ThermalZoneTemperature` is missing on most consumer boards (optional check).
+- macOS per-sensor temperatures need `powermetrics` (root, slow); not collected.
+- The agent is unsigned; Windows SmartScreen and macOS Gatekeeper will warn on first run
+  (macOS: `xattr -d com.apple.quarantine arh-agent-darwin-arm64`).

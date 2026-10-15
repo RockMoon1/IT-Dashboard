@@ -1,0 +1,71 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-phishing-assessment",
+  "version": 1,
+  "os": "macos",
+  "purpose": "phishing-assessment",
+  "title": "Phishing Assessment",
+  "description": "Browser extensions, protection settings, proxy/DNS/hosts tampering and risky downloads",
+  "checks": [
+    {
+      "id": "phish-extensions",
+      "title": "Browser extensions (Chrome, Edge, Brave, Safari)",
+      "category": "Browser",
+      "shell": "sh",
+      "command": [
+        "for root in \"$HOME/Library/Application Support/Google/Chrome\" \"$HOME/Library/Application Support/Microsoft Edge\" \"$HOME/Library/Application Support/BraveSoftware/Brave-Browser\"; do",
+        "  [ -d \"$root\" ] || continue",
+        "  echo \"--- $root\"",
+        "  find \"$root\" -maxdepth 4 -path '*/Extensions/*' -name manifest.json 2>/dev/null | while read -r m; do",
+        "    id=$(basename \"$(dirname \"$(dirname \"$m\")\")\")",
+        "    name=$(grep -m1 '\"name\"' \"$m\" | sed 's/.*\"name\"[^\"]*\"\\([^\"]*\\)\".*/\\1/')",
+        "    echo \"$id | $name\"",
+        "  done",
+        "done",
+        "echo \"--- safari\"",
+        "pluginkit -mAvvv -p com.apple.Safari.extension 2>/dev/null | grep -E 'Display Name|Path' | head -40",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "phish-settings",
+      "title": "Gatekeeper, proxy, DNS and hosts overrides",
+      "category": "Protection",
+      "shell": "sh",
+      "command": [
+        "echo \"gatekeeper: $(spctl --status 2>&1)\"",
+        "echo \"--- proxy\"",
+        "scutil --proxy 2>/dev/null | grep -E 'Enable|Proxy|PAC' | grep -v ': 0$'",
+        "echo \"--- dns\"",
+        "scutil --dns 2>/dev/null | grep nameserver | sort -u",
+        "echo \"--- hosts overrides\"",
+        "grep -v '^#' /etc/hosts | grep -v '^$' | grep -v 'localhost'",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "phish-downloads",
+      "title": "Recent quarantined downloads and risky files",
+      "category": "Downloads",
+      "shell": "sh",
+      "command": [
+        "sqlite3 \"$HOME/Library/Preferences/com.apple.LaunchServices.QuarantineEventsV2\" \"select datetime(LSQuarantineTimeStamp + 978307200, 'unixepoch'), LSQuarantineAgentName, LSQuarantineOriginURLString from LSQuarantineEvent order by LSQuarantineTimeStamp desc limit 15\" 2>/dev/null",
+        "echo \"--- Downloads (14 days)\"",
+        "find \"$HOME/Downloads\" -maxdepth 1 -type f -mtime -14 \\( -name '*.dmg' -o -name '*.pkg' -o -name '*.zip' -o -name '*.sh' -o -name '*.command' -o -name '*.app' \\) -exec ls -la {} \\; 2>/dev/null | head -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-slow-performance",
+  "version": 1,
+  "os": "linux",
+  "purpose": "slow-performance",
+  "title": "Slow Performance",
+  "description": "CPU, memory and disk pressure, top processes, startup items and services",
+  "checks": [
+    {
+      "id": "perf-resources",
+      "title": "CPU, memory and disk pressure",
+      "category": "Performance",
+      "shell": "sh",
+      "command": [
+        "cat /proc/loadavg",
+        "echo \"--- vmstat (3 samples)\"",
+        "vmstat 1 3 2>/dev/null",
+        "echo \"--- memory\"",
+        "free -h",
+        "echo \"--- pressure stall info\"",
+        "for f in cpu memory io; do [ -f /proc/pressure/$f ] && echo \"$f: $(head -1 /proc/pressure/$f)\"; done",
+        "echo \"--- disk\"",
+        "df -h -x tmpfs -x devtmpfs 2>/dev/null | head -15",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-top-processes",
+      "title": "Top processes by CPU and memory",
+      "category": "Processes",
+      "shell": "sh",
+      "command": [
+        "ps -eo pid,user,pcpu,pmem,rss,etime,comm --sort=-pcpu 2>/dev/null | head -12",
+        "echo \"--- by memory\"",
+        "ps -eo pid,user,pcpu,pmem,rss,etime,comm --sort=-rss 2>/dev/null | head -12",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "perf-services",
+      "title": "Running services and boot blame",
+      "category": "Services",
+      "shell": "sh",
+      "command": [
+        "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | head -40",
+        "echo \"--- boot blame\"",
+        "systemd-analyze blame --no-pager 2>/dev/null | head -12",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sec-services-failed",
+      "title": "Failed systemd units",
+      "category": "Services",
+      "shell": "sh",
+      "command": [
+        "systemctl --failed --no-pager --no-legend 2>/dev/null || echo \"systemd not available\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    }
+  ]
+}

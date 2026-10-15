@@ -9,3 +9,6 @@ Thumbs.db
 *.local
 .vscode/*
 !.vscode/extensions.json
+
+# built agent binaries (CI builds them; see scripts/build-agent.mjs)
+agent/dist/

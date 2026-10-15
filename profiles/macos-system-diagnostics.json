@@ -1,0 +1,114 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-system-diagnostics",
+  "version": 1,
+  "os": "macos",
+  "purpose": "system-diagnostics",
+  "title": "System Diagnostics",
+  "description": "OS, hardware, storage, drivers, firmware and network configuration",
+  "checks": [
+    {
+      "id": "sys-profiler",
+      "title": "system_profiler hardware and software (JSON)",
+      "category": "General",
+      "shell": "sh",
+      "command": [
+        "system_profiler SPHardwareDataType SPSoftwareDataType SPStorageDataType -json 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "json",
+      "timeoutSeconds": 120,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sys-overview",
+      "title": "System overview",
+      "category": "System",
+      "shell": "sh",
+      "command": [
+        "sw_vers",
+        "echo \"kernel: $(uname -mr)\"",
+        "echo \"hostname: $(hostname)\"",
+        "echo \"user: $(id -un)\"",
+        "uptime",
+        "echo \"cpu: $(sysctl -n machdep.cpu.brand_string 2>/dev/null)\"",
+        "echo \"cores: $(sysctl -n hw.ncpu)\"",
+        "echo \"memory_gb: $(( $(sysctl -n hw.memsize) / 1073741824 ))\"",
+        "system_profiler SPHardwareDataType 2>/dev/null | grep -E 'Model Name|Model Identifier|Chip|Serial Number|System Firmware|Memory'",
+        "echo \"--- disks\"",
+        "df -h / /System/Volumes/Data 2>/dev/null",
+        "echo \"--- memory pressure\"",
+        "memory_pressure 2>/dev/null | tail -1",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sys-thermal-power",
+      "title": "Thermal and power state",
+      "category": "Thermal",
+      "shell": "sh",
+      "command": [
+        "pmset -g therm 2>/dev/null",
+        "pmset -g batt 2>/dev/null",
+        "echo \"(per-sensor temperatures need root: sudo powermetrics --samplers smc -n 1)\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sys-kexts",
+      "title": "Third-party kernel and system extensions",
+      "category": "Drivers",
+      "shell": "sh",
+      "command": [
+        "kextstat 2>/dev/null | grep -v com.apple | head -30",
+        "systemextensionsctl list 2>/dev/null | head -40",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "hw-diskutil-root",
+      "title": "Boot volume details",
+      "category": "General",
+      "shell": "sh",
+      "command": [
+        "diskutil info / 2>/dev/null | grep -E 'Volume Name|File System|Disk Size|Free Space|Container Free|Encrypted|FileVault|SMART|Device Node'",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "net-adapters",
+      "title": "Network interfaces and DNS",
+      "category": "Network",
+      "shell": "sh",
+      "command": [
+        "networksetup -listallhardwareports 2>/dev/null",
+        "echo \"--- addresses\"",
+        "ifconfig 2>/dev/null | grep -E '^[a-z0-9]+:|inet |status:' | head -40",
+        "echo \"--- dns\"",
+        "scutil --dns 2>/dev/null | grep -E 'nameserver|search domain' | sort -u | head -10",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    }
+  ]
+}

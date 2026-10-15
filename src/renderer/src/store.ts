@@ -1,104 +1,112 @@
 import { computed, reactive } from 'vue'
-import type { AppInfo } from '@shared/api'
+import type { LogLine } from '@shared/api'
 import type {
-  Credentials,
-  Device,
-  OutputEvent,
-  ProbeResult,
-  Protocol,
+  AppInfo,
+  DeviceView,
+  EnrollmentView,
+  LinkStatus,
+  OpenLoopsView,
+  ProfileSummary,
   Purpose,
-  SessionDoneEvent,
-  SessionRequest,
-  SessionSummary,
+  ScanEvent,
+  ScanHistoryEntry,
+  ScanRun,
+  SearchHit,
   Settings,
-  TargetOS,
-  VaultCheckResult,
-  VaultWriteResult
+  VaultApplyResult,
+  VaultPreview,
+  VaultStatus,
+  WorkLogView
 } from '@shared/types'
 
-export interface LogLine {
+export type Tab = 'scan' | 'results' | 'health' | 'loops' | 'worklog' | 'search' | 'link'
+
+export interface ConsoleLine {
   id: number
-  stream: OutputEvent['stream']
-  text: string
   at: string
-  commandId?: string
+  checkId?: string
+  stream: 'stdout' | 'stderr' | 'status'
+  text: string
 }
 
 interface DashboardState {
   ready: boolean
   bridgeMissing: boolean
-  devices: Device[]
-  selectedId: string | null
-  purpose: Purpose
-  purposeModalOpen: boolean
-  protocol: Protocol
-  host: string
-  targetOs: TargetOS
-  credentials: Credentials
-  authorizationConfirmed: boolean
-  customCommands: string
-  notes: string
-  probe: ProbeResult | null
-  probing: boolean
-  running: boolean
-  sessionId: string | null
-  lines: LogLine[]
-  summary: SessionSummary | null
-  vault: VaultWriteResult | null
-  vaultError: string | null
-  vaultCheck: VaultCheckResult | null
+  error: string | null
+  tab: Tab
+  appInfo: AppInfo | null
   settings: Settings | null
   settingsOpen: boolean
-  appInfo: AppInfo | null
-  error: string | null
-  manualHost: string
-  manualLabel: string
-  addingManual: boolean
+  devices: DeviceView[]
+  selectedId: string | null
+  purposeModalOpen: boolean
+  purpose: Purpose
+  link: LinkStatus | null
+  enrollOpen: boolean
+  enrollment: EnrollmentView | null
+  enrollments: EnrollmentView[]
+  enrollLabel: string
+  runs: ScanRun[]
+  currentRunId: string | null
+  console: ConsoleLine[]
+  history: ScanHistoryEntry[]
+  profiles: ProfileSummary[]
+  vault: VaultStatus | null
+  preview: VaultPreview | null
+  previewOpen: boolean
+  applyResults: VaultApplyResult[] | null
+  applying: boolean
+  loops: OpenLoopsView | null
+  workLog: WorkLogView | null
+  searchQuery: string
+  searchHits: SearchHit[]
+  searching: boolean
+  logLines: LogLine[]
+  busy: string | null
 }
 
-const MAX_LINES = 4000
+const MAX_CONSOLE = 5000
 let lineId = 0
 
 const state = reactive<DashboardState>({
   ready: false,
   bridgeMissing: false,
-  devices: [],
-  selectedId: null,
-  purpose: 'system-diagnostics',
-  purposeModalOpen: false,
-  protocol: 'winrm',
-  host: '',
-  targetOs: 'unknown',
-  credentials: {
-    username: '',
-    password: '',
-    privateKeyPath: '',
-    port: undefined,
-    useSsl: false,
-    skipCertCheck: false
-  },
-  authorizationConfirmed: false,
-  customCommands: '',
-  notes: '',
-  probe: null,
-  probing: false,
-  running: false,
-  sessionId: null,
-  lines: [],
-  summary: null,
-  vault: null,
-  vaultError: null,
-  vaultCheck: null,
+  error: null,
+  tab: 'scan',
+  appInfo: null,
   settings: null,
   settingsOpen: false,
-  appInfo: null,
-  error: null,
-  manualHost: '',
-  manualLabel: '',
-  addingManual: false
+  devices: [],
+  selectedId: null,
+  purposeModalOpen: false,
+  purpose: 'system-diagnostics',
+  link: null,
+  enrollOpen: false,
+  enrollment: null,
+  enrollments: [],
+  enrollLabel: '',
+  runs: [],
+  currentRunId: null,
+  console: [],
+  history: [],
+  profiles: [],
+  vault: null,
+  preview: null,
+  previewOpen: false,
+  applyResults: null,
+  applying: false,
+  loops: null,
+  workLog: null,
+  searchQuery: '',
+  searchHits: [],
+  searching: false,
+  logLines: [],
+  busy: null
 })
 
 const selectedDevice = computed(() => state.devices.find((d) => d.id === state.selectedId) ?? null)
+const currentRun = computed(() => state.runs.find((r) => r.runId === state.currentRunId) ?? null)
+const runningRun = computed(() => state.runs.find((r) => r.status === 'running') ?? null)
 
 function api(): Window['arh'] {
   return window.arh
@@ -108,9 +116,72 @@ function fail(err: unknown): void {
   state.error = err instanceof Error ? err.message : String(err)
 }
 
-function pushLine(stream: LogLine['stream'], text: string, at: string, commandId?: string): void {
-  state.lines.push({ id: ++lineId, stream, text, at, commandId })
-  if (state.lines.length > MAX_LINES) state.lines.splice(0, state.lines.length - MAX_LINES)
+function pushConsole(stream: ConsoleLine['stream'], text: string, checkId?: string): void {
+  state.console.push({ id: ++lineId, at: new Date().toISOString(), stream, text, checkId })
+  if (state.console.length > MAX_CONSOLE)
+    state.console.splice(0, state.console.length - MAX_CONSOLE)
+}
+
+function upsertRun(run: ScanRun): void {
+  const idx = state.runs.findIndex((r) => r.runId === run.runId)
+  if (idx >= 0) state.runs[idx] = run
+  else state.runs.unshift(run)
+}
+
+function applyScanEvent(e: ScanEvent): void {
+  switch (e.type) {
+    case 'run-start':
+      upsertRun(e.run)
+      state.currentRunId = e.run.runId
+      state.console = []
+      pushConsole(
+        'status',
+        `▶ ${e.run.title} (${e.run.profile} v${e.run.version}) on ${e.run.hostname} · ${e.run.checks.length} checks`
+      )
+      state.tab = 'scan'
+      return
+    case 'check-start': {
+      const run = state.runs.find((r) => r.runId === e.runId)
+      const check = run?.checks.find((c) => c.id === e.checkId)
+      if (check) {
+        check.status = 'running'
+        pushConsole('status', `── ${check.title}`, e.checkId)
+      }
+      return
+    }
+    case 'check-output': {
+      const run = state.runs.find((r) => r.runId === e.runId)
+      const check = run?.checks.find((c) => c.id === e.checkId)
+      if (check) {
+        if (e.stream === 'stdout') check.stdout += e.data
+        else check.stderr += e.data
+      }
+      pushConsole(e.stream, e.data, e.checkId)
+      return
+    }
+    case 'check-end': {
+      const run = state.runs.find((r) => r.runId === e.runId)
+      if (run) {
+        const idx = run.checks.findIndex((c) => c.id === e.check.id)
+        if (idx >= 0) run.checks[idx] = e.check
+      }
+      const mark = e.check.status === 'ok' ? '✓' : e.check.status === 'timeout' ? '⏱' : '✗'
+      pushConsole(
+        'status',
+        `${mark} ${e.check.title} · exit ${e.check.exitCode ?? 'n/a'} · ${(e.check.durationMs / 1000).toFixed(1)} s${e.check.truncated ? ' · output truncated' : ''}`,
+        e.check.id
+      )
+      return
+    }
+    case 'run-end':
+      upsertRun(e.run)
+      pushConsole(
+        'status',
+        `■ ${e.run.status.toUpperCase()} · ${e.run.health?.findings.length ?? 0} finding(s) · ${(e.run.durationMs / 1000).toFixed(0)} s${e.run.error ? ` · ${e.run.error}` : ''}`
+      )
+      void refreshHistory()
+      return
+  }
 }
 
 let unsubscribers: Array<() => void> = []
@@ -122,34 +193,37 @@ async function init(): Promise<void> {
     return
   }
   try {
-    const [settings, devices, info] = await Promise.all([
+    const [settings, devices, info, link, runs, profiles] = await Promise.all([
       api().settings.get(),
       api().devices.list(),
-      api().app.info()
+      api().app.info(),
+      api().link.status(),
+      api().scan.list(),
+      api().profiles.list()
     ])
     state.settings = settings
     state.devices = devices
     state.appInfo = info
-    if (settings.defaultUsername && !state.credentials.username)
-      state.credentials.username = settings.defaultUsername
+    state.link = link
+    state.runs = runs
+    state.profiles = profiles
+    const running = runs.find((r) => r.status === 'running')
+    state.currentRunId = running?.runId ?? runs[0]?.runId ?? null
     unsubscribers.forEach((u) => u())
     unsubscribers = [
       api().devices.onChanged((list) => {
         state.devices = list
       }),
-      api().session.onOutput((e) => {
-        if (e.sessionId !== state.sessionId) return
-        pushLine(e.stream, e.text, e.at, e.commandId)
+      api().link.onChanged((status) => {
+        state.link = status
       }),
-      api().session.onDone((e: SessionDoneEvent) => {
-        if (e.summary.sessionId !== state.sessionId) return
-        state.summary = e.summary
-        state.vault = e.vault ?? null
-        state.vaultError = e.vaultError ?? null
-        state.running = false
+      api().scan.onEvent(applyScanEvent),
+      api().app.onLog((line) => {
+        state.logLines.push(line)
+        if (state.logLines.length > 300) state.logLines.shift()
       })
     ]
-    await checkVault()
+    await Promise.all([refreshVault(), refreshHistory(), refreshLoops(), refreshWorkLog()])
   } catch (err) {
     fail(err)
   } finally {
@@ -157,168 +231,195 @@ async function init(): Promise<void> {
   }
 }
 
-async function checkVault(): Promise<void> {
+async function refreshVault(): Promise<void> {
   try {
-    state.vaultCheck = await api().vault.check()
+    state.vault = await api().vault.status()
   } catch (err) {
     fail(err)
   }
 }
 
-function applyDeviceDefaults(device: Device): void {
-  state.host = device.host ?? ''
-  state.targetOs = device.os
-  state.probe = null
-  if (device.kind === 'local') state.protocol = 'local'
-  else if (device.protocols.includes('winrm')) state.protocol = 'winrm'
-  else if (device.protocols.includes('ssh')) state.protocol = 'ssh'
-  else
-    state.protocol = device.os === 'windows' ? 'winrm' : device.os === 'unknown' ? 'winrm' : 'ssh'
-  if (state.protocol === 'ssh' && !state.credentials.port) state.credentials.port = 22
-  if (state.protocol === 'winrm' && state.credentials.port === 22)
-    state.credentials.port = undefined
+async function refreshHistory(): Promise<void> {
+  try {
+    state.history = await api().scan.history()
+  } catch {
+    /* non-fatal */
+  }
+}
+
+async function refreshLoops(): Promise<void> {
+  try {
+    state.loops = await api().vault.openLoops()
+  } catch (err) {
+    fail(err)
+  }
+}
+
+async function refreshWorkLog(): Promise<void> {
+  try {
+    state.workLog = await api().vault.workLog(40)
+  } catch (err) {
+    fail(err)
+  }
 }
 
 function selectDevice(id: string): void {
-  if (state.running) return
-  const device = state.devices.find((d) => d.id === id)
-  if (!device) return
-  if (state.selectedId !== id) {
-    state.selectedId = id
-    state.summary = null
-    state.vault = null
-    state.vaultError = null
-    state.lines = []
-    state.authorizationConfirmed = false
-    applyDeviceDefaults(device)
-  }
+  state.selectedId = id
+  const d = state.devices.find((x) => x.id === id)
+  if (d?.lastScan && !runningRun.value)
+    state.currentRunId = state.runs.find((r) => r.deviceId === id)?.runId ?? state.currentRunId
 }
 
-/** Double-click flow from the Phase 1 design: pick the device, then ask for the main purpose. */
+/** Double-click flow: pick the device, then choose the purpose; nothing runs until confirmed. */
 function openPurposePrompt(id: string): void {
   selectDevice(id)
-  if (state.selectedId === id) state.purposeModalOpen = true
+  const d = selectedDevice.value
+  if (!d || d.kind !== 'enrolled') return
+  state.purpose = d.suggestedPurpose ?? 'system-diagnostics'
+  state.purposeModalOpen = true
 }
 
-function choosePurpose(purpose: Purpose): void {
-  state.purpose = purpose
+async function confirmPurpose(purpose: Purpose): Promise<void> {
+  const d = selectedDevice.value
   state.purposeModalOpen = false
-}
-
-function setProtocol(protocol: Protocol): void {
-  state.protocol = protocol
-  if (
-    protocol === 'ssh' &&
-    (!state.credentials.port || state.credentials.port === 5985 || state.credentials.port === 5986)
-  ) {
-    state.credentials.port = 22
-  }
-  if (protocol === 'winrm' && state.credentials.port === 22) state.credentials.port = undefined
-  if (protocol === 'winrm') state.targetOs = 'windows'
-}
-
-async function runProbe(): Promise<void> {
-  const host = state.host.trim()
-  if (!host) return
-  state.probing = true
+  if (!d) return
   state.error = null
   try {
-    const probe = await api().probe.host(host)
-    state.probe = probe
-    if (probe.os !== 'unknown') state.targetOs = probe.os
-    if (probe.suggestedProtocol) setProtocol(probe.suggestedProtocol)
+    const run = await api().scan.start(d.id, purpose)
+    upsertRun(run)
+    state.currentRunId = run.runId
+    state.tab = 'scan'
+  } catch (err) {
+    fail(err)
+  }
+}
+
+async function abortCurrent(): Promise<void> {
+  const run = runningRun.value
+  if (!run) return
+  try {
+    await api().scan.abort(run.runId)
+  } catch (err) {
+    fail(err)
+  }
+}
+
+function showRun(runId: string): void {
+  state.currentRunId = runId
+  const run = state.runs.find((r) => r.runId === runId)
+  if (run) {
+    state.console = []
+    for (const c of run.checks) {
+      pushConsole('status', `── ${c.title}`, c.id)
+      if (c.stdout) pushConsole('stdout', c.stdout, c.id)
+      if (c.stderr) pushConsole('stderr', c.stderr, c.id)
+    }
+  }
+}
+
+async function openEnroll(): Promise<void> {
+  state.enrollOpen = true
+  state.enrollment = null
+  try {
+    state.enrollments = await api().enroll.list()
+  } catch (err) {
+    fail(err)
+  }
+}
+
+async function createEnrollment(): Promise<void> {
+  state.error = null
+  try {
+    state.enrollment = await api().enroll.create(state.enrollLabel.trim() || undefined)
+    state.enrollments = await api().enroll.list()
+  } catch (err) {
+    fail(err)
+  }
+}
+
+async function cancelEnrollment(token: string): Promise<void> {
+  try {
+    await api().enroll.cancel(token)
+    state.enrollments = await api().enroll.list()
+    if (state.enrollment?.token === token) state.enrollment = null
+  } catch (err) {
+    fail(err)
+  }
+}
+
+async function refreshLink(): Promise<void> {
+  state.busy = 'Refreshing link…'
+  try {
+    state.link = await api().link.refresh()
+    state.devices = await api().devices.list()
   } catch (err) {
     fail(err)
   } finally {
-    state.probing = false
+    state.busy = null
   }
 }
 
-function buildRequest(): SessionRequest | null {
-  const device = selectedDevice.value
-  if (!device) return null
-  const c = state.credentials
-  const credentials: Credentials = {
-    username: c.username?.trim() || undefined,
-    password: c.password || undefined,
-    privateKeyPath: c.privateKeyPath?.trim() || undefined,
-    passphrase: c.passphrase || undefined,
-    port: c.port ? Number(c.port) : undefined,
-    useSsl: c.useSsl,
-    skipCertCheck: c.skipCertCheck
-  }
-  return {
-    deviceId: device.id,
-    purpose: state.purpose,
-    protocol: state.protocol,
-    host: state.protocol === 'local' ? undefined : state.host.trim() || device.host,
-    targetOs: state.protocol === 'local' ? undefined : state.targetOs,
-    credentials: state.protocol === 'local' ? undefined : credentials,
-    customCommands: state.purpose === 'other' ? state.customCommands.split(/\r?\n/) : undefined,
-    notes: state.notes.trim() || undefined,
-    authorizationConfirmed: state.authorizationConfirmed
-  }
-}
-
-async function startSession(): Promise<void> {
-  const req = buildRequest()
-  if (!req || state.running) return
-  state.error = null
-  state.summary = null
-  state.vault = null
-  state.vaultError = null
-  state.lines = []
-  state.running = true
+async function enableFirewall(): Promise<string> {
+  state.busy = 'Waiting for the elevation prompt…'
   try {
-    const { sessionId } = await api().session.start(req)
-    state.sessionId = sessionId
+    const r = await api().link.enableFirewall()
+    state.link = await api().link.status()
+    return r.message
   } catch (err) {
-    state.running = false
     fail(err)
+    return String(err)
+  } finally {
+    state.busy = null
   }
 }
 
-async function abortSession(): Promise<void> {
-  if (!state.sessionId) return
+async function openPreview(): Promise<void> {
+  state.previewOpen = true
+  state.preview = null
+  state.applyResults = null
   try {
-    await api().session.abort(state.sessionId)
+    state.preview = await api().vault.preview(state.currentRunId)
   } catch (err) {
     fail(err)
   }
 }
 
-async function appendToVault(): Promise<void> {
-  if (!state.sessionId || !state.summary) return
-  state.vaultError = null
+async function applyPreview(): Promise<void> {
+  state.applying = true
   try {
-    state.vault = await api().vault.append(state.sessionId)
-    await checkVault()
-  } catch (err) {
-    state.vaultError = err instanceof Error ? err.message : String(err)
-  }
-}
-
-async function refreshDevices(): Promise<void> {
-  try {
-    state.devices = await api().devices.refresh()
-  } catch (err) {
-    fail(err)
-  }
-}
-
-async function addManualDevice(): Promise<void> {
-  const host = state.manualHost.trim()
-  if (!host) return
-  state.addingManual = true
-  try {
-    const device = await api().devices.addManual(host, state.manualLabel.trim() || undefined)
-    state.manualHost = ''
-    state.manualLabel = ''
-    selectDevice(device.id)
+    state.applyResults = await api().vault.apply(state.currentRunId)
+    await Promise.all([refreshVault(), refreshLoops(), refreshWorkLog()])
+    state.preview = await api().vault.preview(state.currentRunId)
   } catch (err) {
     fail(err)
   } finally {
-    state.addingManual = false
+    state.applying = false
+  }
+}
+
+async function runSearch(): Promise<void> {
+  const q = state.searchQuery.trim()
+  if (!q) {
+    state.searchHits = []
+    return
+  }
+  state.searching = true
+  try {
+    state.searchHits = await api().vault.search(q)
+  } catch (err) {
+    fail(err)
+  } finally {
+    state.searching = false
+  }
+}
+
+async function saveSettings(patch: Partial<Settings>): Promise<void> {
+  try {
+    state.settings = await api().settings.set(patch)
+    await refreshVault()
+    state.link = await api().link.status()
+  } catch (err) {
+    fail(err)
   }
 }
 
@@ -331,10 +432,9 @@ async function removeDevice(id: string): Promise<void> {
   }
 }
 
-async function saveSettings(patch: Partial<Settings>): Promise<void> {
+async function renameDevice(id: string, name: string): Promise<void> {
   try {
-    state.settings = await api().settings.set(patch)
-    await checkVault()
+    await api().devices.rename(id, name)
   } catch (err) {
     fail(err)
   }
@@ -348,29 +448,36 @@ async function openVault(): Promise<void> {
   }
 }
 
-function clearError(): void {
-  state.error = null
-}
-
 export function useDashboard() {
   return {
     state,
     selectedDevice,
+    currentRun,
+    runningRun,
     init,
-    checkVault,
+    refreshVault,
+    refreshHistory,
+    refreshLoops,
+    refreshWorkLog,
     selectDevice,
     openPurposePrompt,
-    choosePurpose,
-    setProtocol,
-    runProbe,
-    startSession,
-    abortSession,
-    appendToVault,
-    refreshDevices,
-    addManualDevice,
-    removeDevice,
+    confirmPurpose,
+    abortCurrent,
+    showRun,
+    openEnroll,
+    createEnrollment,
+    cancelEnrollment,
+    refreshLink,
+    enableFirewall,
+    openPreview,
+    applyPreview,
+    runSearch,
     saveSettings,
+    removeDevice,
+    renameDevice,
     openVault,
-    clearError
+    clearError: () => {
+      state.error = null
+    }
   }
 }

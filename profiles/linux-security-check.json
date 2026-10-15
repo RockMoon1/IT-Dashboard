@@ -1,0 +1,105 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-security-check",
+  "version": 1,
+  "os": "linux",
+  "purpose": "security-check",
+  "title": "Security Check",
+  "description": "Antivirus, firewall, patching, encryption, accounts and sign-in activity",
+  "checks": [
+    {
+      "id": "sec-firewall",
+      "title": "Firewall state",
+      "category": "Firewall",
+      "shell": "sh",
+      "command": [
+        "if command -v ufw >/dev/null 2>&1; then ufw status 2>&1 | head -20",
+        "elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --state 2>&1; firewall-cmd --list-all 2>&1 | head -30",
+        "elif command -v nft >/dev/null 2>&1; then nft list ruleset 2>&1 | head -40",
+        "else iptables -S 2>&1 | head -40; fi",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sec-updates",
+      "title": "Package update state",
+      "category": "Updates",
+      "shell": "sh",
+      "command": [
+        "if command -v apt >/dev/null 2>&1; then",
+        "  echo \"last apt history: $(ls -l --time-style=long-iso /var/log/apt/history.log 2>/dev/null | awk '{print $6, $7}')\"",
+        "  apt list --upgradable 2>/dev/null | head -20",
+        "elif command -v dnf >/dev/null 2>&1; then dnf check-update 2>/dev/null | tail -20",
+        "elif command -v rpm >/dev/null 2>&1; then rpm -qa --last 2>/dev/null | head -10",
+        "elif command -v pacman >/dev/null 2>&1; then pacman -Qu 2>/dev/null | head -20",
+        "fi",
+        "[ -f /var/run/reboot-required ] && echo \"REBOOT REQUIRED: $(cat /var/run/reboot-required.pkgs 2>/dev/null | tr '\\n' ' ')\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sec-hardening",
+      "title": "Sudo users, SSH daemon settings, disk encryption, MAC status",
+      "category": "Hardening",
+      "shell": "sh",
+      "command": [
+        "echo \"sudo_group: $(getent group sudo wheel 2>/dev/null | cut -d: -f4 | tr '\\n' ' ')\"",
+        "echo \"--- sshd\"",
+        "grep -Ei '^\\s*(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|Port)\\b' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null",
+        "echo \"--- block devices\"",
+        "lsblk -o NAME,TYPE,FSTYPE,SIZE,MOUNTPOINT 2>/dev/null",
+        "echo \"--- mandatory access control\"",
+        "command -v aa-status >/dev/null 2>&1 && (aa-status --enabled 2>/dev/null && echo \"apparmor: enabled\" || echo \"apparmor: disabled\")",
+        "command -v getenforce >/dev/null 2>&1 && echo \"selinux: $(getenforce 2>/dev/null)\"",
+        "echo \"--- antivirus\"",
+        "systemctl is-active clamav-daemon clamd 2>/dev/null | head -2",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sec-services-failed",
+      "title": "Failed systemd units",
+      "category": "Services",
+      "shell": "sh",
+      "command": [
+        "systemctl --failed --no-pager --no-legend 2>/dev/null || echo \"systemd not available\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sec-logins",
+      "title": "Recent and failed logins",
+      "category": "Accounts",
+      "shell": "sh",
+      "command": [
+        "echo \"--- last logins\"",
+        "last -n 10 -w 2>/dev/null | head -12",
+        "echo \"--- failed logins (lastb)\"",
+        "lastb -n 10 -w 2>/dev/null | head -12 || echo \"lastb unavailable\"",
+        "echo \"--- failed ssh/pam (journal, 24h)\"",
+        "journalctl -S -24h --no-pager 2>/dev/null | grep -ciE 'failed password|authentication failure' || echo 0",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

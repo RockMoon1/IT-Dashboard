@@ -10,20 +10,25 @@ import {
   saveSettings
 } from '../src/main/services/settings.ts'
 
-test('mergeSettings accepts known keys with the right type, clamps intervals and ignores junk', () => {
+test('mergeSettings accepts known keys, clamps intervals, ignores junk and keeps live writes behind schema approval', () => {
   const merged = mergeSettings(DEFAULT_SETTINGS, {
     vaultPath: 'D:\\Vault',
     usbPollMs: 10,
-    networkRefreshMs: 'soon',
+    adapterPollMs: 'soon',
     unknown: 1,
-    knownHosts: { 'a:22': 'fp', bad: 3 }
+    dueStyle: 'dataview',
+    vaultLive: true
   })
   assert.equal(merged.vaultPath, 'D:\\Vault')
   assert.equal(merged.usbPollMs, 2000)
-  assert.equal(merged.networkRefreshMs, DEFAULT_SETTINGS.networkRefreshMs)
-  assert.deepEqual(merged.knownHosts, { 'a:22': 'fp' })
+  assert.equal(merged.adapterPollMs, DEFAULT_SETTINGS.adapterPollMs)
+  assert.equal(merged.dueStyle, 'dataview')
+  assert.equal(merged.vaultLive, false, 'live writes stay off until the schema is approved')
   assert.ok(!('unknown' in merged))
-  assert.notEqual(merged.knownHosts, DEFAULT_SETTINGS.knownHosts)
+  const approved = mergeSettings(DEFAULT_SETTINGS, { schemaApproved: true, vaultLive: true })
+  assert.equal(approved.vaultLive, true)
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, { dueStyle: 'weird' }).dueStyle, 'tasks-emoji')
+  assert.equal(mergeSettings(DEFAULT_SETTINGS, { linkPort: 80 }).linkPort, 47912)
 })
 
 test('settings round-trip through disk and fall back to defaults when missing', async () => {
@@ -33,12 +38,13 @@ test('settings round-trip through disk and fall back to defaults when missing', 
     assert.deepEqual(await loadSettings(file), DEFAULT_SETTINGS)
     await saveSettings(file, {
       ...DEFAULT_SETTINGS,
-      hubSection: 'Scans',
-      knownHosts: { 'h:22': 'x' }
+      technician: 'Lisandro',
+      schemaApproved: true,
+      vaultLive: true
     })
     const loaded = await loadSettings(file)
-    assert.equal(loaded.hubSection, 'Scans')
-    assert.deepEqual(loaded.knownHosts, { 'h:22': 'x' })
+    assert.equal(loaded.technician, 'Lisandro')
+    assert.equal(loaded.vaultLive, true)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

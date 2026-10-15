@@ -1,26 +1,33 @@
 @import 'tailwindcss';
 
 /*
-  Dark theme tokens. Adjust these to match the ChristFields palette: everything in the UI
-  references these names, so a colour change here restyles the whole dashboard.
+  Theme tokens taken from the ChristFields site stylesheet (style.css :root):
+  near-black greens, gold accents, off-white text, Cormorant Garamond display + Inter body.
+  Fonts load only if installed locally; the fallbacks keep the layout stable offline.
 */
 @theme {
-  --color-ink-950: #0b0d12;
-  --color-ink-900: #11141b;
-  --color-ink-800: #181c25;
-  --color-ink-700: #232835;
-  --color-ink-600: #2f3545;
-  --color-mist-100: #e8ebf2;
-  --color-mist-300: #b8bfcf;
-  --color-mist-500: #7f8799;
-  --color-gold-400: #e4b45a;
-  --color-gold-500: #d9a441;
-  --color-gold-600: #b8882f;
-  --color-ok-400: #4ade80;
-  --color-warn-400: #fbbf24;
-  --color-bad-400: #f87171;
-  --font-sans: 'Segoe UI Variable', 'Segoe UI', Inter, ui-sans-serif, system-ui, sans-serif;
+  --color-ink-950: #060908;
+  --color-ink-900: #0c110e;
+  --color-ink-800: #131a16;
+  --color-ink-700: #1a221d;
+  --color-ink-600: #243029;
+  --color-mist-100: #f0f2ee;
+  --color-mist-300: #c4ccca;
+  --color-mist-500: #8a9a92;
+  --color-mist-700: #4e5e57;
+  --color-gold-300: #e4c97a;
+  --color-gold-400: #c9a548;
+  --color-gold-600: #7a6228;
+  --color-emerald-500: #2d6a4f;
+  --color-emerald-700: #1b4332;
+  --color-ok-400: #5fbf8a;
+  --color-warn-400: #e0a83c;
+  --color-bad-400: #e2645a;
+  --color-info-400: #7aa7c7;
+  --font-display: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Inter', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, ui-monospace, monospace;
+  --ease-site: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html {
@@ -30,6 +37,7 @@ html {
 body {
   @apply bg-ink-950 text-mist-100 antialiased;
   margin: 0;
+  background-image: radial-gradient(ellipse at 50% -20%, rgba(27, 67, 50, 0.35), transparent 60%);
 }
 
 ::-webkit-scrollbar {
@@ -37,36 +45,76 @@ body {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-ink-600);
+  background: #243029;
   border-radius: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.field {
-  @apply w-full rounded-md border border-ink-600 bg-ink-900 px-3 py-2 text-sm text-mist-100 outline-none placeholder:text-mist-500 focus:border-gold-500;
+.display {
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
 }
-.btn-primary,
-.btn-ghost,
-.btn-danger {
-  @apply inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
-}
-.btn-primary {
-  @apply bg-gold-500 text-ink-950 hover:bg-gold-400;
-}
-.btn-ghost {
-  @apply border border-ink-600 bg-transparent text-mist-300 hover:border-mist-500 hover:text-mist-100;
-}
-.btn-danger {
-  @apply border border-bad-400/40 text-bad-400 hover:bg-bad-400/10;
+.eyebrow {
+  @apply text-[10px] font-semibold uppercase text-mist-500;
+  letter-spacing: 0.18em;
 }
 .label {
-  @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-mist-500;
+  @apply mb-1 block text-[11px] font-semibold uppercase text-mist-500;
+  letter-spacing: 0.12em;
+}
+.field {
+  @apply w-full rounded-[3px] border bg-ink-900 px-3 py-2 text-sm text-mist-100 outline-none placeholder:text-mist-700;
+  border-color: rgba(255, 255, 255, 0.08);
+  transition: border-color 0.25s var(--ease-site);
+}
+.field:focus {
+  border-color: rgba(201, 165, 72, 0.6);
+}
+.btn-gold,
+.btn-ghost,
+.btn-danger {
+  @apply inline-flex items-center justify-center gap-2 rounded-[2px] px-4 py-2 text-[12px] font-medium uppercase disabled:cursor-not-allowed disabled:opacity-40;
+  letter-spacing: 0.07em;
+  transition: all 0.25s var(--ease-site);
+}
+.btn-gold {
+  @apply bg-gold-400 text-ink-950 hover:bg-gold-300;
+}
+.btn-ghost {
+  @apply border text-mist-300 hover:text-mist-100;
+  border-color: rgba(201, 165, 72, 0.25);
+}
+.btn-ghost:hover {
+  border-color: rgba(201, 165, 72, 0.6);
+}
+.btn-danger {
+  @apply border text-bad-400 hover:bg-bad-400/10;
+  border-color: rgba(226, 100, 90, 0.4);
 }
 .card {
-  @apply rounded-lg border border-ink-700 bg-ink-900;
+  @apply rounded-[4px] border bg-ink-900;
+  border-color: rgba(255, 255, 255, 0.055);
+}
+.card-gold {
+  border-color: rgba(201, 165, 72, 0.14);
 }
 .badge {
-  @apply inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide;
+  @apply inline-flex items-center rounded-[2px] px-1.5 py-0.5 text-[10px] font-semibold uppercase;
+  letter-spacing: 0.1em;
+}
+.tab {
+  @apply px-3 py-2 text-[12px] font-medium uppercase text-mist-500 hover:text-mist-100;
+  letter-spacing: 0.1em;
+  border-bottom: 2px solid transparent;
+  transition: all 0.25s var(--ease-site);
+}
+.tab-active {
+  @apply text-gold-300;
+  border-bottom-color: #c9a548;
+}
+.rule-gold {
+  background: linear-gradient(to right, #c9a548, transparent);
+  height: 1px;
 }

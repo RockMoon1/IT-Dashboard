@@ -1,4 +1,22 @@
-import type { Device, TargetOS } from '../../../shared/types.ts'
+import type { TargetOS } from '../../../shared/types.ts'
+
+/** One physical USB peripheral as seen by the host. */
+export interface UsbDevice {
+  id: string
+  name: string
+  present: boolean
+  firstSeen: string
+  lastSeen: string
+  os: TargetOS
+  osHint: string
+  instanceId?: string
+  vendorId?: string
+  productId?: string
+  serial?: string
+  deviceClass?: string
+  manufacturer?: string
+  status?: string
+}
 import { asArray, tryParseJson } from '../util/json.ts'
 
 /**
@@ -121,8 +139,8 @@ function parentKey(e: Entry): string {
 export function groupUsbDevices(
   raws: RawPnpDevice[],
   now: string,
-  previous?: Map<string, Device>
-): Device[] {
+  previous?: Map<string, UsbDevice>
+): UsbDevice[] {
   const entries: Entry[] = raws
     .filter((r) => typeof r.InstanceId === 'string' && !isNoiseDevice(r))
     .map((r) => ({ raw: r, parsed: parseInstanceId(r.InstanceId as string) }))
@@ -163,7 +181,7 @@ export function groupUsbDevices(
     groups.set(key, g)
   }
 
-  const devices: Device[] = []
+  const devices: UsbDevice[] = []
   for (const [id, g] of groups) {
     const rep = g.parent ?? g.members[0]!
     const names = g.members.map((m) => (m.raw.FriendlyName ?? '').trim()).filter(Boolean)
@@ -183,14 +201,12 @@ export function groupUsbDevices(
     const prev = previous?.get(id)
     devices.push({
       id,
-      kind: 'usb',
       name,
       present: true,
       firstSeen: prev?.firstSeen ?? now,
       lastSeen: now,
       os,
       osHint: hint,
-      protocols: [],
       instanceId: rep.raw.InstanceId ?? undefined,
       vendorId: rep.parsed.vendorId,
       productId: rep.parsed.productId,
@@ -208,7 +224,7 @@ export interface UsbWatcherOptions {
   /** Starts an event listener; calls onChange on device arrival/removal and onExit when it dies. */
   watchEvents?: (onChange: () => void, onExit: (err?: Error) => void) => () => void
   pollMs: number
-  onDevices: (devices: Device[]) => void
+  onDevices: (devices: UsbDevice[]) => void
   onError?: (err: Error) => void
   now?: () => string
   debounceMs?: number
@@ -216,7 +232,7 @@ export interface UsbWatcherOptions {
 
 export class UsbWatcher {
   private opts: UsbWatcherOptions
-  private devices = new Map<string, Device>()
+  private devices = new Map<string, UsbDevice>()
   private timer: ReturnType<typeof setInterval> | undefined
   private debounce: ReturnType<typeof setTimeout> | undefined
   private stopEvents: (() => void) | undefined
@@ -264,11 +280,11 @@ export class UsbWatcher {
     this.debounce = setTimeout(() => void this.refresh(), this.opts.debounceMs ?? 500)
   }
 
-  list(): Device[] {
+  list(): UsbDevice[] {
     return [...this.devices.values()]
   }
 
-  async refresh(): Promise<Device[]> {
+  async refresh(): Promise<UsbDevice[]> {
     if (this.refreshing) {
       this.pending = true
       return this.list()

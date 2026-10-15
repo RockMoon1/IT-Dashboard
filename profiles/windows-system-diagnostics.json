@@ -1,0 +1,145 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "windows-system-diagnostics",
+  "version": 1,
+  "os": "windows",
+  "purpose": "system-diagnostics",
+  "title": "System Diagnostics",
+  "description": "OS, hardware, storage, drivers, firmware and network configuration",
+  "checks": [
+    {
+      "id": "sys-overview",
+      "title": "System overview (OS, CPU, RAM, disks, BIOS)",
+      "category": "System",
+      "shell": "powershell",
+      "command": [
+        "$os = Get-CimInstance Win32_OperatingSystem",
+        "$cs = Get-CimInstance Win32_ComputerSystem",
+        "$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1",
+        "$bios = Get-CimInstance Win32_BIOS",
+        "$load = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average",
+        "$disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {",
+        "  [pscustomobject]@{",
+        "    drive = $_.DeviceID",
+        "    sizeGB = [math]::Round($_.Size / 1GB, 1)",
+        "    freeGB = [math]::Round($_.FreeSpace / 1GB, 1)",
+        "    freePct = if ($_.Size) { [math]::Round(100 * $_.FreeSpace / $_.Size, 1) } else { $null }",
+        "  }",
+        "})",
+        "$biosDate = if ($bios.ReleaseDate) { $bios.ReleaseDate.ToString('yyyy-MM-dd') } else { $null }",
+        "$info = [ordered]@{",
+        "  hostname = $env:COMPUTERNAME",
+        "  evaluatedAs = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
+        "  os = $os.Caption",
+        "  version = $os.Version",
+        "  build = $os.BuildNumber",
+        "  arch = $os.OSArchitecture",
+        "  lastBoot = $os.LastBootUpTime.ToString('s')",
+        "  uptimeHours = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)",
+        "  manufacturer = $cs.Manufacturer",
+        "  model = $cs.Model",
+        "  cpu = $cpu.Name",
+        "  cores = $cpu.NumberOfCores",
+        "  logicalProcessors = $cpu.NumberOfLogicalProcessors",
+        "  cpuLoadPct = $load",
+        "  ramTotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)",
+        "  ramFreeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)",
+        "  ramUsedPct = [math]::Round(100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize), 1)",
+        "  biosVersion = $bios.SMBIOSBIOSVersion",
+        "  biosDate = $biosDate",
+        "  serial = $bios.SerialNumber",
+        "  disks = $disks",
+        "}",
+        "ConvertTo-Json -InputObject ([pscustomobject]$info) -Depth 4 -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "problem-devices",
+      "title": "Plug and Play devices with a non-OK status",
+      "category": "Devices",
+      "shell": "powershell",
+      "command": [
+        "$bad = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'OK' } | Select-Object FriendlyName, Class, Status, InstanceId)",
+        "ConvertTo-Json -InputObject $bad -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sys-thermal",
+      "title": "ACPI thermal zones (unsupported on many consumer boards)",
+      "category": "Thermal",
+      "shell": "powershell",
+      "command": [
+        "try {",
+        "  $zones = @(Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop | ForEach-Object {",
+        "    [pscustomobject]@{ zone = $_.InstanceName; celsius = [math]::Round(($_.CurrentTemperature / 10) - 273.15, 1) }",
+        "  })",
+        "  ConvertTo-Json -InputObject ([pscustomobject]@{ supported = $true; zones = $zones }) -Depth 3 -Compress",
+        "} catch {",
+        "  ConvertTo-Json -InputObject ([pscustomobject]@{ supported = $false; reason = $_.Exception.Message }) -Compress",
+        "}"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sys-drivers",
+      "title": "Most recently updated third-party drivers",
+      "category": "Drivers",
+      "shell": "powershell",
+      "command": [
+        "Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |",
+        "  Where-Object { $_.DeviceName -and $_.DriverProviderName -ne 'Microsoft' } |",
+        "  Sort-Object DriverDate -Descending |",
+        "  Select-Object -First 30 DeviceName, DriverVersion, @{ n = 'DriverDate'; e = { if ($_.DriverDate) { $_.DriverDate.ToString('yyyy-MM-dd') } } }, DriverProviderName |",
+        "  Format-Table -AutoSize | Out-String -Width 200"
+      ],
+      "format": "text",
+      "timeoutSeconds": 120,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sys-computer-info",
+      "title": "Get-ComputerInfo summary (slow on some machines)",
+      "category": "System",
+      "shell": "powershell",
+      "command": [
+        "Get-ComputerInfo -Property CsName, CsDomain, CsDomainRole, WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture, BiosFirmwareType, HyperVisorPresent, DeviceGuardSecurityServicesRunning, TimeZone -ErrorAction SilentlyContinue | ConvertTo-Json -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 180,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "net-adapters",
+      "title": "Network adapters, addresses, gateways and DNS servers",
+      "category": "Network",
+      "shell": "powershell",
+      "command": [
+        "$adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {",
+        "  $idx = $_.ifIndex",
+        "  $ips = @(Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress + '/' + $_.PrefixLength })",
+        "  $gw = @(Get-NetRoute -InterfaceIndex $idx -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object { $_.NextHop })",
+        "  $dns = @(Get-DnsClientServerAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.ServerAddresses })",
+        "  [pscustomobject]@{ name = $_.Name; description = $_.InterfaceDescription; status = [string]$_.Status; linkSpeed = $_.LinkSpeed; mac = $_.MacAddress; pnpDeviceId = $_.PnPDeviceID; ipv4 = $ips; gateways = $gw; dns = $dns }",
+        "})",
+        "ConvertTo-Json -InputObject $adapters -Depth 3 -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+# Keep LF everywhere so Prettier, the vault fixture and the Go/TS sources look the same on
+# Windows checkouts. The dashboard itself preserves whatever line endings a real note uses.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.exe binary

@@ -1,0 +1,110 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "linux-system-diagnostics",
+  "version": 1,
+  "os": "linux",
+  "purpose": "system-diagnostics",
+  "title": "System Diagnostics",
+  "description": "OS, hardware, storage, drivers, firmware and network configuration",
+  "checks": [
+    {
+      "id": "sys-overview",
+      "title": "System overview",
+      "category": "System",
+      "shell": "sh",
+      "command": [
+        "hostnamectl 2>/dev/null || { uname -a; cat /etc/os-release 2>/dev/null; }",
+        "echo \"user: $(id -un)\"",
+        "uptime -p 2>/dev/null || uptime",
+        "echo \"--- cpu\"",
+        "lscpu 2>/dev/null | grep -E 'Model name|^CPU\\(s\\)|Thread|Socket' || grep -m1 'model name' /proc/cpuinfo",
+        "echo \"--- load\"",
+        "cat /proc/loadavg",
+        "echo \"--- memory\"",
+        "free -h",
+        "echo \"--- disks\"",
+        "df -h -x tmpfs -x devtmpfs -x squashfs 2>/dev/null || df -h",
+        "echo \"--- firmware\"",
+        "cat /sys/class/dmi/id/bios_version /sys/class/dmi/id/bios_date /sys/class/dmi/id/product_name 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sys-thermal",
+      "title": "Thermal zones",
+      "category": "Thermal",
+      "shell": "sh",
+      "command": [
+        "found=0",
+        "for z in /sys/class/thermal/thermal_zone*; do",
+        "  [ -f \"$z/temp\" ] || continue",
+        "  found=1",
+        "  t=$(cat \"$z/temp\" 2>/dev/null)",
+        "  ty=$(cat \"$z/type\" 2>/dev/null)",
+        "  echo \"$ty: $(awk \"BEGIN { printf \\\"%.1f\\\", $t / 1000 }\") C\"",
+        "done",
+        "[ \"$found\" = 1 ] || echo \"no thermal zones exposed via sysfs\"",
+        "sensors 2>/dev/null | head -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sys-drivers",
+      "title": "Kernel modules and PCI drivers",
+      "category": "Drivers",
+      "shell": "sh",
+      "command": [
+        "lspci -k 2>/dev/null | grep -E '^[0-9a-f]|Kernel driver' | head -60",
+        "echo \"--- modules\"",
+        "lsmod 2>/dev/null | head -30",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sys-cpu-block",
+      "title": "lscpu and lsblk",
+      "category": "General",
+      "shell": "sh",
+      "command": [
+        "lscpu 2>/dev/null | head -25",
+        "echo \"--- block devices\"",
+        "lsblk -o NAME,MODEL,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "net-adapters",
+      "title": "Network interfaces, routes and DNS",
+      "category": "Network",
+      "shell": "sh",
+      "command": [
+        "ip -brief address 2>/dev/null || ifconfig -a 2>/dev/null",
+        "echo \"--- routes\"",
+        "ip route 2>/dev/null | head -10",
+        "echo \"--- dns\"",
+        "resolvectl status 2>/dev/null | grep -E 'DNS Servers|DNS Domain' | head -6 || grep -E '^nameserver|^search' /etc/resolv.conf 2>/dev/null",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    }
+  ]
+}

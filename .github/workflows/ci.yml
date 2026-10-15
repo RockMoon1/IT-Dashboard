@@ -3,16 +3,89 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  verify:
+  agent:
+    name: agent (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet and unit-test the agent and profiles
+        run: |
+          go vet ./agent/... ./profiles/...
+          go test ./agent/... ./profiles/...
+      - name: Run every shipped scan profile on this runner (Linux/macOS, as root like the agent)
+        if: runner.os != 'Windows'
+        run: |
+          go test -c -o executor.test ./agent/internal/executor
+          sudo ARH_RUN_PROFILES=1 ./executor.test -test.run TestShippedProfilesRunHere -test.v -test.timeout 20m
+      - name: Run every shipped scan profile on this runner (Windows, elevated runner)
+        if: runner.os == 'Windows'
+        env:
+          ARH_RUN_PROFILES: '1'
+        run: go test ./agent/internal/executor -run TestShippedProfilesRunHere -v -timeout 20m
+
+  host:
+    name: dashboard (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: npm install --no-audit --no-fund
+      - name: Build the agent for every target
+        run: npm run agent:build
+      - run: npm run format:check
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
+      - name: Verify the WMI/CIM classes and event subscriptions on this Windows build
+        run: npm run verify-wmi
+      - name: Inspect-Vault.ps1 smoke test (read-only, against the synthetic fixture)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'arh-vault-report.md'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Inspect-Vault.ps1 -VaultPath 'tests/fixtures/vault/ARH IT' -OutFile $out
+          $report = Get-Content $out -Raw -Encoding utf8
+          foreach ($needle in 'ARH IT Hub.md', 'ARH Open Loops.md', 'Tasks plugin due', 'obsidian-tasks-plugin') {
+            if (-not $report.Contains($needle)) { throw "report is missing '$needle'" }
+          }
+          $dirty = git status --porcelain -- tests/fixtures
+          if ($dirty) { throw "Inspect-Vault.ps1 modified the fixture: $dirty" }
+          Get-Content $out -TotalCount 60
+      - name: Build and package (NSIS installer with bundled agents and profiles)
+        run: |
+          npm run build
+          npx electron-builder --win --publish never
+      - name: Check the package contents
+        shell: pwsh
+        run: |
+          $res = 'dist/win-unpacked/resources'
+          foreach ($f in 'agent/arh-agent-windows-amd64.exe', 'agent/arh-agent-darwin-arm64', 'agent/arh-agent-linux-amd64', 'profiles/windows-system-diagnostics.json') {
+            if (-not (Test-Path (Join-Path $res $f))) { throw "missing $f in the package" }
+          }
+          Get-ChildItem dist -Filter *.exe | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ARH-IT-Dashboard-setup
+          path: dist/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arh-agent-binaries
+          path: agent/dist/arh-agent-*
+          if-no-files-found: error

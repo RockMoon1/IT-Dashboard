@@ -5,7 +5,7 @@ import type { RunOptions, RunResult } from './types.ts'
 
 /** Prepended to every PowerShell script so output is UTF-8 and progress bars never block. */
 export const PS_PREAMBLE =
-  "$ErrorActionPreference = 'Continue'; $ProgressPreference = 'SilentlyContinue'; try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}"
+  "$ErrorActionPreference = 'Continue'; $ProgressPreference = 'SilentlyContinue'; try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}"
 
 export function preparePowerShellScript(script: string): string {
   return `${PS_PREAMBLE}\n${script}\n`

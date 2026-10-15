@@ -14,30 +14,46 @@ const api: ArhApi = {
     get: () => ipcRenderer.invoke(IPC.settingsGet),
     set: (patch) => ipcRenderer.invoke(IPC.settingsSet, patch)
   },
+  app: {
+    info: () => ipcRenderer.invoke(IPC.appInfo),
+    onLog: (cb) => subscribe(IPC.log, cb)
+  },
   devices: {
     list: () => ipcRenderer.invoke(IPC.devicesList),
-    refresh: () => ipcRenderer.invoke(IPC.devicesRefresh),
-    addManual: (host, label) => ipcRenderer.invoke(IPC.devicesAddManual, host, label),
     remove: (id) => ipcRenderer.invoke(IPC.devicesRemove, id),
+    rename: (id, displayName) => ipcRenderer.invoke(IPC.devicesRename, id, displayName),
     onChanged: (cb) => subscribe(IPC.devicesChanged, cb)
   },
-  probe: {
-    host: (host) => ipcRenderer.invoke(IPC.probeHost, host)
+  link: {
+    status: () => ipcRenderer.invoke(IPC.linkStatus),
+    refresh: () => ipcRenderer.invoke(IPC.linkRefresh),
+    enableFirewall: () => ipcRenderer.invoke(IPC.linkEnableFirewall),
+    onChanged: (cb) => subscribe(IPC.linkChanged, cb)
   },
-  session: {
-    start: (req) => ipcRenderer.invoke(IPC.sessionStart, req),
-    abort: (sessionId) => ipcRenderer.invoke(IPC.sessionAbort, sessionId),
-    get: (sessionId) => ipcRenderer.invoke(IPC.sessionGet, sessionId),
-    onOutput: (cb) => subscribe(IPC.sessionOutput, cb),
-    onDone: (cb) => subscribe(IPC.sessionDone, cb)
+  enroll: {
+    create: (label) => ipcRenderer.invoke(IPC.enrollNew, label),
+    cancel: (token) => ipcRenderer.invoke(IPC.enrollCancel, token),
+    list: () => ipcRenderer.invoke(IPC.enrollList)
+  },
+  scan: {
+    start: (deviceId, purpose) => ipcRenderer.invoke(IPC.scanStart, deviceId, purpose),
+    abort: (runId) => ipcRenderer.invoke(IPC.scanAbort, runId),
+    get: (runId) => ipcRenderer.invoke(IPC.scanGet, runId),
+    list: () => ipcRenderer.invoke(IPC.scanList),
+    history: (deviceId) => ipcRenderer.invoke(IPC.scanHistory, deviceId),
+    onEvent: (cb) => subscribe(IPC.scanEvent, cb)
+  },
+  profiles: {
+    list: () => ipcRenderer.invoke(IPC.profilesList)
   },
   vault: {
-    check: () => ipcRenderer.invoke(IPC.vaultCheck),
-    append: (sessionId) => ipcRenderer.invoke(IPC.vaultAppend, sessionId),
+    status: () => ipcRenderer.invoke(IPC.vaultStatus),
+    preview: (runId) => ipcRenderer.invoke(IPC.vaultPreview, runId),
+    apply: (runId) => ipcRenderer.invoke(IPC.vaultApply, runId),
+    openLoops: () => ipcRenderer.invoke(IPC.vaultOpenLoops),
+    workLog: (limit) => ipcRenderer.invoke(IPC.vaultWorkLog, limit),
+    search: (query) => ipcRenderer.invoke(IPC.vaultSearch, query),
     open: () => ipcRenderer.invoke(IPC.vaultOpen)
-  },
-  app: {
-    info: () => ipcRenderer.invoke(IPC.appInfo)
   }
 }
 

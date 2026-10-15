@@ -1,0 +1,76 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "macos-security-check",
+  "version": 1,
+  "os": "macos",
+  "purpose": "security-check",
+  "title": "Security Check",
+  "description": "Antivirus, firewall, patching, encryption, accounts and sign-in activity",
+  "checks": [
+    {
+      "id": "sec-status",
+      "title": "Gatekeeper, firewall, FileVault, SIP",
+      "category": "Antivirus",
+      "shell": "sh",
+      "command": [
+        "echo \"gatekeeper: $(spctl --status 2>&1)\"",
+        "echo \"app_firewall: $(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>&1)\"",
+        "echo \"stealth_mode: $(/usr/libexec/ApplicationFirewall/socketfilterfw --getstealthmode 2>&1)\"",
+        "echo \"filevault: $(fdesetup status 2>&1)\"",
+        "echo \"sip: $(csrutil status 2>&1)\"",
+        "echo \"xprotect: $(defaults read /Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Info.plist CFBundleShortVersionString 2>/dev/null)\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "sec-updates",
+      "title": "Software update history",
+      "category": "Updates",
+      "shell": "sh",
+      "command": [
+        "softwareupdate --history 2>/dev/null | tail -12",
+        "echo \"--- automatic updates\"",
+        "defaults read /Library/Preferences/com.apple.SoftwareUpdate 2>/dev/null | grep -E 'AutomaticCheckEnabled|AutomaticDownload|CriticalUpdateInstall|ConfigDataInstall'",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sec-admins",
+      "title": "Administrator accounts and remote access",
+      "category": "Accounts",
+      "shell": "sh",
+      "command": [
+        "echo \"admins: $(dscl . -read /Groups/admin GroupMembership 2>/dev/null | cut -d: -f2)\"",
+        "echo \"remote_login_ssh: $(systemsetup -getremotelogin 2>&1)\"",
+        "echo \"screen_sharing: $(launchctl print system/com.apple.screensharing >/dev/null 2>&1 && echo enabled || echo disabled)\"",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    },
+    {
+      "id": "sec-softwareupdate",
+      "title": "Available macOS updates",
+      "category": "Software",
+      "shell": "sh",
+      "command": [
+        "softwareupdate -l 2>&1 | tail -25",
+        "exit 0"
+      ],
+      "format": "text",
+      "timeoutSeconds": 180,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}

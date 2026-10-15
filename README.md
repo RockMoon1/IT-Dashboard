@@ -1,121 +1,127 @@
 # ARH IT Dashboard
 
-Electron + Vue 3 desktop app for the ARH IT workflow: see what is attached to the technician's
-Windows PC, pick the purpose of a visit, run a known diagnostic command set on the target over
-WinRM or SSH, watch the output live, and append the results to the existing notes in the
-**ARH IT** Obsidian vault (`ARH IT Hub` and `ARH Work Log`). It never creates new notes.
+A local Windows app that works as a virtual IT workstation for Advanced Regenerative Health.
+Plug a computer into the technician PC with a cable, and the dashboard detects it, identifies
+it, asks the purpose of the visit, runs a read-only scan through a small agent on that
+computer, streams the results on a dark-mode dashboard, and records them in the existing
+**ARH IT** Obsidian notes, without ever creating a new file in the vault.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, the Phase 1 review and the
-facts that changed the plan.
+- How it works and why: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Wire protocol, enrollment and profile format: [docs/PROTOCOL.md](docs/PROTOCOL.md)
+- Vault mapping (needs your approval): [docs/VAULT-SCHEMA.md](docs/VAULT-SCHEMA.md)
 
-## Requirements (technician PC)
+## What you need
 
-- Windows 10/11 with Windows PowerShell 5.1 (built in) or PowerShell 7.
-- Node.js 22.18 or newer (runs TypeScript tests without a build step).
-- Access to the Obsidian vault folder (OneDrive path is the default in Settings).
+| Item                              | Notes                                                                                                                                                                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Windows 10/11 technician PC       | Admin rights once, for the firewall rule.                                                                                                                                                                                |
+| A cable that makes a network link | USB-to-Ethernet adapter + Ethernet cable (works with any target), or a USB-C/Thunderbolt/USB4 host-to-host networking cable. A plain USB-A to USB-A cable does **not** work: USB cannot connect two computers by itself. |
+| Admin/sudo on each target, once   | To install the agent.                                                                                                                                                                                                    |
+| A spare computer or a VM          | For the first end-to-end test, before any ARH device.                                                                                                                                                                    |
 
-## Setup
+## Install on the technician PC
+
+### Option A: download the installer (no build tools)
+
+1. Open the pull request on GitHub → **Checks** → **CI** → the latest run → **Artifacts**.
+2. Download **ARH-IT-Dashboard-setup** (the installer) and **arh-agent-binaries** (agents for
+   every OS). Unzip both.
+3. Run the setup `.exe`. Windows SmartScreen will warn because the app is unsigned:
+   **More info → Run anyway**.
+
+### Option B: build from source
+
+In PowerShell (close and reopen it after the two `winget` lines):
 
 ```powershell
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id Git.Git -e
+winget install --id GoLang.Go -e
+
+cd $HOME\Documents
+git clone https://github.com/RockMoon1/IT-Dashboard.git
+cd IT-Dashboard
+git checkout claude/modest-lamport-us3739   # not needed once the pull request is merged into main
 npm install
-npm run dev        # Electron with hot reload
-npm test           # unit tests (node:test, no PowerShell needed)
-npm run typecheck  # tsc for main/preload, vue-tsc for the renderer
-npm run build      # production bundle in out/
-npm run dist:win   # NSIS installer in dist/ (electron-builder)
+npm run agent:build      # builds agent/dist/arh-agent-* for Windows, macOS and Linux
+npm run dev              # starts the dashboard
 ```
 
-## Target prerequisites
+`npm run dist:win` produces the same installer as Option A in `dist\`.
 
-| Target  | Protocol | One-time setup on the target                                                                  |
-| ------- | -------- | --------------------------------------------------------------------------------------------- |
-| Windows | WinRM    | Run as admin: `Enable-PSRemoting -Force` (opens 5985; firewall rule on Private/Domain only)   |
-| Windows | SSH      | Settings → Optional features → OpenSSH Server, then `Start-Service sshd`                      |
-| macOS   | SSH      | System Settings → General → Sharing → Remote Login (or `sudo systemsetup -setremotelogin on`) |
-| Linux   | SSH      | `sudo apt install openssh-server` (or distro equivalent)                                      |
+## First-time setup (in this order)
 
-**Workgroup Windows targets over WinRM.** When the target is not domain-joined and you connect
-by IP or plain host name, Windows refuses Negotiate authentication unless the host is trusted on
-the _technician's_ PC. Run once as admin on the technician PC:
+1. **Check WMI on this PC** (read-only):
+   `npm run verify-wmi`, or from an installed copy
+   `powershell -ExecutionPolicy Bypass -File scripts\Verify-Wmi.ps1`.
+   Every required line must say `OK`.
+2. **Inspect the vault** (read-only): `npm run inspect-vault`. Send the report from
+   `%TEMP%\arh-vault-report.md` back so the note mapping can be finalised.
+   Until you approve it, every vault write stays a preview (dry run).
+3. **Settings**: enter your name as the technician; check the vault path and note names.
+4. **Link tab → Create firewall rule (UAC)**: one admin prompt that lets agents connect
+   to TCP 47912.
+
+## Enroll a device (once per computer)
+
+1. Connect the device to the technician PC with the cable. Wait until the Link tab shows the
+   adapter as `Up` with a `169.254.x.x` or `fe80::` address.
+2. Click **Enroll device**, type a label (for example `Exam room 2 laptop`), **Generate token**.
+   The token is valid for 10 minutes and works once.
+3. Copy the matching agent from `arh-agent-binaries` to the device (USB stick is fine) and run,
+   as administrator / with sudo:
+
+   | Device              | Command                                                                                                                                  |
+   | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+   | Windows (Intel/AMD) | `.\arh-agent-windows-amd64.exe install --token ARH-XXXXXXXX-XXXXXXXXXXXXXXXX` (in an **Administrator** PowerShell)                       |
+   | Windows on ARM      | `.\arh-agent-windows-arm64.exe install --token …`                                                                                        |
+   | Mac (Apple silicon) | `xattr -d com.apple.quarantine arh-agent-darwin-arm64; chmod +x arh-agent-darwin-arm64; sudo ./arh-agent-darwin-arm64 install --token …` |
+   | Mac (Intel)         | same with `arh-agent-darwin-amd64`                                                                                                       |
+   | Linux               | `chmod +x arh-agent-linux-amd64; sudo ./arh-agent-linux-amd64 install --token …`                                                         |
+
+4. Within a few seconds the device appears under **Enrolled devices** with a green dot.
+   `arh-agent status` on the device shows its id and the pinned dashboard.
+
+## Run a scan
+
+Double-click a green device → choose the purpose (a suggestion comes from its last scan) →
+**Run scan**. Checks stream in **Active scan**; **Results** shows them by category; **Health**
+lists findings by severity. **Preview vault write** shows the exact diff for the hub, work log
+and open loops notes. **Apply** is available only after the schema is approved and live writes
+are on in Settings.
+
+## Test on a virtual machine first
+
+1. Hyper-V Manager → Virtual Switch Manager → **New → Internal** switch. Give the VM a network
+   adapter on that switch.
+2. In the dashboard's Link tab, tick **beacon on every adapter** (the Hyper-V vEthernet adapter
+   is virtual, so it is not treated as a cable link by default).
+3. Enroll the VM as above, run each purpose once, and check the dry-run previews.
+4. Untick **beacon on every adapter** before using real devices.
+
+## Uninstall the agent from a device
+
+`arh-agent uninstall` (admin / sudo) removes the service, the firewall rule, the device key and
+the data folder. Remove the device from the dashboard with ✕ in the device list.
+
+## Development
 
 ```powershell
-Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.1.*' -Concatenate -Force
+npm test                 # Node tests: vault writer, markers, enrollment, link server, scans, health
+npm run test:go          # Go tests: protocol, executor, keystore, identity, profiles, end-to-end session
+npm run typecheck
+npm run format:check
+$env:ARH_RUN_PROFILES = '1'; go test ./agent/internal/executor -run TestShippedProfilesRunHere -v
+                         # runs every shipped check for this OS on this machine (read-only)
+$env:ARH_VAULT_FIXTURE = 'D:\copy-of-ARH-IT'; npm test
+                         # runs the writer tests against a COPY of the real vault in a temp folder
 ```
 
-Use HTTPS (5986) with a proper certificate if you prefer not to widen TrustedHosts.
-
-## How a session works
-
-1. Devices appear in the left pane: this PC, hosts added by hand, LAN neighbours from the ARP
-   table, and USB peripherals (via `Get-PnpDevice`, refreshed on WMI device-change events).
-   A device cabled directly to the technician PC (Ethernet cable, or a Thunderbolt/USB4 cable
-   between two PCs that support host-to-host networking) shows up as a link-local
-   `169.254.x.x` neighbour once either side sends a packet; it can be probed and remoted like
-   any other host.
-2. Double-click a device → choose the purpose (System Diagnostics, Security Check, Email Setup,
-   Hardware Issues, Slow Performance, Phishing Assessment, Other).
-3. Probe the host (ports 22/5985/5986/3389/445 plus SSH banner) to get a protocol and OS
-   proposal, enter credentials, tick the authorisation confirmation, run.
-4. Output streams per command. When the run finishes the findings and metrics are appended as a
-   foldable callout under `## Device Scans` in `ARH IT Hub.md` and as one dated line in
-   `ARH Work Log.md`.
-
-## Obsidian layout written by the app
-
-`ARH IT Hub.md`
-
-```markdown
-## Device Scans
-
-> [!info]- 2026-10-14 14:05 · LAPTOP-01 · System Diagnostics
-> **Target:** 192.168.1.20 via WinRM (windows) · **Result:** OK · **Session:** 3f9a1c2b
-> **Findings (1):**
->
-> - Disk C: has only 8.1% free (12.3 GB)
->
-> | Metric | Value                                        |
-> | ------ | -------------------------------------------- |
-> | OS     | Microsoft Windows 11 Pro 10.0.26100 (64-bit) |
-```
-
-`ARH Work Log.md`
-
-```markdown
-## 2026-10-14
-
-- 14:05 · Device scan · **LAPTOP-01** · System Diagnostics via WinRM (192.168.1.20) → 1 finding(s): Disk C: has only 8.1% free · see [[ARH IT Hub#Device Scans]]
-```
-
-If a dated heading for today already exists (any heading that starts with the ISO date), the
-line is appended under it; otherwise a new `## YYYY-MM-DD` heading is added at the bottom
-(or at the top with the "newest first" setting).
-
-## Security notes
-
-- Credentials live in memory for one session; the settings file stores only paths, intervals
-  and SSH host-key fingerprints.
-- WinRM passwords are passed to the local PowerShell child through its environment block, not
-  the command line. Scripts are base64-encoded (`-EncodedCommand`).
-- SSH host keys are pinned on first use; a changed key aborts the connection. Strict mode
-  (reject unknown hosts) is available in Settings.
-- The renderer runs sandboxed with context isolation; it reaches the OS only through the
-  `window.arh` bridge defined in `src/preload`.
-- There is no consent prompt on the target: WinRM and SSH authenticate with credentials and
-  run without user interaction. The dashboard records the technician's authorisation
-  confirmation with every session instead.
-
-## Project layout
-
-```
-src/main/                 Electron main process (Node)
-  index.ts                window + app lifecycle
-  ipc.ts                  AppContext: settings, device sources, sessions, IPC handlers
-  services/devices/       usb.ts (PnP/WMI), network.ts (ARP neighbours), probe.ts, registry.ts
-  services/remoting/      powershell.ts, winrm.ts, ssh.ts (ssh2), session.ts (orchestration)
-  services/diagnostics/   windows.ts + posix.ts command catalogs, summary.ts findings rules
-  services/vault/         obsidian.ts (append-only note writer)
-src/preload/              contextBridge API (window.arh)
-src/renderer/             Vue 3 + Tailwind v4 UI
-src/shared/               types and IPC channel names shared by all layers
-tests/                    node:test suites for every Electron-free module
-```
+| Path                 | What it is                                                                                                                                                                          |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent/`             | Go agent: `cmd/arh-agent`, `internal/{link,executor,keystore,identity,service,protocol,sysinfo}`                                                                                    |
+| `profiles/`          | Versioned, read-only scan profiles (JSON) shared by agent and dashboard                                                                                                             |
+| `src/main/services/` | `detection` (WMI, adapters), `devices` (USB), `link` (TLS server, beacon, tokens), `scans` (runner, health, log), `secrets` (Credential Manager), `vault` (markers, writer, reader) |
+| `src/renderer/`      | Vue 3 dashboard                                                                                                                                                                     |
+| `scripts/`           | `Inspect-Vault.ps1`, `Verify-Wmi.ps1`, `build-agent.mjs`                                                                                                                            |
+| `tests/`             | Node tests and the synthetic vault fixture                                                                                                                                          |

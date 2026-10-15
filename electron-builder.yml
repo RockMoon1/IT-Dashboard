@@ -6,9 +6,17 @@ directories:
 files:
   - out/**
   - package.json
-asarUnpack:
-  - node_modules/ssh2/**
-  - node_modules/cpu-features/**
+extraResources:
+  # Agent binaries for every target OS, so the technician can copy the right one to a device.
+  - from: agent/dist
+    to: agent
+    filter:
+      - arh-agent-*
+  # Scan profiles, read-only data shared with the agent build.
+  - from: profiles
+    to: profiles
+    filter:
+      - '*.json'
 win:
   target:
     - nsis

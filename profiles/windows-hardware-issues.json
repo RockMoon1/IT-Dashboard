@@ -1,0 +1,115 @@
+{
+  "schema": "arh-scan-profile/1",
+  "name": "windows-hardware-issues",
+  "version": 1,
+  "os": "windows",
+  "purpose": "hardware-issues",
+  "title": "Hardware Issues",
+  "description": "Problem devices, disk health, battery, memory and hardware error events",
+  "checks": [
+    {
+      "id": "problem-devices",
+      "title": "Plug and Play devices with a non-OK status",
+      "category": "Devices",
+      "shell": "powershell",
+      "command": [
+        "$bad = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'OK' } | Select-Object FriendlyName, Class, Status, InstanceId)",
+        "ConvertTo-Json -InputObject $bad -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-disks",
+      "title": "Physical disk health, reliability counters and SMART failure prediction",
+      "category": "Storage",
+      "shell": "powershell",
+      "command": [
+        "$disks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {",
+        "  $r = $null",
+        "  try { $r = $_ | Get-StorageReliabilityCounter -ErrorAction Stop } catch {}",
+        "  [pscustomobject]@{",
+        "    name = $_.FriendlyName",
+        "    media = [string]$_.MediaType",
+        "    bus = [string]$_.BusType",
+        "    sizeGB = [math]::Round($_.Size / 1GB, 1)",
+        "    health = [string]$_.HealthStatus",
+        "    operational = (@($_.OperationalStatus) -join ',')",
+        "    temperatureC = if ($r) { $r.Temperature } else { $null }",
+        "    wearPct = if ($r) { $r.Wear } else { $null }",
+        "    readErrorsTotal = if ($r) { $r.ReadErrorsTotal } else { $null }",
+        "    writeErrorsTotal = if ($r) { $r.WriteErrorsTotal } else { $null }",
+        "    powerOnHours = if ($r -and $r.PowerOnHours) { [int]$r.PowerOnHours } else { $null }",
+        "  }",
+        "})",
+        "$smart = @()",
+        "try {",
+        "  $smart = @(Get-CimInstance -Namespace root/wmi -ClassName MSStorageDriver_FailurePredictStatus -ErrorAction Stop | ForEach-Object {",
+        "    [pscustomobject]@{ instance = $_.InstanceName; predictFailure = [bool]$_.PredictFailure }",
+        "  })",
+        "} catch {}",
+        "ConvertTo-Json -InputObject ([pscustomobject]@{ disks = $disks; smart = $smart }) -Depth 4 -Compress"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-battery",
+      "title": "Battery health (laptops)",
+      "category": "Power",
+      "shell": "powershell",
+      "command": [
+        "$b = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1",
+        "if (-not $b) {",
+        "  ConvertTo-Json -InputObject ([pscustomobject]@{ present = $false }) -Compress",
+        "} else {",
+        "  $full = $null; $design = $null; $cycles = $null",
+        "  try { $full = (Get-CimInstance -Namespace root/wmi -ClassName BatteryFullChargedCapacity -ErrorAction Stop | Select-Object -First 1).FullChargedCapacity } catch {}",
+        "  try { $design = (Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData -ErrorAction Stop | Select-Object -First 1).DesignedCapacity } catch {}",
+        "  try { $cycles = (Get-CimInstance -Namespace root/wmi -ClassName BatteryCycleCount -ErrorAction Stop | Select-Object -First 1).CycleCount } catch {}",
+        "  $health = if ($design -and $full) { [math]::Round(100 * $full / $design, 1) } else { $null }",
+        "  ConvertTo-Json -InputObject ([pscustomobject]@{ present = $true; name = $b.Name; statusCode = $b.BatteryStatus; chargePct = $b.EstimatedChargeRemaining; designCapacity_mWh = $design; fullChargeCapacity_mWh = $full; healthPct = $health; cycleCount = $cycles }) -Compress",
+        "}"
+      ],
+      "format": "json",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-memory",
+      "title": "Installed memory modules",
+      "category": "Memory",
+      "shell": "powershell",
+      "command": [
+        "Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | Select-Object BankLabel, DeviceLocator, @{ n = 'GB'; e = { [math]::Round($_.Capacity / 1GB) } }, Speed, Manufacturer, PartNumber | Format-Table -AutoSize | Out-String -Width 200"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": false,
+      "access": "read"
+    },
+    {
+      "id": "hw-system-errors",
+      "title": "Critical and error events in the System log (last 7 days)",
+      "category": "Events",
+      "shell": "powershell",
+      "command": [
+        "$events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1, 2; StartTime = (Get-Date).AddDays(-7) } -MaxEvents 40 -ErrorAction SilentlyContinue)",
+        "if ($events.Count -eq 0) {",
+        "  'No critical/error events in the System log in the last 7 days.'",
+        "} else {",
+        "  $events | Select-Object @{ n = 'Time'; e = { $_.TimeCreated.ToString('s') } }, Id, ProviderName, @{ n = 'Message'; e = { if ($_.Message) { ($_.Message -split '\\r?\\n')[0] } } } | Format-Table -AutoSize -Wrap | Out-String -Width 220",
+        "}"
+      ],
+      "format": "text",
+      "timeoutSeconds": 90,
+      "optional": true,
+      "access": "read"
+    }
+  ]
+}
