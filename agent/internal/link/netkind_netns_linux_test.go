@@ -102,6 +102,7 @@ func TestCableRuleCase(t *testing.T) {
 	if side == "" {
 		side = "eth0"
 	}
+	nlUp(t, "lo")
 	nlVeth(t, side, "peer0")
 	nlMove(t, "peer0", peer.Process.Pid)
 	link := nlUp(t, side)
@@ -186,24 +187,36 @@ func TestCableRulePeer(t *testing.T) {
 	if idx == 0 {
 		t.Fatal("peer0 never arrived")
 	}
+	nlUp(t, "lo") // a new namespace starts with lo down, so no ::1, and Go then thinks IPv6 is off
 	nlUp(t, "peer0")
 	nlAddr(t, idx, "169.254.7.7/16")
 	if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
 		nlAddr(t, idx, "fe80::7/64")
 	}
 	nlRoute(t, idx, "0.0.0.0/0", "", 100) // answer whatever address the agent's side uses
-	ln, err := net.Listen("tcp", ":47912")
+	serve := func(ln net.Listener) {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) { time.Sleep(5 * time.Second); c.Close() }(c)
+		}
+	}
+	ln4, err := net.Listen("tcp4", "0.0.0.0:47912")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("listening")
-	for {
-		c, err := ln.Accept()
+	go serve(ln4)
+	if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
+		ln6, err := net.Listen("tcp6", "[::]:47912")
 		if err != nil {
-			return
+			t.Fatal(err)
 		}
-		go func(c net.Conn) { time.Sleep(5 * time.Second); c.Close() }(c)
+		go serve(ln6)
 	}
+	fmt.Println("listening")
+	select {}
 }
 
 /* ---------- a little rtnetlink, enough for veth pairs, addresses and routes ---------- */

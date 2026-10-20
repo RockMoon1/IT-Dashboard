@@ -30,7 +30,8 @@ func TestFolderAStandardUserMadeIsNotAdopted(t *testing.T) {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	user := "arhsq" + hex.EncodeToString(b)[:8]
-	pass := "Arh!" + hex.EncodeToString(b) + "aZ9#"
+	// 14 characters at most, or net user stops to ask about Windows 2000 compatibility
+	pass := "Ar9!" + hex.EncodeToString(b)[:10]
 	if out, err := exec.Command("net", "user", user, pass, "/add").CombinedOutput(); err != nil {
 		t.Fatalf("net user /add: %v %s", err, out)
 	}
