@@ -42,6 +42,8 @@ export class ActionLog {
   private file: string
   private last = GENESIS
   private loaded = false
+  /** The file ends in a line cut short (power lost mid-write): start the next one on its own line. */
+  private torn = false
   private queue: Promise<void> = Promise.resolve()
   private records = new Map<string, ActionRecord>()
   private order: string[] = []
@@ -53,6 +55,7 @@ export class ActionLog {
   async load(): Promise<void> {
     try {
       const text = await readFile(this.file, 'utf8')
+      this.torn = text.length > 0 && !text.endsWith('\n')
       for (const raw of text.split('\n')) {
         if (!raw.trim()) continue
         try {
@@ -89,7 +92,8 @@ export class ActionLog {
       }
       const line: ActionLogLine = { ...body, hash: digest(body) }
       await mkdir(dirname(this.file), { recursive: true })
-      await appendFile(this.file, `${JSON.stringify(line)}\n`, 'utf8')
+      await appendFile(this.file, `${this.torn ? '\n' : ''}${JSON.stringify(line)}\n`, 'utf8')
+      this.torn = false
       this.last = line.hash
     })
     this.queue = write.catch(() => undefined)

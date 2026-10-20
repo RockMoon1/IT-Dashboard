@@ -133,9 +133,14 @@ _One row per change the ARH IT Dashboard made on a computer, oldest first (times
 What gets a Change Log row: a real run of an action that changes a setting and changed it (or
 partly did), a task that left evidence of a change (sfc repairs), every custom command (listed
 as not measured, with the script's hash, never its text or output), and a change whose outcome
-is not known yet because the cable was pulled. That last one gets a second row, `Result of run
-…`, when the device reports. Previews, things already set, and refused requests never reach the
-vault. Every value that came from a device is cleaned first: no line breaks of any kind, and the
+is not known yet because the cable was pulled, or that was applied but could not be confirmed
+(`NOT VERIFIED: …` with the reason). A row written while the outcome is unknown ends
+`· run <id> · result pending` and gets a second row, `Result of run …` ending `· result <id>`,
+when the device reports, whatever the run ended as (changed, not applied, done, failed…). The
+dashboard finds its own rows by that ending only, never by text elsewhere in a row, so a reason
+or a device value that names a run cannot add or block a row. A padded or realigned header row
+(table plugins) is still recognised. Previews, things already set, and refused requests never
+reach the vault. Every value that came from a device is cleaned first: no line breaks of any kind, and the
 characters Markdown, HTML and Obsidian give a meaning to are escaped.
 
 `ARH IT Hub.md` (CRLF kept):

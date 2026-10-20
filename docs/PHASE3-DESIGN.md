@@ -64,13 +64,21 @@ Settings turns any kind, or any single action, off. A device can refuse more on 
 6. **Status is worked out from the measurements** (shared code, tested): preview _would change_ /
    _nothing to change_ / _blocked_; real _changed_, _already set_, _not applied_ (apply ran, the
    measured value did not move, or a blocker), _partly applied_, _failed_, _outcome unknown_ (link
-   lost before the result arrived), _done_ (execute tasks), _not measured_ (custom).
+   lost before the result arrived), _not verified_ (a result arrived but cannot confirm the change:
+   measuring afterwards failed, was blocked or missed an item measured before, or the agent was
+   stopped mid-run), _done_ (execute tasks), _not measured_ (custom). Only items measured both
+   before and after can show a change. Every result is checked field by field when it arrives
+   (types, sizes); anything else is dropped before the status or the vault reads it.
 7. **A started change finishes.** Once apply starts, the action is no longer tied to the session:
    pulling the cable does not stop it. Abort works during measure, and during apply only for
    actions marked `abortable`; abort names the run id and is ignored for any other run. After an
    abort or timeout during apply the agent still measures (30 s limit) and reports what it found. Every result goes to the agent's outbox (`outbox.json`) and is sent
    again after the next `hello` until the dashboard acknowledges it; the dashboard records
-   _outcome unknown, waiting for the device_ in the meantime, never _failed_. On Windows each run
+   _outcome unknown, waiting for the device_ in the meantime, never _failed_. The dashboard
+   acknowledges a result only once it is on its own disk, so a crash or a full disk never loses
+   one, and a result it has no request on record for is kept as such rather than dropped. A run
+   the agent itself was stopped in the middle of is reported by its next start as interrupted
+   (_not verified_ if the change had started). On Windows each run
    is in a Job Object, so timeout and abort stop the whole process tree.
 8. **No repeats.** The agent keeps the last 500 run ids on disk and refuses a repeated one (it
    re-sends the stored result instead). Refusals carry an `errorCode`: `busy`, `policy-denied`,

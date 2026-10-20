@@ -572,10 +572,27 @@ export interface ActionEntry {
 }
 
 const actionTime = (r: ActionRecord): string => r.appliedAt ?? r.startedAt ?? r.requestedAt
-const unknownMark = 'outcome unknown'
 const resultRef = (runId: string): string => `result ${runId}`
-const mentions = (line: string, token: string): boolean =>
-  new RegExp(`(^|[^\\w-])${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(line)
+const pendingMark = 'result pending'
+const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/*
+ * Which line is a run's own. Only the dashboard writes the end of a row or an entry's first line
+ * (the By cell, the last segment), and device text, reasons and names never reach it, so a run's
+ * lines are found there and nowhere else: "· run <id>", "· run <id> · result pending" while the
+ * outcome is unknown, and "· result <id>" for the row added when the device reports.
+ */
+type Own = 'run' | 'pending' | 'result'
+function ownLine(line: string, runId: string, table: boolean): Own | null {
+  const t = line.trimEnd()
+  if (table ? !t.trimStart().startsWith('|') : !t.startsWith('- ')) return null
+  const id = escapeRe(runId)
+  const end = table ? '\\s*\\|$' : '$'
+  if (new RegExp(`· run ${id} · ${pendingMark}${end}`).test(t)) return 'pending'
+  if (new RegExp(`· run ${id}${end}`).test(t)) return 'run'
+  if (new RegExp(`· result ${id}${end}`).test(t)) return 'result'
+  return null
+}
 
 /** Real runs the vault should show: finished, or applied with the outcome still unknown. */
 function shown(e: ActionEntry): boolean {
@@ -592,24 +609,64 @@ function machine(r: ActionRecord): string {
   return [...names, r.serial ? `serial ${r.serial}` : ''].filter(Boolean).join(' · ')
 }
 
-/** "Firewall Public: off → on" for each measured item that moved. */
+/** Exit code of a custom command, only when the device sent a whole number. */
+function exitOf(r: ActionRecord): number | undefined {
+  const x = r.result?.exitCode
+  return typeof x === 'number' && Number.isInteger(x) ? x : undefined
+}
+
+/** Why a run that was applied could not be confirmed, in the device's terms. */
+function notVerifiedWhy(r: ActionRecord): string {
+  const after = r.result?.after
+  if (r.error) return r.error
+  if (!r.result?.apply) return 'the device did not report the change'
+  if (!after) return 'nothing was measured afterwards'
+  if (after.timedOut) return 'measuring afterwards timed out'
+  if (after.exitCode !== 0) return `measuring afterwards failed (exit ${after.exitCode})`
+  if (after.blockers?.length) return `measuring afterwards was blocked: ${after.blockers[0]}`
+  return 'an item measured before was not measured afterwards'
+}
+
+/** "Firewall Public: off → on" for each item measured both times that moved, then evidence. */
+function movedParts(r: ActionRecord): string[] {
+  const after = new Set((r.result?.after?.items ?? []).map((i) => i.item))
+  const before = new Set((r.result?.before?.items ?? []).map((i) => i.item))
+  const moved = changedItems(r.result?.before, r.result?.after)
+    .filter((c) => r.status !== 'not-verified' || (before.has(c.item) && after.has(c.item)))
+    .map((c) => `${c.item}: ${c.before} → ${c.after}`)
+  return [...moved, ...(r.result?.apply?.changes ?? [])]
+}
+
 export function whatChanged(e: ActionEntry): string {
   const r = e.record
   if (r.kind === 'exec') {
-    const exit = r.result?.exitCode
-    return `Custom command (effect not measured): sha256 ${(r.scriptSha256 ?? '').slice(0, 12)}, ${r.scriptLines ?? '?'} line(s)${exit == null ? '' : `, exit ${exit}`}`
+    const exit = exitOf(r)
+    const head =
+      r.status === 'unknown'
+        ? 'OUTCOME UNKNOWN: custom command started; the result has not come back yet'
+        : 'Custom command (effect not measured)'
+    return `${head}: sha256 ${(r.scriptSha256 ?? '').slice(0, 12)}, ${r.scriptLines ?? '?'} line(s)${exit === undefined ? '' : `, exit ${exit}`}`
   }
   if (r.status === 'unknown')
     return `OUTCOME UNKNOWN: ${r.title} started; the result has not come back yet. Check the device.`
-  const moved = changedItems(r.result?.before, r.result?.after).map(
-    (c) => `${c.item}: ${c.before} → ${c.after}`
-  )
-  const evidence = r.result?.apply?.changes ?? []
-  const parts = [...moved, ...evidence]
+  const parts = movedParts(r)
+  if (r.status === 'not-verified')
+    return `NOT VERIFIED: ${r.title} was applied, but ${notVerifiedWhy(r)}. Check the device.${parts.length ? ` Measured: ${parts.join('; ')}` : ''}`
   const text = parts.length ? parts.join('; ') : r.title
   if (r.status === 'partly-applied')
     return `Partly applied: ${text}. Still to do: ${r.result?.after?.plan ?? 'see the dashboard'}`
   return text
+}
+
+/** The second row's text, for whatever the run ended as. */
+function resultText(e: ActionEntry): string {
+  const r = e.record
+  const s = r.status
+  if (r.kind === 'exec' || s === 'changed' || s === 'partly-applied' || s === 'not-verified')
+    return whatChanged(e)
+  const label = STATUS_LABEL[s]
+  const parts = movedParts(r)
+  return `${label[0]!.toUpperCase()}${label.slice(1)}${parts.length ? `: ${parts.join('; ')}` : ''}${r.error && (s === 'failed' || s === 'aborted') ? `. ${r.error}` : ''}`
 }
 
 function reversible(e: ActionEntry): string {
@@ -645,24 +702,42 @@ export function changeStamp(iso: string, opts: ContentOptions): string {
   return `${z.date} ${z.time} ${abbr}`
 }
 
+/** The reason as the technician wrote it, up to the 500 the agent accepts. */
+const why = (r: ActionRecord): string => vaultText(r.reason || 'n/a', 500)
+
 function changeRow(e: ActionEntry, opts: ContentOptions, late: boolean): string {
   const r = e.record
   const when = late ? (r.endedAt ?? actionTime(r)) : actionTime(r)
-  const what = late ? `Result of run ${r.runId}: ${whatChanged(e)}` : whatChanged(e)
-  const by = `${r.technician || 'n/a'} · ${late ? resultRef(r.runId) : runRef(r.runId)}`
+  const what = late ? `Result of run ${r.runId}: ${resultText(e)}` : whatChanged(e)
+  const ref = late
+    ? resultRef(r.runId)
+    : `${runRef(r.runId)}${r.status === 'unknown' ? ` · ${pendingMark}` : ''}`
   return `| ${[
     changeStamp(when, opts),
     cell(machine(r)),
     vaultText(what, 600),
-    cell(r.reason || 'n/a'),
+    why(r),
     cell(reversible(e)),
     cell(rollback(e)),
-    cell(by)
+    `${cell(r.technician || 'n/a')} · ${ref}`
   ].join(' | ')} |`
 }
 
-const CHANGE_COLUMNS =
-  '| Timestamp (MT) | System / machine | What changed | Why | Reversible? | Rollback | By |'
+const CHANGE_NAMES = [
+  'Timestamp (MT)',
+  'System / machine',
+  'What changed',
+  'Why',
+  'Reversible?',
+  'Rollback',
+  'By'
+]
+const CHANGE_COLUMNS = `| ${CHANGE_NAMES.join(' | ')} |`
+/** The header row, also when a table plugin or the technician padded or realigned it. */
+const isChangeHeader = (line: string): boolean => {
+  const cells = splitRow(line)
+  return cells.length === CHANGE_NAMES.length && cells.every((c, i) => c === CHANGE_NAMES[i])
+}
 
 /**
  * The Change Log block: one row per change, oldest first like the note's own table, appended by
@@ -675,14 +750,21 @@ export function mergeChanges(
   opts: ContentOptions
 ): { body: string; added: number } {
   const rows = bodyLines(existingBody, HEADINGS.changes).filter(
-    (l) => l.trim().startsWith('|') && l.trim() !== CHANGE_COLUMNS && !/^\|\s*-{3}/.test(l.trim())
+    (l) => l.trim().startsWith('|') && !isChangeHeader(l) && !isSeparator(splitRow(l))
   )
   const fresh: Array<{ at: string; line: string }> = []
   for (const e of entries) {
     const r = e.record
     if (!shown(e)) continue
+    const own = rows.map((l) => ownLine(l, r.runId, true)).filter(Boolean)
+    if (own.length) {
+      // written while the outcome was unknown: add what it ended as, whatever that is
+      if (own.includes('pending') && !own.includes('result') && r.status !== 'unknown')
+        fresh.push({ at: r.endedAt ?? actionTime(r), line: changeRow(e, opts, true) })
+      continue
+    }
     if (
-      !belongsInChangeLog({
+      belongsInChangeLog({
         mode: r.mode,
         kind: r.kind,
         access: r.access,
@@ -690,16 +772,7 @@ export function mergeChanges(
         result: r.result
       })
     )
-      continue
-    const mine = rows.filter((l) => mentions(l, runRef(r.runId)))
-    if (!mine.length) {
       fresh.push({ at: actionTime(r), line: changeRow(e, opts, false) })
-      continue
-    }
-    const wasUnknown = mine.some((l) => l.includes('OUTCOME UNKNOWN'))
-    const hasResult = rows.some((l) => mentions(l, resultRef(r.runId)))
-    if (wasUnknown && !hasResult && r.status !== 'unknown')
-      fresh.push({ at: r.endedAt ?? actionTime(r), line: changeRow(e, opts, true) })
   }
   fresh.sort((a, b) => a.at.localeCompare(b.at))
   const all = [...rows, ...fresh.map((f) => f.line)]
@@ -727,12 +800,16 @@ export function actionLogEntry(e: ActionEntry, opts: ContentOptions, late = fals
       : `Action: ${cell(r.title)} (${r.action} v${r.version})`
   const status =
     r.status === 'unknown'
-      ? `${unknownMark}: the link was lost; the result is added when the device reports`
-      : STATUS_LABEL[r.status]
-  const moved = changedItems(r.result?.before, r.result?.after)
-    .map((c) => `${c.item}: ${c.before} → ${c.after}`)
-    .join('; ')
-  const exit = r.kind === 'exec' && r.result?.exitCode != null ? `exit ${r.result.exitCode}` : ''
+      ? 'outcome unknown: the result has not come back yet; it is added when the device reports'
+      : r.status === 'not-verified'
+        ? `not verified: ${cell(notVerifiedWhy(r))}`
+        : STATUS_LABEL[r.status]
+  const moved = movedParts(r).join('; ')
+  const code = exitOf(r)
+  const exit = r.kind === 'exec' && code !== undefined ? `exit ${code}` : ''
+  const ref = late
+    ? resultRef(r.runId)
+    : `${runRef(r.runId)}${r.status === 'unknown' ? ` · ${pendingMark}` : ''}`
   const head = [
     `- ${stamp(when, opts)}`,
     `**${cell(r.hostname)}**`,
@@ -742,16 +819,16 @@ export function actionLogEntry(e: ActionEntry, opts: ContentOptions, late = fals
     status,
     moved ? vaultText(moved, 400) : '',
     exit,
-    `why: ${cell(r.reason || 'n/a')}`,
+    `why: ${why(r)}`,
     cell(r.technician || 'n/a'),
-    late ? resultRef(r.runId) : runRef(r.runId)
+    ref
   ]
     .filter(Boolean)
     .join(' · ')
   const sub = [
     ...(r.result?.apply?.changes ?? []),
     ...(r.result?.apply?.warnings ?? []),
-    ...(r.status === 'failed' && r.error ? [r.error] : [])
+    ...((r.status === 'failed' || r.status === 'aborted') && r.error ? [r.error] : [])
   ]
     .slice(0, opts.maxFindingsPerLogEntry)
     .map((t) => `    - ${cell(t)}`)
@@ -778,14 +855,12 @@ export function mergeLog(
   for (const e of actions) {
     if (!shown(e)) continue
     const r = e.record
-    const mine = lines.filter((l) => mentions(l, runRef(r.runId)))
-    if (!mine.length) {
+    const own = lines.map((l) => ownLine(l, r.runId, false)).filter(Boolean)
+    if (!own.length) {
       fresh.push({ at: actionTime(r), lines: actionLogEntry(e, opts) })
       continue
     }
-    const wasUnknown = mine.some((l) => l.includes(unknownMark))
-    const hasResult = lines.some((l) => mentions(l, resultRef(r.runId)))
-    if (wasUnknown && !hasResult && r.status !== 'unknown')
+    if (own.includes('pending') && !own.includes('result') && r.status !== 'unknown')
       fresh.push({ at: r.endedAt ?? actionTime(r), lines: actionLogEntry(e, opts, true) })
   }
   fresh.sort((a, b) => b.at.localeCompare(a.at))

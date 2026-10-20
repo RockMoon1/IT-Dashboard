@@ -156,7 +156,8 @@ get a **Fix…** button.
 4. The Work Log gets an entry and, for changes, the Change Log a row in its own columns.
 
 If the cable is pulled once a change has started, the device finishes it and reports on the next
-connection; until then the record says "outcome unknown".
+connection; until then the record says "outcome unknown". A result that cannot confirm the change
+(measuring afterwards failed, or the computer shut down mid-change) says "not verified" and why.
 
 **Custom command…** runs what you type, as SYSTEM or root. A device allows it only if enabled
 there: `arh-agent policy --allow custom` (administrator / sudo). Nothing about its effect is

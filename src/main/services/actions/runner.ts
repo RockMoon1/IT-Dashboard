@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import {
   actionStatus,
   checkParam,
+  cleanResult,
   withDefaults,
   type ActionCheck,
   type ActionDef,
@@ -10,7 +11,6 @@ import {
   type ActionOffer,
   type ActionRecord,
   type ActionRequest,
-  type AgentResult,
   type ExecRequest
 } from '../../../shared/actions.ts'
 import type { DeviceCapabilities, Settings } from '../../../shared/types.ts'
@@ -31,7 +31,9 @@ export const ACK_TIMEOUT_MS = 15_000
 export const RECONNECT_GRACE_MS = 20_000
 const MAX_OUTPUT = 1 << 20
 const MAX_SCRIPT = 64 * 1024
+/** The agent's limits, in UTF-8 bytes as it counts them. */
 const MAX_REASON = 500
+const MAX_TECHNICIAN = 100
 
 export interface ActionRunnerDeps {
   catalog: ActionCatalog
@@ -40,6 +42,8 @@ export interface ActionRunnerDeps {
   send: (deviceId: string, message: LinkMessage) => boolean
   capabilities: (deviceId: string) => DeviceCapabilities | undefined
   settings: () => Settings
+  /** The enrolled device, for a result this dashboard has no request on record for. */
+  device?: (deviceId: string) => EnrolledDevice | undefined
   now?: () => Date
   /** Called whenever a real run reaches a state the vault should show. */
   onRecorded?: (record: ActionRecord) => void
@@ -56,6 +60,16 @@ export interface RunConfirm {
 
 function newRunId(prefix: 'a' | 'p' | 'x', now: Date): string {
   return `${prefix}_${now.getTime().toString(36)}_${randomBytes(3).toString('hex')}`
+}
+
+/** The agent refuses a reason over 500 or a name over 100 UTF-8 bytes; say so before sending. */
+function checkWho(reason: string, technician: string): void {
+  if (Buffer.byteLength(reason, 'utf8') > MAX_REASON)
+    throw new Error(
+      `the reason is too long (at most ${MAX_REASON} bytes; accented letters and symbols count 2 to 4)`
+    )
+  if (Buffer.byteLength(technician, 'utf8') > MAX_TECHNICIAN)
+    throw new Error(`the technician name in Settings is too long (at most ${MAX_TECHNICIAN} bytes)`)
 }
 
 /** Decisions the agent will make, mirrored so the page can say why before anyone clicks. */
@@ -231,6 +245,7 @@ export class ActionRunner extends EventEmitter {
     if (blocked.length) throw new Error(blocked.join('; '))
     const params = this.checkRequest(def, req)
     const r = this.base(device, 'action', 'preview', newRunId('p', this.now()), def.title, req.reason ?? '')
+    checkWho(r.reason, r.technician)
     Object.assign(r, {
       action: def.name,
       version: def.version,
@@ -263,9 +278,9 @@ export class ActionRunner extends EventEmitter {
     const params = this.checkRequest(def, req)
     const reason = (req.reason ?? '').trim()
     if (!reason) throw new Error('say why: the reason goes to the Change Log')
-    if (reason.length > MAX_REASON) throw new Error(`the reason is limited to ${MAX_REASON} characters`)
     if (!s.technician.trim())
       throw new Error('set your name in Settings first: every change is recorded with who made it')
+    checkWho(reason, s.technician.trim())
     const preview = confirm.previewOf ? this.get(confirm.previewOf) : undefined
     if (s.previewFirst || def.impact === 'interrupts') {
       if (!preview) throw new Error('preview the action first')
@@ -300,8 +315,7 @@ export class ActionRunner extends EventEmitter {
       fix: req.fix ?? preview?.fix,
       previewOf: preview?.runId
     })
-    if (preview) this.usedPreviews.add(preview.runId)
-    return this.dispatch(device, r, def.concurrent, def.title, {
+    const sent = this.dispatch(device, r, def.concurrent, def.title, {
       type: 'action',
       runId: r.runId,
       action: def.name,
@@ -312,6 +326,9 @@ export class ActionRunner extends EventEmitter {
       technician: r.technician,
       reason: r.reason
     })
+    // used up only once the run went out: a busy device or a pulled cable leaves it usable
+    if (preview) this.usedPreviews.add(preview.runId)
+    return sent
   }
 
   /** A custom command: nothing about its effect is measured. */
@@ -331,9 +348,9 @@ export class ActionRunner extends EventEmitter {
     if (timeout < 1 || timeout > 3600) throw new Error('the time limit must be 1 to 3600 seconds')
     const reason = (req.reason ?? '').trim()
     if (!reason) throw new Error('say why: the reason goes to the Change Log')
-    if (reason.length > MAX_REASON) throw new Error(`the reason is limited to ${MAX_REASON} characters`)
     if (!s.technician.trim())
       throw new Error('set your name in Settings first: every change is recorded with who made it')
+    checkWho(reason, s.technician.trim())
     const shell = device.os === 'windows' ? 'powershell' : 'sh'
     const r = this.base(device, 'exec', 'apply', newRunId('x', this.now()), 'Custom command', reason)
     r.shell = shell
@@ -410,11 +427,16 @@ export class ActionRunner extends EventEmitter {
   handleMessage(deviceId: string, m: LinkMessage): void {
     const runId = typeof m['runId'] === 'string' ? m['runId'] : ''
     if (m.type === 'result') {
-      this.lateResult(deviceId, runId, m['result'] as AgentResult | undefined)
+      this.lateResult(deviceId, runId, m['result'])
       return
     }
     const r = this.live.get(runId)
-    if (!r || r.deviceId !== deviceId) return
+    if (!r || r.deviceId !== deviceId) {
+      // the end of a run this dashboard is no longer following (it was restarted meanwhile)
+      if (m.type === 'run-end' && m['result'] && typeof m['result'] === 'object')
+        this.lateResult(deviceId, runId, m['result'])
+      return
+    }
     const checkId = typeof m['checkId'] === 'string' ? m['checkId'] : ''
     let check = r.checks.find((c) => c.id === checkId)
     switch (m.type) {
@@ -422,6 +444,8 @@ export class ActionRunner extends EventEmitter {
         r.startedAt = this.now().toISOString()
         if (m['link'] === 'cable' || m['link'] === 'lan') r.link = m['link']
         if (r.status === 'unknown') r.status = 'running'
+        r.error = undefined // a "no answer" from before the agent started no longer applies
+        r.errorCode = undefined
         this.clearTimer(runId)
         this.emitUpdate(r)
         return
@@ -474,12 +498,13 @@ export class ActionRunner extends EventEmitter {
         return
       case 'run-end': {
         this.clearTimer(runId)
-        const result = m['result'] as AgentResult | undefined
-        if (result && typeof result === 'object') {
-          r.result = result
-          r.error = typeof m['error'] === 'string' && m['error'] ? m['error'] : r.error
-          this.end(r, actionStatus(result))
-          this.deps.send(deviceId, { type: 'ack', runId })
+        if (m['result'] && typeof m['result'] === 'object') {
+          this.settle(r, m['result'], typeof m['error'] === 'string' ? m['error'] : '')
+          // the agent drops a result once acknowledged: only after it is on disk here
+          void this.end(r, r.status).then(
+            () => this.deps.send(deviceId, { type: 'ack', runId }),
+            () => undefined // not written: the agent sends it again on the next connection
+          )
         } else {
           r.errorCode = typeof m['errorCode'] === 'string' ? m['errorCode'] : undefined
           r.error = typeof m['error'] === 'string' ? m['error'] : 'refused by the agent'
@@ -496,43 +521,105 @@ export class ActionRunner extends EventEmitter {
     this.timers.delete(runId)
   }
 
-  private end(r: ActionRecord, status: ActionRecord['status']): void {
+  /** Takes the agent's result into the record: checked first, then the status from it. */
+  private settle(r: ActionRecord, raw: unknown, error: string, wireId = r.runId): void {
+    const result = cleanResult(raw, wireId)
+    if (result) result.runId = r.runId
+    r.error = error || undefined // an earlier "link lost" or "no answer" is over now
+    r.errorCode = undefined
+    if (result) {
+      r.result = result
+      r.status = actionStatus(result)
+      if (!error && result.error) r.error = result.error
+    } else {
+      r.status = r.mode === 'apply' ? 'not-verified' : 'failed'
+      r.error = 'the device sent a result this dashboard could not read; check the device'
+    }
+  }
+
+  /** Ends the run; resolves once its result line is on disk (rejects if it could not be written). */
+  private end(r: ActionRecord, status: ActionRecord['status']): Promise<void> {
     r.status = status
     r.endedAt = this.now().toISOString()
     for (const c of r.checks) if (c.status === 'running' || c.status === 'pending') c.status = 'failed'
     this.live.delete(r.runId)
     this.clearTimer(r.runId)
     this.deps.slots.release(r.deviceId, r.runId)
-    this.save('result', r)
+    return this.save('result', r)
   }
 
-  private save(event: 'update' | 'result', r: ActionRecord): void {
-    this.track(
-      this.deps.log.append(event, r, {
-        keepCustomOutput: this.deps.settings().saveCustomOutput,
-        now: this.now()
-      })
-    )
+  private save(event: 'update' | 'result', r: ActionRecord): Promise<void> {
+    const write = this.deps.log.append(event, r, {
+      keepCustomOutput: this.deps.settings().saveCustomOutput,
+      now: this.now()
+    })
+    this.track(write)
     this.emitUpdate(r)
     if (r.mode === 'apply') this.deps.onRecorded?.(r)
+    return write
   }
 
-  /** A result from the agent's outbox, for a run whose end was missed (cable pulled). */
-  private lateResult(deviceId: string, runId: string, result: AgentResult | undefined): void {
-    if (!result || typeof result !== 'object' || result.runId !== runId) return
-    const r = this.live.get(runId) ?? this.deps.log.get(runId)
-    if (!r || r.deviceId !== deviceId) {
-      this.deps.send(deviceId, { type: 'ack', runId }) // not ours (another dashboard's record)
-      return
+  /**
+   * A result from the agent's outbox: a run whose end was missed (cable pulled, dashboard
+   * restarted), or one this dashboard has no request on record for, which is recorded as such
+   * rather than dropped. Acknowledged only once it is on disk.
+   */
+  private lateResult(deviceId: string, runId: string, raw: unknown): void {
+    if (!runId || !raw || typeof raw !== 'object') return
+    const ack = (): void => void this.deps.send(deviceId, { type: 'ack', runId })
+    const known = this.live.get(runId) ?? this.deps.log.get(runId)
+    if (known && known.deviceId === deviceId && known.result && known.endedAt) {
+      if (known.status !== 'unknown') return ack() // already recorded
     }
-    if (r.result && r.endedAt && r.status !== 'unknown') {
-      this.deps.send(deviceId, { type: 'ack', runId })
-      return
+    let rec: ActionRecord | undefined
+    if (known && known.deviceId === deviceId) rec = this.live.get(runId) ? known : structuredClone(known)
+    else rec = this.orphan(deviceId, runId, raw, !!known)
+    if (!rec) return
+    this.settle(rec, raw, '', runId)
+    void this.end(rec, rec.status).then(ack, () => undefined)
+  }
+
+  /**
+   * A record for a result the dashboard never asked for, as far as its own log says. When the id
+   * is another device's run (a re-enrolled device, or a device reporting someone else's run), the
+   * record gets an id of its own, so it can never replace or end that run.
+   */
+  private orphan(
+    deviceId: string,
+    runId: string,
+    raw: unknown,
+    taken: boolean
+  ): ActionRecord | undefined {
+    const result = cleanResult(raw, runId)
+    if (!result) return undefined
+    if (taken) result.runId = `${runId}~${deviceId.slice(0, 8)}`
+    const device = this.deps.device?.(deviceId)
+    const def = result.action ? this.deps.catalog.get(result.action) : undefined
+    const caps = this.deps.capabilities(deviceId)
+    return {
+      runId: result.runId,
+      kind: result.kind,
+      mode: result.dryRun ? 'preview' : 'apply',
+      deviceId,
+      serial: device?.serial ?? '',
+      hostname: device?.hostname ?? '',
+      displayName: device?.displayName ?? deviceId.slice(0, 8),
+      os: device?.os ?? def?.os ?? '',
+      link: caps?.link ?? 'unknown',
+      title: def?.title ?? (result.kind === 'exec' ? 'Custom command' : (result.action ?? 'Action')),
+      reason: 'no request for this run is on record in this dashboard; reported by the device',
+      technician: '',
+      requestedAt: result.startedAt || this.now().toISOString(),
+      status: 'running',
+      checks: [],
+      ...(result.action ? { action: result.action } : {}),
+      ...(result.version !== undefined ? { version: result.version } : {}),
+      ...(result.sha256 ? { sha256: result.sha256 } : {}),
+      ...(result.access ? { access: result.access } : {}),
+      ...(def ? { impact: def.impact } : {}),
+      ...(result.params ? { params: result.params } : {}),
+      ...(result.appliedAt ? { appliedAt: result.appliedAt } : {})
     }
-    const rec = this.live.get(runId) ? r : structuredClone(r)
-    rec.result = result
-    this.end(rec, actionStatus(result))
-    void this.flush().then(() => this.deps.send(deviceId, { type: 'ack', runId }))
   }
 
   /** The link dropped: previews fail; a change in progress becomes "outcome unknown". */
@@ -557,6 +644,7 @@ export class ActionRunner extends EventEmitter {
       if (r.deviceId !== deviceId || r.endedAt) continue
       if (caps?.running === r.runId) {
         r.status = 'running'
+        r.error = undefined // the link is back and the device is still on it
         this.emitUpdate(r)
         continue
       }

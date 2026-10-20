@@ -155,6 +155,7 @@ export class AppContext {
       send: (deviceId, message) => this.link?.send(deviceId, message) ?? false,
       capabilities: (deviceId) => this.link?.capabilities(deviceId),
       settings: () => this.settings,
+      device: (deviceId) => this.devices.get(deviceId),
       onRecorded: () => this.scheduleVaultWrite('action')
     })
   }

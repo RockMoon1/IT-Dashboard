@@ -104,6 +104,7 @@ export type ActionStatus =
   | 'aborted'
   | 'refused'
   | 'unknown'
+  | 'not-verified'
   | 'not-measured'
 
 export const STATUS_LABEL: Record<ActionStatus, string> = {
@@ -120,6 +121,7 @@ export const STATUS_LABEL: Record<ActionStatus, string> = {
   aborted: 'stopped',
   refused: 'refused',
   unknown: 'outcome unknown',
+  'not-verified': 'not verified',
   'not-measured': 'ran (effect not measured)'
 }
 
@@ -139,6 +141,7 @@ export function statusTone(s: ActionStatus): StatusTone {
     case 'partly-applied':
     case 'blocked':
     case 'unknown':
+    case 'not-verified':
     case 'aborted':
     case 'not-measured':
       return 'warn'
@@ -171,7 +174,9 @@ const measured = (m?: Measurement): boolean => !!m && m.exitCode === 0 && !m.tim
 
 /**
  * The status of a run, from what the agent measured. `pending` means no result has arrived yet:
- * either the run is still going, or the link was lost and the device has not reported back.
+ * either the run is still going, or the link was lost and the device has not reported back
+ * ("unknown"). A result that cannot confirm the change (measuring afterwards failed or skipped an
+ * item, or the agent was stopped mid-run) is "not-verified", never "changed".
  */
 export function actionStatus(
   r: AgentResult | undefined,
@@ -200,18 +205,25 @@ export function actionStatus(
   const ap = r.apply
   const applyOk = !!ap && ap.exitCode === 0 && !ap.timedOut
   // tasks, and write actions whose effect is evidence rather than a measured value (sfc)
-  if (r.access === 'execute' || !(before?.items ?? []).length) return applyOk ? 'done' : 'failed'
-  if (!measured(r.after)) return 'unknown'
-  const moved = changedItems(before, r.after).length
-  if (r.after!.change === false) return moved || applyOk ? 'changed' : 'unknown'
-  if (r.after!.change === true) return moved ? 'partly-applied' : 'not-applied'
-  return moved ? 'changed' : 'unknown'
+  if (r.access === 'execute' || !(before?.items ?? []).length) {
+    if (!ap) return 'not-verified' // the agent stopped before apply reported
+    return applyOk ? 'done' : 'failed'
+  }
+  const after = r.after
+  if (!measured(after) || after!.blockers?.length) return 'not-verified'
+  // only items measured both times can show a change
+  const afterNames = new Set((after!.items ?? []).map((i) => i.item))
+  if ((before!.items ?? []).some((i) => !afterNames.has(i.item))) return 'not-verified'
+  const moved = changedItems(before, after).length
+  if (after!.change === false) return moved || applyOk ? 'changed' : 'not-verified'
+  if (after!.change === true) return moved ? 'partly-applied' : 'not-applied'
+  return moved ? 'changed' : 'not-verified'
 }
 
 /**
  * Whether a run belongs in the vault's Change Log: a real run of a write action that changed
- * something, partly did, or whose outcome is not known yet; a task that left evidence of a change
- * (sfc repairs); and every custom command that started, since its effect is not measured.
+ * something, partly did, may have (outcome unknown or not verified); a task that left evidence of
+ * a change (sfc repairs); and every custom command that started, since its effect is not measured.
  */
 export function belongsInChangeLog(x: {
   mode: ActionMode
@@ -225,8 +237,116 @@ export function belongsInChangeLog(x: {
   if ((x.result?.apply?.changes ?? []).length) return true
   return (
     x.access === 'write' &&
-    (x.status === 'changed' || x.status === 'partly-applied' || x.status === 'unknown')
+    (x.status === 'changed' ||
+      x.status === 'partly-applied' ||
+      x.status === 'unknown' ||
+      x.status === 'not-verified')
   )
+}
+
+/* ---------- results from agents: checked before anything reads them ---------- */
+
+const MAX_TEXT = 2000
+const MAX_LIST = 64
+
+function text(v: unknown, max = MAX_TEXT): string | undefined {
+  return typeof v === 'string' ? v.slice(0, max) : undefined
+}
+function int(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isInteger(v) ? v : undefined
+}
+function bool(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined
+}
+function texts(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  return v
+    .filter((x): x is string => typeof x === 'string')
+    .slice(0, MAX_LIST)
+    .map((x) => x.slice(0, MAX_TEXT))
+}
+function pairs(v: unknown): ActionItem[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  return v
+    .filter(
+      (x): x is ActionItem =>
+        !!x &&
+        typeof x === 'object' &&
+        typeof (x as ActionItem).item === 'string' &&
+        typeof (x as ActionItem).value === 'string'
+    )
+    .slice(0, MAX_LIST)
+    .map((x) => ({ item: x.item.slice(0, MAX_TEXT), value: x.value.slice(0, MAX_TEXT) }))
+}
+function stringMap(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, x] of Object.entries(v).slice(0, MAX_LIST))
+    if (typeof x === 'string') out[k.slice(0, 64)] = x.slice(0, MAX_TEXT)
+  return out
+}
+function measurement(v: unknown): Measurement | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const m = v as Record<string, unknown>
+  const out: Measurement = {
+    items: pairs(m['items']) ?? null,
+    // a measurement that does not say how it ended counts as failed
+    exitCode: int(m['exitCode']) ?? -1
+  }
+  const opt = {
+    info: pairs(m['info']),
+    change: bool(m['change']),
+    plan: text(m['plan']),
+    blockers: texts(m['blockers']),
+    warnings: texts(m['warnings']),
+    restore: stringMap(m['restore']),
+    notes: texts(m['notes']),
+    changes: texts(m['changes']),
+    ignored: int(m['ignored']),
+    timedOut: bool(m['timedOut'])
+  }
+  for (const [k, x] of Object.entries(opt)) if (x !== undefined) Object.assign(out, { [k]: x })
+  return out
+}
+
+/**
+ * The agent's result as the dashboard keeps it: only known fields, each of the right type and a
+ * bounded size, so nothing a device sends can break the status logic, the action log or a note.
+ * Null when it is not a result for this run.
+ */
+export function cleanResult(raw: unknown, runId: string): AgentResult | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (r['runId'] !== runId) return null
+  const kind = r['kind'] === 'exec' ? 'exec' : r['kind'] === 'action' ? 'action' : null
+  if (!kind) return null
+  const access = r['access'] === 'write' || r['access'] === 'execute' ? r['access'] : undefined
+  const out: AgentResult = {
+    runId,
+    kind,
+    dryRun: r['dryRun'] === true,
+    applied: r['applied'] === true,
+    startedAt: text(r['startedAt'], 64) ?? ''
+  }
+  const opt = {
+    action: text(r['action'], 100),
+    version: int(r['version']),
+    sha256: text(r['sha256'], 64),
+    access,
+    params: stringMap(r['params']),
+    before: measurement(r['before']),
+    apply: measurement(r['apply']),
+    after: measurement(r['after']),
+    skipped: text(r['skipped']),
+    aborted: bool(r['aborted']),
+    error: text(r['error']),
+    exitCode: int(r['exitCode']),
+    lines: int(r['lines']),
+    appliedAt: text(r['appliedAt'], 64),
+    endedAt: text(r['endedAt'], 64)
+  }
+  for (const [k, x] of Object.entries(opt)) if (x !== undefined) Object.assign(out, { [k]: x })
+  return out
 }
 
 /** JavaScript check of one parameter, the same rules the agent applies (regexes are anchored). */
