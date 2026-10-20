@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { headingKey } from '@shared/markdown'
 import { useDashboard } from '../store'
 import { MD_KEY } from '../md'
 import { when } from '../format'
@@ -45,10 +46,12 @@ function jump(line?: number, heading?: string): void {
   root.querySelectorAll('.md-hit').forEach((e) => e.classList.remove('md-hit'))
   let el: HTMLElement | null = null
   if (heading) {
-    const h = heading.trim().toLowerCase()
+    // [[Note#08 55 MT]] for "### 08:55 MT", "[[2026-10-14]] (Wed)" from the Work log tab
+    const key = (text: string): string => headingKey(text) || text.trim().toLowerCase()
+    const h = key(heading)
     el =
       [...root.querySelectorAll<HTMLElement>('[data-heading]')].find(
-        (x) => (x.dataset['heading'] ?? '').trim().toLowerCase() === h
+        (x) => key(x.dataset['heading'] ?? '') === h
       ) ?? null
   } else if (line) {
     let best = -1
@@ -83,6 +86,7 @@ watch(
 )
 
 function onKey(e: KeyboardEvent): void {
+  if (e.defaultPrevented) return // handled already (Esc in the lookup box closes only its list)
   if (e.key === 'Escape') dash.closeNote()
   else if (e.altKey && e.key === 'ArrowLeft') void dash.noteBack()
   else if (e.altKey && e.key === 'ArrowRight') void dash.noteForward()
@@ -92,6 +96,17 @@ function onKey(e: KeyboardEvent): void {
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
+// The backdrop closes the viewer on a single click that also started on it: not when a text
+// selection in the drawer ends over it, nor on the second click of a double-click on a row.
+let downOnBackdrop = false
+function onBackdropDown(e: MouseEvent): void {
+  downOnBackdrop = e.target === e.currentTarget
+}
+function onBackdropClick(e: MouseEvent): void {
+  if (downOnBackdrop && e.target === e.currentTarget && e.detail < 2) dash.closeNote()
+  downOnBackdrop = false
+}
+
 const folderPath = computed(() => {
   const f = note.value?.file ?? target.value?.file ?? ''
   const parts = f.split(/[\\/]/)
@@ -100,7 +115,11 @@ const folderPath = computed(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex justify-end bg-black/50" @click.self="dash.closeNote()">
+  <div
+    class="fixed inset-0 z-40 flex justify-end bg-black/50"
+    @mousedown="onBackdropDown"
+    @click="onBackdropClick"
+  >
     <aside
       class="flex h-full w-[min(940px,64vw)] flex-col border-l border-white/5 bg-ink-900 shadow-2xl"
       role="dialog"
@@ -157,10 +176,11 @@ const folderPath = computed(() => {
           >
             <template v-for="[k, v] in note.frontmatter" :key="k">
               <dt class="text-mist-500">{{ k }}</dt>
-              <dd class="min-w-0 break-words text-mist-100">{{ v }}</dd>
+              <dd class="min-w-0 whitespace-pre-line break-words text-mist-100">{{ v }}</dd>
             </template>
           </dl>
-          <MdBlocks :blocks="note.blocks" />
+          <!-- keyed by note: a callout opened or folded in one note does not carry over -->
+          <MdBlocks :key="`${note.file}:${note.mtimeMs}`" :blocks="note.blocks" />
           <p v-if="!note.blocks.length" class="text-sm text-mist-500">This note is empty.</p>
 
           <section v-if="note.backlinks.length" class="mt-8 border-t border-white/5 pt-4">

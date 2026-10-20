@@ -5,13 +5,19 @@ import { MD_KEY } from '../md'
 
 /*
   Inline Markdown drawn as text nodes and elements only, never v-html, so note content cannot
-  become markup. Web links open in the browser (main process allows http/https only);
-  [[links]] open inside the dashboard.
+  become markup. Web links open in the browser and mailto: links in the mail app (the main
+  process allows only those); [[links]] open inside the dashboard.
 */
 defineProps<{ c: Inline[] }>()
 const md = inject(MD_KEY, null)
 
 type Wiki = Extract<Inline, { t: 'wiki' }>
+
+function linkTitle(href: string): string {
+  return /^mailto:/i.test(href)
+    ? `Opens your mail app: ${href.slice(7).replace(/[?#].*$/, '')}`
+    : `Opens in your browser: ${href}`
+}
 
 function label(x: Wiki): string {
   if (x.alias) return x.alias
@@ -46,7 +52,7 @@ function resolved(x: Wiki): boolean {
       target="_blank"
       rel="noopener noreferrer"
       class="text-info-400 underline decoration-info-400/40 underline-offset-2 hover:decoration-info-400"
-      :title="`Opens in your browser: ${x.href}`"
+      :title="linkTitle(x.href)"
       ><MdInline :c="x.c" /><span class="ml-0.5 text-[0.75em]">↗</span></a
     >
     <span

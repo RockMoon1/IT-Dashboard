@@ -5,8 +5,9 @@ import MdInline from './MdInline.vue'
 
 /*
   Block Markdown for the note viewer. Every block carries data-line (its line in the file) so the
-  viewer can jump to and mark the line a click came from; headings carry data-heading for
-  [[Note#Heading]] links. `tight` drops paragraph spacing inside list items.
+  viewer can jump to and mark the line a click came from; lists and quotes leave it to their
+  first item or block (same line), and tables carry it on each row. Headings carry
+  data-heading for [[Note#Heading]] links. `tight` drops paragraph spacing inside list items.
 */
 withDefaults(defineProps<{ blocks: Block[]; tight?: boolean }>(), { tight: false })
 
@@ -51,7 +52,6 @@ const done = (task: string | undefined): boolean => task === 'x' || task === 'X'
     ><code>{{ b.v }}</code></pre>
     <blockquote
       v-else-if="b.t === 'quote'"
-      :data-line="b.line"
       class="my-3 border-l-2 border-white/15 pl-3 text-mist-300"
     >
       <MdBlocks :blocks="b.c" />
@@ -72,7 +72,6 @@ const done = (task: string | undefined): boolean => task === 'x' || task === 'X'
     <component
       :is="b.ordered ? 'ol' : 'ul'"
       v-else-if="b.t === 'list'"
-      :data-line="b.line"
       :start="b.ordered && b.start !== 1 ? b.start : undefined"
       class="my-2 space-y-0.5 pl-5"
       :class="b.ordered ? 'list-decimal' : 'list-disc'"
@@ -113,7 +112,12 @@ const done = (task: string | undefined): boolean => task === 'x' || task === 'X'
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, r) in b.rows" :key="r" class="border-b border-white/5 align-top">
+          <tr
+            v-for="(row, r) in b.rows"
+            :key="r"
+            :data-line="b.rowLines[r]"
+            class="border-b border-white/5 align-top"
+          >
             <td v-for="(cell, j) in row" :key="j" class="px-2 py-1.5" :class="align(b.align[j])">
               <MdInline :c="cell" />
             </td>

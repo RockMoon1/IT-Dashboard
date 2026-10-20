@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import { IPC, type LogLine } from '../shared/api.ts'
 import type {
   AppInfo,
@@ -658,7 +658,7 @@ export class AppContext {
     )
     try {
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
-      const tasks = parseTasks(text, this.settings.openLoopsNote)
+      const tasks = parseTasks(text, await this.indexedFile('openLoops', path))
       return {
         source: path,
         tasks,
@@ -682,11 +682,21 @@ export class AppContext {
     const path = notePaths(this.settings).workLog
     try {
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
-      const entries = parseDatedEntries(text, this.settings.workLogNote).slice(0, limit)
+      const file = await this.indexedFile('workLog', path)
+      const entries = parseDatedEntries(text, file).slice(0, limit)
       return { source: path, entries }
     } catch (err) {
       return { source: path, entries: [], error: (err as Error).message }
     }
+  }
+
+  /**
+   * The note as the vault index names it, for the tabs to open in the viewer: Settings may
+   * leave off ".md", use "/" on Windows or differ in case, and the viewer only reads index paths.
+   */
+  private async indexedFile(role: 'openLoops' | 'workLog', path: string): Promise<string> {
+    const notes = await this.vaultIndex.notes(this.settings.vaultPath)
+    return noteRoles(notes, this.settings)[role]?.rel ?? relative(this.settings.vaultPath, path)
   }
 
   /* ---------- computer lookup ---------- */

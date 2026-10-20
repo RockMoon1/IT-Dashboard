@@ -31,9 +31,12 @@ function createWindow(): BrowserWindow {
     }
   })
   win.on('ready-to-show', () => win.show())
-  // No in-app popups. Only web links leave the app, in the default browser.
+  // No in-app popups. Only web links leave the app, in the default browser, and mailto: links,
+  // in the mail app with the address alone (a ?body= or ?attach= from a note never reaches it).
   win.webContents.setWindowOpenHandler(({ url }) => {
+    const to = /^mailto:([^?#]*)/i.exec(url)?.[1] ?? ''
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+    else if (/^[^\s:/\\<>"'@]+@[^\s:/\\<>"']+$/.test(to)) void shell.openExternal(`mailto:${to}`)
     return { action: 'deny' }
   })
   // The window only ever shows the dashboard itself (or the dev server while developing).

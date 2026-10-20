@@ -83,6 +83,7 @@ function onKey(e: KeyboardEvent): void {
 function onGlobalKey(e: KeyboardEvent): void {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault()
+    dash.closeNote() // the note viewer would cover the box and what it opens
     input.value?.focus()
     input.value?.select()
     if (query.value.trim()) open.value = true
