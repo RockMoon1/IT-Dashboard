@@ -1,4 +1,4 @@
-# ARH agent link protocol (version 1)
+# ARH agent link protocol (version 2)
 
 The host (ARH IT Dashboard on the technician's Windows PC) never connects _into_ a target. The
 agent on the target makes one outbound TLS connection to the host over the USB network link and
@@ -87,10 +87,19 @@ client-certificate binding without the device key.
 ## Session (every later connection)
 
 ```
-agent → host  { "type": "hello", "hostname", "serial", "os", "agentVersion", "profiles": [{ "name", "version" }] }
+agent → host  { "type": "hello", "hostname", "serial", "os", "agentVersion", "profiles": [{ "name", "version" }],
+                "protocol": 2, "link": "cable" | "lan", "bootTime", "actions": [{ "name", "version", "sha256" }],
+                "policy": { "write", "execute", "custom", "lan", "interrupts", "deny": [], "error"? },
+                "running"?: "<runId>", "pendingRestartUntil"?: "<ISO-8601>" }
 host → agent  { "type": "welcome", "deviceId", "hostTime": "<ISO-8601>" }   (or { "type": "reject", "reason" })
+agent → host  { "type": "result", "runId", "result": { … } }   once per result still in the outbox
 either side   { "type": "ping" } / { "type": "pong" }   every 20 s; 60 s silence closes the socket
+agent → host  { "type": "policy", "policy": { … } }   when policy.json changed on the device
 ```
+
+Protocol-1 agents send none of the protocol-2 fields; the dashboard then treats the device as
+read only. `link` is `cable` only when the TCP peer is link-local and the agent's end of the
+connection is not on the interface that carries its default route.
 
 The host looks the client certificate fingerprint up in its device registry. Unknown
 fingerprints are rejected (`reject`), and the dashboard shows the device as "needs enrollment".
@@ -113,11 +122,52 @@ Rules enforced by the agent, not the host:
 
 - The profile name and version must match an embedded profile byte-for-byte (the agent carries
   `profiles/*.json` compiled in). Otherwise `run-end` with `ok:false, error:"unknown profile"`.
-- Every check must have `"access": "read"`. Version 1 agents refuse anything else, so a future
-  write/execute action needs a new agent build _and_ a per-action approval message that does not
-  exist yet.
+- Every check must have `"access": "read"`. Changes are not scan checks: they are named actions
+  (next section), with their own rules.
 - Output per check is capped at 1 MiB (then `truncated: true`); per-check timeout from the
   profile (default 90 s); the whole run is aborted on `abort` or if the socket closes.
+
+## Actions and custom commands (protocol 2)
+
+Design and rationale: [PHASE3-DESIGN.md](PHASE3-DESIGN.md). The host still never sends a
+script for a named action: it names one the agent carries, with the version and the SHA-256 of
+its file.
+
+```
+host → agent  { "type": "action", "runId": "a_…", "action": "windows-firewall-on", "version": 1, "sha256": "…",
+                "params": { "name": "value" }, "mode": "preview" | "apply", "technician", "reason" }
+host → agent  { "type": "exec", "runId": "x_…", "shell": "powershell" | "sh", "script": "…", "timeoutSeconds": 300,
+                "technician", "reason" }
+agent → host  { "type": "run-start", "runId", "action", "version", "sha256", "mode", "params", "timeoutSeconds", "checks", "title", "link" }
+agent → host  check-start / check-output / check-end with checkId "measure", "apply", "measure-after" (or "exec")
+agent → host  { "type": "run-end", "runId", "ok", "durationMs", "result": { … } }
+              or, when refused, { "type": "run-end", "runId", "ok": false, "errorCode", "error" }
+host → agent  { "type": "ack", "runId" }        the result is recorded; drop it from the outbox
+host → agent  { "type": "abort", "runId" }      answered by { "type": "abort-refused", "runId", "errorCode", "error" } when unsafe
+```
+
+`result` is the agent's `actions.Result`: the measured `before` and `after` (items, info, plan,
+blockers, warnings, restore values), what `apply` reported, `applied`, `skipped`, `aborted`, and
+the device's own times. `tests/fixtures/protocol/actions.ndjson` is decoded by both the Go and the
+TypeScript tests.
+
+Rules enforced by the agent:
+
+- `mode` is required; anything but `preview` or `apply` is refused (`bad-mode`). A preview runs
+  only the action's measure script.
+- Name, version and SHA-256 must match an embedded action (`unknown-action`, `version-mismatch`);
+  parameters must be declared and pass the action's own checks (`bad-param`).
+- `apply` and `exec` need the device's `policy.json` to allow them (`policy-denied`; missing or
+  invalid file means read only) and a cable session (`lan-session`), unless the policy allows LAN.
+  `exec` needs custom, write and execute all allowed.
+- A run id is used once (`duplicate-run`; the stored result is sent again). One run at a time
+  (`busy`), except actions marked concurrent. After a restart is scheduled, other changes wait
+  (`restart-pending`).
+- Once apply has started, the run is no longer tied to the session: it finishes if the cable is
+  pulled, and its result waits in the outbox until acknowledged. Abort stops a measure, an
+  abortable apply or a custom command; otherwise `not-abortable`.
+- Every action and custom command is recorded on the device (`actions.log`, intent before the
+  process starts and outcome after, never output) and in the OS log.
 
 ## Message framing
 
@@ -166,4 +216,7 @@ Windows: a scheduled task at system start under `SYSTEM`, registered with no exe
 limit and restart-on-failure (no service control dispatcher needed, so the agent has no
 third-party dependencies). macOS: a LaunchDaemon (root). Linux: a systemd
 unit (root). Running as root/SYSTEM is what lets read-only checks see every user profile, the
-Security event log and SMART data; the allowlist above is what keeps that power bounded.
+Security event log and SMART data; the allowlist above is what keeps that power bounded. Named
+actions run in the same context, with a cleared environment, the system PATH and a fixed
+working folder; on Windows every run is in a Job Object so a timeout ends the whole process tree.
+`arh-agent policy` on the device says what the dashboard may do there.

@@ -33,8 +33,9 @@ Numbers are copied from the report. "Inference" marks a conclusion drawn from th
 | `Assets/Asset Inventory.md` | `## Computers` table `Name, Location, Room / role, Model, Serial, MAC, IP, OS, Age, Warranty, PHI?, Notes`. Frontmatter status says computers are not captured yet                                                                                               |
 | `ARH IT Hub.md`             | no frontmatter, CRLF. Sections include `## 🚨 Read this first — vault safety rule for ARH`, `## Live work`, `## Standing rules`. The report lists headings only, so the rule text is not known here                                                              |
 
-Not touched in version 1: `ARH Change Log`, `ARH Decision Log`, `Tickets/*` and `Ticket Index`
-(ticketing is out of scope), `Reference/*`, `Runbooks/*`, everything else.
+Not touched: `ARH Decision Log`, `Tickets/*` and `Ticket Index` (ticketing is out of scope),
+`Reference/*`, `Runbooks/*`, everything else. `ARH Change Log` gets the dashboard's own block
+from Phase 3 on, only once a first change is made on a device (below).
 
 ## 2. Proposed mapping
 
@@ -46,7 +47,8 @@ no markers, the pair is appended once at the end of the note. No note is ever cr
 | ------------------ | --------------------------- | --------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | Computers          | `Assets/Asset Inventory.md` | `DEVICES`       | the `## Computers` columns plus `Last scan` and `Health`          | rows matched by serial, then name. Scan columns refresh. **Your columns are kept as you type them**           |
 | Findings to act on | `ARH Open Loops.md`         | `HEALTH-LOOPS`  | one task per warning or critical finding, in the note's own style | a line is never edited once written. Ticked lines stay. A ticked problem seen on a later scan gets a new line |
-| Scan record        | `ARH Work Log.md`           | `SCAN-LOG`      | one entry per scan, newest first, MT                              | append-only by run id                                                                                         |
+| Scan record        | `ARH Work Log.md`           | `SCAN-LOG`      | one entry per scan, action or custom command, newest first, MT    | append-only by run id                                                                                         |
+| Changes on devices | `ARH Change Log.md`         | `CHANGES`       | one row per change, in the note's own columns, oldest first       | append-only by run id; created with the first change; Settings: empty **Change Log note** turns it off        |
 | Health at a glance | `ARH IT Hub.md` (optional)  | `DEVICE-HEALTH` | one row per computer: health, last scan, open findings            | regenerated. Leave **Hub note** empty in Settings and the hub is never touched                                |
 
 Column ownership in the computers table:
@@ -102,13 +104,39 @@ _Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a 
 ```markdown
 <!-- DASH:SCAN-LOG:START -->
 
-## 🖥️ Device scans — ARH IT Dashboard
+## 🖥️ Device scans and actions — ARH IT Dashboard
 
-_One entry per scan, newest first (MT). Written by the ARH IT Dashboard; findings that need action go to [[ARH Open Loops]]._
+_One entry per scan, action or custom command, newest first (MT). Written by the ARH IT Dashboard; findings that need action go to [[ARH Open Loops]], changes to [[ARH Change Log]]._
 
-- 2026-10-14 14:32 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Security Check · windows-security-check v1 · ok · 1 min 12 s · 3 findings · Lisandro · run r_mgx81k2a_3f9c1d - 🔴 Defender real-time protection is off - 🟠 No Windows update installed for 41 days (latest KB5044284)
+- 2026-10-14 14:40 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Action: Turn on firewall profiles that are off (windows-firewall-on v1) · changed · Firewall Public: off → on · why: Fix: Firewall profile "Public" is disabled · Lisandro · run a_mgx8f0q1_0b12aa
+- 2026-10-14 14:32 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Security Check · windows-security-check v2 · ok · 1 min 12 s · 3 findings · Lisandro · run r_mgx81k2a_3f9c1d - 🔴 Defender real-time protection is off - 🟠 No Windows update installed for 41 days (latest KB5044284)
 <!-- DASH:SCAN-LOG:END -->
 ```
+
+`ARH Change Log.md` (the block is added only with the first change; your own table above it is
+never touched):
+
+```markdown
+<!-- DASH:CHANGES:START -->
+
+## 🔧 Device changes — ARH IT Dashboard
+
+_One row per change the ARH IT Dashboard made on a computer, oldest first (times MT, by the dashboard's clock). What changed is measured on the device before and after; custom commands are listed but not measured. Full record: the dashboard's action log. Scans and every action are also in [[ARH Work Log]]._
+
+| Timestamp (MT)   | System / machine                               | What changed              | Why                                        | Reversible?  | Rollback                                                                | By                               |
+| ---------------- | ---------------------------------------------- | ------------------------- | ------------------------------------------ | ------------ | ----------------------------------------------------------------------- | -------------------------------- |
+| 2026-10-14 14:40 | Front desk 1 · ARH-CEN-FD1 · serial 5CG1234XYZ | Firewall Public: off → on | Fix: Firewall profile "Public" is disabled | Yes, by hand | Manual: Set-NetFirewallProfile -Profile \<the profiles\> -Enabled False | Lisandro · run a_mgx8f0q1_0b12aa |
+
+<!-- DASH:CHANGES:END -->
+```
+
+What gets a Change Log row: a real run of an action that changes a setting and changed it (or
+partly did), a task that left evidence of a change (sfc repairs), every custom command (listed
+as not measured, with the script's hash, never its text or output), and a change whose outcome
+is not known yet because the cable was pulled. That last one gets a second row, `Result of run
+…`, when the device reports. Previews, things already set, and refused requests never reach the
+vault. Every value that came from a device is cleaned first: no line breaks of any kind, and the
+characters Markdown, HTML and Obsidian give a meaning to are escaped.
 
 `ARH IT Hub.md` (CRLF kept):
 
@@ -143,6 +171,7 @@ empty marker lines there **before the first live write**; the writer fills them 
 | Work Log        | just below `# ARH Work Log`, so scans sit on top     | `<!-- DASH:SCAN-LOG:START -->` and `<!-- DASH:SCAN-LOG:END -->`           |
 | Open Loops      | end of the note (default) or below `## 🟠 This week` | `<!-- DASH:HEALTH-LOOPS:START -->` and `<!-- DASH:HEALTH-LOOPS:END -->`   |
 | Hub             | under `## Live work`                                 | `<!-- DASH:DEVICE-HEALTH:START -->` and `<!-- DASH:DEVICE-HEALTH:END -->` |
+| Change Log      | just below its `## Log` table                        | `<!-- DASH:CHANGES:START -->` and `<!-- DASH:CHANGES:END -->`             |
 
 ## 3. Decisions (2026-10-20)
 

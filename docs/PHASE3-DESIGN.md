@@ -99,20 +99,28 @@ Settings turns any kind, or any single action, off. A device can refuse more on 
 11. **Main enforces the switches.** Settings gates are checked in the main process, not only in
     the page. A run needs a single-use ticket from a preview of the same request (same action,
     version, hash, parameters), valid 10 minutes, unless "preview first" is off.
-12. **Records, accurately.** - Agent: `actions.log` (JSON lines: intent before the process starts, with technician and
-    reason; outcome after; never output) in its data folder, rotated at 5 × 5 MiB, and the OS
-    log (Windows Application log, syslog elsewhere). - Dashboard: `actions.jsonl` in app data, hash-chained (each entry carries the SHA-256 of the
-    one before), never capped. Custom script text is kept here only; custom output is not saved
-    unless Settings says so. - Vault, **ARH Change Log**: one row per real run of a write action that changed something or
-    partly did, every custom command, and every _outcome unknown_ (replaced when the result
-    arrives). Columns are the note's own: `Timestamp (MT) | System / machine | What changed |
-Why | Reversible? | Rollback | By`. Timestamp is when apply started, by the dashboard clock.
-    Machine is `inventory name · hostname · serial`. What changed is per item, `before → after`.
-    Rollback is a readable copy (`Undo in dashboard: <action>` or `Manual: <text>`); it is never
-    parsed back. By is `<technician> · run <id>`. Custom rows say `custom command, not measured,
-sha256 <first 12>, <n> lines, exit <code>`: the vault never holds script text or output. - Vault, **ARH Work Log**: actions join scans in the same block, newest first, with status and
-    before → after. Previews never reach the vault. - Every string that came from a device passes one `vaultText()` cleaner (line breaks of every
-    kind, control characters, marker text, Markdown and HTML syntax, 240 characters). - Real runs need the technician name in Settings (asked once in the dialog).
+12. **Records, accurately.**
+    - Agent: `actions.log` (JSON lines: intent before the process starts, with technician and
+      reason; outcome after; never output) in its data folder, rotated at 5 × 5 MiB, and the OS
+      log (Windows Application log, syslog elsewhere).
+    - Dashboard: `actions.jsonl` in app data, hash-chained (each entry carries the SHA-256 of
+      the one before), never capped. Custom script text is kept here only; custom output is not
+      saved unless Settings says so.
+    - Vault, **ARH Change Log**: one row per real run of a write action that changed something
+      or partly did, a task that left evidence of a change (sfc repairs), every custom command,
+      and every change whose outcome is not known yet (followed by a "Result of run …" row when
+      the device reports). Columns are the note's own (Timestamp (MT), System / machine, What
+      changed, Why, Reversible?, Rollback, By). Timestamp is when apply started, by the
+      dashboard clock. Machine is `label · hostname · serial`. What changed is per item,
+      `before → after`. Rollback is a readable copy (`Undo in the dashboard: …` or `Manual: …`);
+      it is never parsed back. By is `<technician> · run <id>`. Custom rows say "Custom command (effect not measured)" with the script's hash, line count
+      and exit code: the vault never holds script text or output. The block is created only with the first change.
+    - Vault, **ARH Work Log**: actions join scans in the same block, newest first, with status
+      and before → after. Previews and refused requests never reach the vault.
+    - Every string that came from a device passes one `vaultText()` cleaner (line breaks of every
+      kind, control characters, Markdown, HTML and Obsidian syntax escaped, length capped).
+    - Real runs need the technician name in Settings.
+
 13. **Undo is a named action.** `restore` values from the before-measurement become the
     parameters of the action's declared `undo` action. Undo is offered only from the dashboard's
     own log, through the same preview and confirm, never from vault text.

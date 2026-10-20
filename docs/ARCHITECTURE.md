@@ -1,4 +1,4 @@
-# Architecture (Phase 2)
+# Architecture (Phase 3)
 
 The dashboard is a local Windows application for one technician. A computer plugged into the
 technician's PC with a cable is detected, identified, and scanned through a small agent that
@@ -100,6 +100,29 @@ reads only notes the vault index knows, resolves each `[[link]]` the way Obsidia
 path, else file name; same folder first, then the shortest path) and lists backlinks.
 Opening Obsidian itself is a separate, explicit action.
 
+## Actions (Phase 3)
+
+Design, threat model and the critique it went through: [PHASE3-DESIGN.md](PHASE3-DESIGN.md).
+
+- **Files:** `actions/*.json` (schema `arh-action/1`), each with a read-only `measure` script and
+  an `apply` script. The agent embeds them (`actions/embed.go`, validated and linted at load:
+  no eval-like constructs, quoted sh parameters, native exit codes checked, parameter patterns
+  anchored as a whole and tested with sample values); the dashboard ships the same files and
+  hashes them byte for byte. `actions/versions.lock` pins each released version's hash.
+- **Agent** (`agent/internal/link/actions.go`): checks the device policy (`agent/internal/policy`)
+  and the cable on every request, runs measure → apply → measure with a result file it owns,
+  keeps results in an outbox until acknowledged, refuses repeated run ids, and writes
+  `actions.log` plus the OS log (`agent/internal/audit`). The executor gives actions a clean
+  environment and system PATH, sends long scripts on stdin (Windows) or fd 3 (macOS/Linux), and
+  ends the whole process tree on timeout (Job Objects, process groups).
+- **Dashboard** (`src/main/services/actions/`): `ActionCatalog`, `ActionRunner` (every gate in
+  main: Settings, policy, cable, agent copy, preview ticket, reason, technician, typed name),
+  `ActionLog` (hash-chained JSONL), `DeviceSlots` (one run per device, shared with scans).
+  `src/shared/actions.ts` works out the status from the measurements; the vault blocks
+  (`vault/content.ts`: `mergeChanges`, `mergeLog`) and `vaultText()` turn records into rows.
+- **Page:** `ComputerActions.vue`, `ActionDialog.vue`, `ActionRun.vue`, `ExecDialog.vue`,
+  Settings › Access and control.
+
 ## Data collected and not collected
 
 Configuration and health only: OS, hardware, storage, drivers, services, security settings,
@@ -115,3 +138,10 @@ and first lines of System/Security events, not message bodies of application log
 - macOS per-sensor temperatures need `powermetrics` (root, slow); not collected.
 - The agent is unsigned; Windows SmartScreen and macOS Gatekeeper will warn on first run
   (macOS: `xattr -d com.apple.quarantine arh-agent-darwin-arm64`).
+- Changes are bound to the cable, not to a hardware key: someone with both the dashboard's key
+  and a cable to a computer could run the named actions there. A TPM-backed approval key the
+  agent pins is the next step (PHASE3-DESIGN.md, "Not in this phase").
+- A restart is recorded as scheduled; whether it happened is not yet confirmed from the next
+  `bootTime`.
+- Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
+  read only, and the security-check profile is now v2.

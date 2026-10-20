@@ -90,8 +90,13 @@ npm run dev
    | Mac (Intel)         | same with `arh-agent-darwin-amd64`                                                                                                       |
    | Linux               | `chmod +x arh-agent-linux-amd64; sudo ./arh-agent-linux-amd64 install --token …`                                                         |
 
+   The dashboard's enrollment window shows the exact line, ending in `--policy actions` (or what
+   Settings › Access and control says new devices get). The policy is the device's own say over
+   what the dashboard may do there; it is written only if the device has none yet, so a reinstall
+   never erases it.
+
 4. Within a few seconds the device appears under **Enrolled devices** with a green dot.
-   `arh-agent status` on the device shows its id and the pinned dashboard.
+   `arh-agent status` on the device shows its id, the pinned dashboard and its policy.
 
 ## Look up a computer (nothing needs to be plugged in)
 
@@ -130,6 +135,37 @@ Double-click a green device → choose the purpose (a suggestion comes from its 
 lists findings by severity. **Preview vault write** shows the exact diff for Asset Inventory,
 Open Loops, the Work Log and (optionally) the hub. **Apply** is available only after the schema
 is approved and live writes are on in Settings.
+
+## Change something on a device (Phase 3)
+
+Open the computer's page (click it, or look it up). With the cable connected, **Actions on this
+computer** lists what can be done there, grouped by category, with anything that stands in the
+way (Settings, the device's own policy, the cable, an older agent). Findings that an action fixes
+get a **Fix…** button.
+
+1. **Preview** runs at once when the dialog opens. It only measures: the apply script never
+   starts, so nothing changes. You see the plan, the measured values, blockers (Group Policy,
+   another antivirus, a missing time source) and warnings (someone is using the computer).
+2. Say **why** (it goes to the Change Log), check the pre-answered checklist, and **Run**. Run
+   stays off until the preview says there is something to change and nothing blocks it. An
+   action that interrupts work (restart, firewall) while someone is signed in asks you to type
+   the computer's name.
+3. The device measures, applies, waits, measures again. The result shows each value before →
+   after and a status worked out from those measurements: changed, already set, not applied,
+   partly applied, done, failed. **Undo…** appears where the action has an undo.
+4. The Work Log gets an entry and, for changes, the Change Log a row in its own columns.
+
+If the cable is pulled once a change has started, the device finishes it and reports on the next
+connection; until then the record says "outcome unknown".
+
+**Custom command…** runs what you type, as SYSTEM or root. A device allows it only if enabled
+there: `arh-agent policy --allow custom` (administrator / sudo). Nothing about its effect is
+measured; the vault records only that it ran, its hash and exit code.
+
+Device side, as administrator / sudo: `arh-agent policy` shows what the dashboard may do;
+`--set actions|full|read|clinical`, `--allow`/`--deny write,execute,custom,lan,interrupts`,
+`--deny-action windows-restart`. `arh-agent actions` lists the actions the agent carries. Changes
+are accepted only over the USB cable; a LAN connection is read only.
 
 ## Test on a virtual machine first
 
