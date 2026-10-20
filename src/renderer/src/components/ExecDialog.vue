@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useActions } from '../actions'
+import { MAX_REASON_BYTES, execBlocker, useActions, utf8Length } from '../actions'
 import { useDashboard } from '../store'
 import ActionRun from './ActionRun.vue'
 
@@ -17,22 +17,25 @@ const run = computed(() => (x.value.runId ? acts.astate.records[x.value.runId] :
 const shell = computed(() => (device.value?.os === 'windows' ? 'Windows PowerShell 5.1' : 'sh'))
 const size = computed(() => new TextEncoder().encode(x.value.script).length)
 const policy = computed(() => device.value?.capabilities?.policy)
+// the same checks main and the agent make, so the button is never on for a refusal
 const why = computed((): string | null => {
   if (!dash.state.settings?.customCommands) return 'Settings: custom commands are off.'
   if (!device.value?.connected) return 'The device is not connected.'
-  if (!policy.value || !policy.value.custom)
-    return 'This device does not allow custom commands. On the device, as administrator: arh-agent policy --allow custom'
-  if (device.value.capabilities?.link !== 'cable' && !policy.value.lan)
-    return 'Custom commands run only over the USB cable.'
+  const blocked = execBlocker(device.value.capabilities)
+  if (blocked) return blocked
   if (!x.value.script.trim()) return 'Type the command.'
   if (size.value > 64 * 1024) return 'The command is over 64 KiB.'
+  const t = x.value.timeoutSeconds
+  if (!Number.isInteger(t) || t < 1 || t > 3600) return 'The time limit is 1 to 3600 seconds.'
   if (!x.value.reason.trim()) return 'Say why: it goes to the Change Log.'
+  if (utf8Length(x.value.reason.trim()) > MAX_REASON_BYTES)
+    return `The reason is too long (at most ${MAX_REASON_BYTES} bytes).`
   if (!dash.state.settings?.technician.trim()) return 'Set your name in Settings first.'
   return null
 })
 
 function close(): void {
-  if (run.value && !run.value.endedAt) return
+  if (x.value.busy) return // a run keeps going in main and stays in the history
   acts.closeExec()
 }
 </script>
@@ -98,10 +101,15 @@ function close(): void {
         <div class="flex gap-2">
           <button
             class="btn-ghost px-4 py-1.5"
-            :disabled="!!run && !run.endedAt"
-            @click="acts.closeExec()"
+            :disabled="x.busy"
+            :title="
+              run && !run.endedAt
+                ? 'The command goes on; it stays in this computer\'s history'
+                : undefined
+            "
+            @click="close"
           >
-            {{ x.runId ? 'Close' : 'Cancel' }}
+            {{ run && !run.endedAt ? 'Close (keeps running)' : x.runId ? 'Close' : 'Cancel' }}
           </button>
           <button
             v-if="!x.runId"

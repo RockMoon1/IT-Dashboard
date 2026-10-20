@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { reactive, watch } from 'vue'
 import type {
   ActionDef,
   ActionEvent,
@@ -7,7 +7,9 @@ import type {
   ActionRequest,
   FixContext
 } from '@shared/actions'
+import type { DeviceCapabilities } from '@shared/types'
 import { useDashboard } from './store'
+import { plain } from './plain'
 
 /**
  * Actions and custom commands in the page: what each device offers, the open dialog, and every
@@ -64,6 +66,33 @@ const astate = reactive<ActionsState>({
 
 let subscribed = false
 
+/**
+ * Why the device would refuse a custom command, as main and the agent decide it (custom, write
+ * and execute all allowed, the cable unless the policy allows the network, no restart pending).
+ */
+export function execBlocker(caps: DeviceCapabilities | undefined): string | null {
+  const p = caps?.policy
+  if (!caps) return 'The device is not connected.'
+  if (!p || p.error || !p.custom || !p.write || !p.execute)
+    return 'This device does not allow custom commands. On the device, as administrator: arh-agent policy --allow custom,write,execute'
+  if (caps.link !== 'cable' && !p.lan) return 'Custom commands run only over the USB cable.'
+  if (caps.pendingRestartUntil) return 'A restart is scheduled: cancel it or wait for it.'
+  return null
+}
+
+/** The agent's limit on a reason, in UTF-8 bytes. */
+export const MAX_REASON_BYTES = 500
+const utf8 = new TextEncoder()
+export const utf8Length = (s: string): number => utf8.encode(s).length
+function clipUtf8(s: string, max: number): string {
+  let out = ''
+  for (const ch of s) {
+    if (utf8Length(out + ch) > max) break
+    out += ch
+  }
+  return out
+}
+
 function message(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err)
   // Electron prefixes errors thrown in main
@@ -92,6 +121,11 @@ async function ensure(): Promise<void> {
   if (subscribed || typeof window.arh === 'undefined') return
   subscribed = true
   window.arh.actions.onEvent(onEvent)
+  // what Settings allow is part of each offer: ask main again once they change
+  watch(
+    () => useDashboard().state.settings,
+    () => Object.keys(astate.offers).forEach((id) => void loadOffers(id))
+  )
   try {
     astate.history = await window.arh.actions.list(300)
     for (const r of astate.history) astate.records[r.runId] = r
@@ -166,7 +200,7 @@ function request(d: DialogState): ActionRequest {
     action: d.action,
     params: { ...d.params },
     reason: d.reason,
-    fix: d.fix
+    fix: d.fix ? plain(d.fix) : undefined
   }
 }
 
@@ -253,9 +287,10 @@ function openUndo(record: ActionRecord): void {
   const o = record.action ? offer(record.deviceId, record.action) : undefined
   const undo = o?.def.undo
   if (!undo) return
+  astate.view = null // the record this was opened from would cover the dialog
   openAction(record.deviceId, undo, undefined, {
     params: record.result?.before?.restore ?? {},
-    reason: `Undo of run ${record.runId}: ${record.reason}`
+    reason: clipUtf8(`Undo of run ${record.runId}: ${record.reason}`, MAX_REASON_BYTES)
   })
 }
 

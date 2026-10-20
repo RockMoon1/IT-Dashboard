@@ -92,6 +92,12 @@ const RENDERER_SCRIPT = String.raw`(async () => {
   out.viewer.back = true
   await closeViewer()
 
+  // the page's Refresh sends the open computer back to main (a store object must cross plain)
+  const refresh = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Refresh')
+  refresh?.click()
+  await sleep(1500)
+  out.refresh = refresh ? document.querySelector('.bg-bad-400\\/10')?.textContent?.trim() ?? 'ok' : 'no Refresh button'
+
   // Phase 3: the shipped actions reach the page, and Settings shows Access and control with one
   // switch per action (nothing runs: there is no device in the launch test)
   const catalog = await window.arh.actions.catalog()
@@ -108,8 +114,24 @@ const RENDERER_SCRIPT = String.raw`(async () => {
     const n = document.querySelectorAll('details label input[type="checkbox"]').length
     return n >= catalog.length && n
   })
-  ;[...document.querySelectorAll('form button')].find((b) => b.textContent.trim() === 'Cancel')?.click()
-  await until('Settings to close', () => !hasAccess())
+  // Save reaches main: switch the first action off, save, read Settings back from main, then
+  // switch it on again (the panel closes only once main has taken the change)
+  const openSettings = () =>
+    [...document.querySelectorAll('header button')].find((b) => b.textContent.trim() === 'Settings')?.click()
+  const firstSwitch = () => document.querySelector('details label input[type="checkbox"]')
+  const save = () => [...document.querySelectorAll('form button')].find((b) => b.textContent.trim() === 'Save')?.click()
+  const disabled = async () => (await window.arh.settings.get()).disabledActions.length
+  const before = await disabled()
+  firstSwitch()?.click()
+  save()
+  await until('Settings to close after Save', () => !hasAccess())
+  const off = await disabled()
+  openSettings()
+  await until('one switch per action again', () => firstSwitch())
+  firstSwitch()?.click()
+  save()
+  await until('Settings to close after the second Save', () => !hasAccess())
+  out.actions.settingsSave = off === before + 1 && (await disabled()) === before
 
   // "Computers" twice: the first click returns to the open computer page, the second to the list
   const tabs = ['Active scan', 'Results', 'Health', 'Open loops', 'Work log', 'Search', 'Link', 'Computers', 'Computers']
@@ -190,6 +212,9 @@ export function runSmoke(win: BrowserWindow): void {
         if (!acts?.['hashed'] || !acts['measureAndApply'])
           problems.push('an action has no hash or lacks a measure or apply script')
         if (!acts?.['settingsSwitches']) problems.push('Settings shows no per-action switches')
+        if (!acts?.['settingsSave']) problems.push('Settings Save did not reach the main process')
+        if (report['refresh'] !== 'ok')
+          problems.push(`computer page Refresh failed: ${String(report['refresh'])}`)
         for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))
           if (v !== 'ok') problems.push(`tab ${k}: ${v}`)
         finish(report)

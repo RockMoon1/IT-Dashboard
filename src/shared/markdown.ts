@@ -129,6 +129,16 @@ const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^`\s]*)/
 /** A fence line as stripComments sees it: also after quote markers and a list marker. */
 const FENCE_IN = /^((?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])\s))*\s*)(`{3,}|~{3,})(.*)$/
 const quoteDepth = (s: string): number => (/^(?:\s*>)*/.exec(s)?.[0].match(/>/g) ?? []).length
+/** A line with its first n quote markers taken off, as parseBlocks reads it inside the quotes. */
+function quoteBody(s: string, n: number): string {
+  let t = s
+  for (let k = 0; k < n; k++) {
+    const m = /^\s*>\s?(.*)$/.exec(t)
+    if (!m) break
+    t = m[1] ?? ''
+  }
+  return t
+}
 
 /**
  * Blanks out <!-- --> and %% %% comments outside code, keeping every line where it was. Code
@@ -140,46 +150,69 @@ function stripComments(lines: string[]): string[] {
   let fence: { mark: string; depth: number } | null = null
   let inHtml = false
   let inPct = false
-  let indented = false // inside an indented code block
+  let indented = -1 // quote depth of the indented code block being read; -1 when none
   let list = -1 // indent of the open list's outermost item; -1 when no list is open
   let prevBlank = true
+  let prevQ = 0 // quote depth of the line before
+  let prevInnerBlank = true // the line before was blank inside its quote ("> ")
+  let prevHead = false // the line before was a callout's title line
   for (const raw of lines) {
     const blank = !raw.trim()
+    const q = quoteDepth(raw)
+    const body = q ? quoteBody(raw, q) : raw // the line as parseBlocks reads it inside the quote
+    const innerBlank = !body.trim()
+    // after a blank line as parseBlocks sees it: at the top, a blank line; in a quote, a blank
+    // quoted line, the quote's first line, or a callout's title
+    const afterBlank =
+      q === 0 ? prevBlank : prevQ < q || (prevQ === q && (prevInnerBlank || prevHead))
+    const note = (): void => {
+      prevBlank = blank
+      prevQ = q
+      prevInnerBlank = innerBlank
+      prevHead = /^\[![A-Za-z0-9_-]+\]/.test(body.trim())
+    }
     if (!inHtml && !inPct) {
       // a fence ends with its closing line, or with the quote it was opened in
-      if (fence && quoteDepth(raw) < fence.depth) fence = null
+      if (fence && q < fence.depth) fence = null
       const f = FENCE_IN.exec(raw)
       if (fence) {
-        const mark = f?.[2] ?? ''
-        if (mark[0] === fence.mark[0] && mark.length >= fence.mark.length && !f?.[3]?.trim())
+        // only a line at the fence's own quote depth holding nothing but the fence closes it
+        const inner = q === fence.depth ? quoteBody(raw, fence.depth).trim() : ''
+        if (
+          /^[`~]+$/.test(inner) &&
+          inner[0] === fence.mark[0] &&
+          inner.length >= fence.mark.length
+        )
           fence = null
         out.push(raw)
+        note()
         continue
       }
-      if (indented && (blank || indentOf(raw) >= 4)) {
+      if (indented >= 0 && q === indented && (innerBlank || indentOf(body) >= 4)) {
         out.push(raw)
-        prevBlank = blank
+        note()
         continue
       }
-      indented = false
+      indented = -1
       if (!blank) {
         const ind = indentOf(raw)
         const item = ITEM.exec(raw)?.[4] !== undefined
         if (item && (list < 0 || ind < list)) list = ind
         else if (!item && ind <= list && (prevBlank || HEADING.test(raw) || f)) list = -1
+        const innerItem = ITEM.exec(body)?.[4] !== undefined
         if (f?.[2]) {
           fence = { mark: f[2], depth: quoteDepth(f[1] ?? '') }
-        } else if (!item && prevBlank && ind >= 4 && list < 0 && !quoteDepth(raw)) {
-          indented = true
+        } else if (!innerItem && afterBlank && indentOf(body) >= 4 && (q > 0 || list < 0)) {
+          indented = q
         }
-        if (fence || indented) {
+        if (fence || indented >= 0) {
           out.push(raw)
-          prevBlank = false
+          note()
           continue
         }
       }
     }
-    prevBlank = blank
+    note()
     let result = ''
     let i = 0
     // next comment opener and backtick from i, found again only once i has passed them
@@ -556,7 +589,17 @@ function splitCells(row: string): string[] {
   return cells
 }
 
-function parseBlocks(lines: Line[]): Block[] {
+/** Quotes and lists nested deeper than this are read as text, so no note can exhaust the stack. */
+const MAX_NEST = 64
+
+function parseBlocks(lines: Line[], depth = 0): Block[] {
+  if (depth > MAX_NEST) {
+    const text = lines
+      .map((l) => l.s.trim())
+      .filter(Boolean)
+      .join(' ')
+    return text ? [{ t: 'para', line: lines[0]?.n ?? 0, c: parseInline(text) }] : []
+  }
   const out: Block[] = []
   let i = 0
   while (i < lines.length) {
@@ -651,9 +694,9 @@ function parseBlocks(lines: Line[]): Block[] {
           kind,
           fold: (head[2] ?? '') as '' | '+' | '-',
           title: parseInline(stripBlockId(titleText)),
-          c: parseBlocks(inner.slice(1))
+          c: parseBlocks(inner.slice(1), depth + 1)
         })
-      } else out.push({ t: 'quote', line: line.n, c: parseBlocks(inner) })
+      } else out.push({ t: 'quote', line: line.n, c: parseBlocks(inner, depth + 1) })
       continue
     }
 
@@ -716,7 +759,7 @@ function parseBlocks(lines: Line[]): Block[] {
           i--
         }
         while (i < lines.length && !lines[i]!.s.trim()) i++
-        list.items.push({ line: cur.n, task, c: parseBlocks(body) })
+        list.items.push({ line: cur.n, task, c: parseBlocks(body, depth + 1) })
         const next = lines[i]
         if (!next) break
         const nm = ITEM.exec(next.s)

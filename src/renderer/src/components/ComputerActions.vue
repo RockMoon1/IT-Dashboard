@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
-import { useActions } from '../actions'
+import { execBlocker, useActions } from '../actions'
 import { useDashboard } from '../store'
 import { actionBadge, impactBadge, when } from '../format'
 
@@ -41,13 +41,8 @@ const policyText = computed(() => {
   return `allows ${on.join(', ') || 'reading only'}${p.deny.length ? `; refuses ${p.deny.join(', ')}` : ''}`
 })
 const execBlocked = computed(() => {
-  const p = caps.value?.policy
-  if (!dash.state.settings?.customCommands) return 'Settings: custom commands are off'
-  if (!caps.value) return 'not connected'
-  if (!p?.custom)
-    return 'this device does not allow custom commands (arh-agent policy --allow custom)'
-  if (caps.value.link !== 'cable' && !p.lan) return 'only over the USB cable'
-  return ''
+  if (!dash.state.settings?.customCommands) return 'Settings: custom commands are off.'
+  return execBlocker(caps.value) ?? ''
 })
 
 onMounted(() => void acts.loadOffers(props.deviceId))

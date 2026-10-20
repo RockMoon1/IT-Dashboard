@@ -2,7 +2,7 @@
 import { computed, watch } from 'vue'
 import { checkParam } from '@shared/actions'
 import type { Purpose } from '@shared/types'
-import { useActions } from '../actions'
+import { MAX_REASON_BYTES, useActions, utf8Length } from '../actions'
 import { useDashboard } from '../store'
 import { impactBadge, when } from '../format'
 import ActionRun from './ActionRun.vue'
@@ -54,11 +54,17 @@ const why = computed((): string | null => {
   if (!settings.value?.technician.trim())
     return 'Set your name in Settings first: every change records who made it.'
   if (Object.values(paramErrors.value).some(Boolean)) return 'Fix the values above.'
-  if (!preview.value || !preview.value.endedAt) return 'Waiting for the preview.'
+  if (!preview.value || !preview.value.endedAt)
+    return d.value.busy ? 'Waiting for the preview.' : 'Preview first.'
   if (paramsChanged.value) return 'The values changed since the preview: preview again.'
   if (preview.value.status !== 'would-change')
     return `The preview says "${preview.value.status.replace(/-/g, ' ')}".`
+  // main refuses a preview older than 10 minutes, and one already used for a run
+  if (Date.now() - Date.parse(preview.value.endedAt) > 10 * 60_000)
+    return 'The preview is more than 10 minutes old: preview again.'
   if (!d.value.reason.trim()) return 'Say why: it goes to the Change Log.'
+  if (utf8Length(d.value.reason.trim()) > MAX_REASON_BYTES)
+    return `The reason is too long (at most ${MAX_REASON_BYTES} bytes; accented letters and symbols count 2 to 4).`
   if (!nameOk.value) return `Type ${device.value?.hostname} to confirm: someone is using it.`
   return null
 })
@@ -109,8 +115,10 @@ watch(
   }
 )
 
+// Closing never stops anything: a run keeps going in main and stays in the computer's history
+// ("Changes and tasks on record"); only a request still on its way holds the dialog.
 function close(): void {
-  if (run.value && !run.value.endedAt) return // the run goes on; reopen it from the history
+  if (d.value.busy) return
   acts.closeDialog()
 }
 
@@ -184,15 +192,15 @@ function scanAgain(): void {
               {{ paramErrors[p.name] }}
             </p>
           </div>
-          <div class="col-span-2">
+        </section>
+
+        <section v-if="!d.runId">
+          <div class="mb-2 flex items-center justify-between">
+            <h3 class="eyebrow">Preview</h3>
             <button class="btn-ghost px-3 py-1 text-xs" :disabled="d.busy" @click="acts.preview()">
               Preview again
             </button>
           </div>
-        </section>
-
-        <section v-if="!d.runId">
-          <h3 class="eyebrow mb-2">Preview</h3>
           <p v-if="d.busy && !preview" class="text-sm text-mist-500">Sending the preview…</p>
           <ActionRun v-if="preview" :record="preview" />
         </section>
@@ -281,10 +289,15 @@ function scanAgain(): void {
         <div class="flex gap-2">
           <button
             class="btn-ghost px-4 py-1.5"
-            :disabled="!!run && !run.endedAt"
-            @click="acts.closeDialog()"
+            :disabled="d.busy"
+            :title="
+              run && !run.endedAt
+                ? 'The run goes on; it stays in this computer\'s history'
+                : undefined
+            "
+            @click="close"
           >
-            {{ d.runId ? 'Close' : 'Cancel' }}
+            {{ run && !run.endedAt ? 'Close (keeps running)' : d.runId ? 'Close' : 'Cancel' }}
           </button>
           <button
             v-if="!d.runId"

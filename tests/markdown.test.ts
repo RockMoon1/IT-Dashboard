@@ -468,3 +468,29 @@ test('a long paragraph of unmatched openers parses in linear time', () => {
     if (text === line) assert.equal(inlineText(para.c), line.trim(), 'every opener stays text')
   }
 })
+
+test('code in a callout keeps its %% and a quoted fence line does not close a top-level fence', () => {
+  // a batch command in an indented code block inside a callout
+  const batch = parseMarkdown('> [!note] Batch\n>\n>     for %%i in (*) do echo %%i').blocks
+  const callout = batch[0]
+  assert.equal(callout?.t, 'callout')
+  const code = callout?.t === 'callout' ? callout.c[0] : undefined
+  assert.equal(code?.t, 'code')
+  assert.equal(code?.t === 'code' ? code.v : '', 'for %%i in (*) do echo %%i')
+  // "> ```" inside a top-level fence is text; the fence ends at its own "```"
+  const md = '```\n> ```\necho 100%%\n```\nafter %% hidden %%'
+  const blocks = parseMarkdown(md).blocks
+  assert.deepEqual(kinds(blocks), ['code', 'para'])
+  assert.equal(blocks[0]?.t === 'code' ? blocks[0].v : '', '> ```\necho 100%%')
+  assert.equal(inlineText(blocks[1]?.t === 'para' ? blocks[1].c : []).trim(), 'after')
+})
+
+test('very deep quotes and lists are read as text instead of overflowing the stack', () => {
+  for (const md of ['>'.repeat(3000) + ' x', '> '.repeat(3000) + 'x', '- '.repeat(3000) + 'x']) {
+    const t0 = Date.now()
+    const p = parseMarkdown(`before\n\n${md}\n\nafter`)
+    assert.ok(Date.now() - t0 < 2000, 'still fast')
+    const last = p.blocks.at(-1)
+    assert.equal(last?.t === 'para' ? inlineText(last.c) : '', 'after')
+  }
+})

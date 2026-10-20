@@ -54,8 +54,8 @@ function close(): void {
 async function save(): Promise<void> {
   saving.value = true
   try {
-    await dash.saveSettings({ ...form })
-    close()
+    // a copy with no reactive arrays in it; the panel stays open if main did not take it
+    if (await dash.saveSettings({ ...form, disabledActions: [...form.disabledActions] })) close()
   } finally {
     saving.value = false
   }

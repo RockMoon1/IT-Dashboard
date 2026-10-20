@@ -1,5 +1,6 @@
 import { computed, reactive } from 'vue'
 import type { LogLine } from '@shared/api'
+import { plain } from './plain'
 import type {
   AppInfo,
   ComputerProfile,
@@ -483,14 +484,21 @@ async function runSearch(): Promise<void> {
   }
 }
 
-async function saveSettings(patch: Partial<Settings>): Promise<void> {
+/** Saves Settings in main; false (with the error shown) when main did not take them. */
+async function saveSettings(patch: Partial<Settings>): Promise<boolean> {
   try {
-    state.settings = await api().settings.set(patch)
+    state.settings = await api().settings.set(plain(patch))
+  } catch (err) {
+    fail(err)
+    return false
+  }
+  try {
     await refreshVault()
     state.link = await api().link.status()
   } catch (err) {
     fail(err)
   }
+  return true
 }
 
 async function removeDevice(id: string): Promise<void> {
@@ -542,7 +550,7 @@ async function loadProfile(target: LookupTarget): Promise<void> {
   state.profileTarget = target
   state.profileLoading = true
   try {
-    const profile = await api().lookup.profile(target)
+    const profile = await api().lookup.profile(plain(target))
     if (seq === profileSeq) state.profile = profile
   } catch (err) {
     if (seq === profileSeq) fail(err)

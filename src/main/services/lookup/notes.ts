@@ -48,7 +48,11 @@ const linkCache = new WeakMap<IndexedNote, ParsedNote['linkLines']>()
 function linksOf(note: IndexedNote): ParsedNote['linkLines'] {
   let links = linkCache.get(note)
   if (!links) {
-    links = parseMarkdown(note.text).linkLines
+    try {
+      links = parseMarkdown(note.text).linkLines
+    } catch {
+      links = [] // one note the parser cannot read must not stop the notes it mentions opening
+    }
     linkCache.set(note, links)
   }
   return links

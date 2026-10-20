@@ -137,3 +137,21 @@ test('relative links (./, ../ and <…>) resolve from the linking note', async (
     await rm(tmp, { recursive: true, force: true })
   }
 })
+
+test('a note the parser struggles with does not stop the notes it mentions from opening', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    await writeFile(
+      join(vault, 'Ticket 12.md'),
+      `# Ticket 12\n\nPrinter down on [[T-0001 Front desk printer]]\n\n${'>'.repeat(3000)} x\n${'- '.repeat(3000)}y\n`
+    )
+    const notes = await new VaultIndex().notes(vault)
+    const ticket = notes.find((n) => n.name === 'T-0001 Front desk printer')!
+    const view = noteView(ticket, notes)
+    assert.ok(view.backlinks.some((b) => b.title === 'Ticket 12'))
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})

@@ -12,6 +12,10 @@ const acts = useActions()
 const { state } = dash
 const p = computed(() => state.profile)
 const s = computed(() => p.value?.summary)
+// the live device, not the snapshot taken when the page loaded: the cable comes and goes
+const connected = computed(
+  () => !!s.value?.deviceId && !!state.devices.find((d) => d.id === s.value?.deviceId)?.connected
+)
 
 const identity = computed(() => {
   const x = s.value
@@ -129,17 +133,17 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
             <span
               v-if="s.deviceId"
               class="text-[11px]"
-              :class="s.connected ? 'text-ok-400' : 'text-mist-500'"
+              :class="connected ? 'text-ok-400' : 'text-mist-500'"
             >
-              {{ s.connected ? '● connected now' : '○ not connected (showing what is on record)' }}
+              {{ connected ? '● connected now' : '○ not connected (showing what is on record)' }}
             </span>
             <div class="flex gap-2">
               <button class="btn-ghost px-3 py-1" @click="dash.refreshProfile()">Refresh</button>
               <button
                 v-if="s.deviceId"
                 class="btn-gold px-3 py-1"
-                :disabled="!s.connected"
-                :title="s.connected ? 'Choose a purpose and scan' : 'Connect the cable to scan'"
+                :disabled="!connected"
+                :title="connected ? 'Choose a purpose and scan' : 'Connect the cable to scan'"
                 @click="scanNow"
               >
                 Scan now
@@ -216,9 +220,9 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
                   v-for="x in fixes(f)"
                   :key="x.name"
                   class="btn-ghost shrink-0 px-2 py-0 text-[11px]"
-                  :disabled="!s.connected"
+                  :disabled="!connected"
                   :title="
-                    s.connected ? `${x.title}: preview, then confirm` : 'Connect the cable to fix'
+                    connected ? `${x.title}: preview, then confirm` : 'Connect the cable to fix'
                   "
                   @click.stop="fix(f, x.name)"
                 >

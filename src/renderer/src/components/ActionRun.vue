@@ -50,6 +50,7 @@ const canUndo = computed(
     !!def.value?.undo &&
     (r.value.status === 'changed' ||
       r.value.status === 'partly-applied' ||
+      r.value.status === 'not-verified' ||
       r.value.status === 'done') &&
     r.value.kind === 'action'
 )
@@ -98,8 +99,14 @@ const took = computed(() =>
     </div>
     <p v-if="r.error" class="text-xs text-warn-400">{{ r.error }}</p>
     <p v-if="r.status === 'unknown'" class="text-xs text-warn-400">
-      The link was lost after the change started. The device finishes it and reports on the next
-      connection; the Change Log gets an "outcome unknown" row now and the result when it comes.
+      No result has come back yet (the link was lost, or the device did not answer). A started
+      change finishes on the device, which reports on the next connection; the Change Log gets an
+      "outcome unknown" row now and the result when it comes.
+    </p>
+    <p v-if="r.status === 'not-verified'" class="text-xs text-warn-400">
+      The change was applied, but measuring afterwards could not confirm it (it failed, was blocked,
+      missed a value, or the device stopped mid-run). Check the device; the Change Log says the
+      same.
     </p>
 
     <ol v-if="phases.length" class="flex flex-wrap gap-2 text-[11px]">
