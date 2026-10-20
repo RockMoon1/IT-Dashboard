@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { purposeLabel, type TimelineEvent } from '@shared/types'
+import { purposeLabel, type ProfileFinding, type TimelineEvent } from '@shared/types'
 import { useDashboard } from '../store'
+import { useActions } from '../actions'
 import { ago, duration, scoreBadge, severityBadge, when } from '../format'
 import Sparkline from './Sparkline.vue'
+import ComputerActions from './ComputerActions.vue'
 
 const dash = useDashboard()
+const acts = useActions()
 const { state } = dash
 const p = computed(() => state.profile)
 const s = computed(() => p.value?.summary)
@@ -60,6 +63,25 @@ function openEvent(e: TimelineEvent): void {
 function scanNow(): void {
   const id = s.value?.deviceId
   if (id) dash.openPurposePrompt(id)
+}
+
+/** Actions that fix this finding on this computer (Fix buttons), when it is enrolled. */
+function fixes(f: ProfileFinding): Array<{ name: string; title: string }> {
+  const id = s.value?.deviceId
+  return id
+    ? acts.fixesFor(id, f.category, f.message).map((d) => ({ name: d.name, title: d.title }))
+    : []
+}
+
+function fix(f: ProfileFinding, action: string): void {
+  const id = s.value?.deviceId
+  if (id)
+    acts.openAction(id, action, {
+      scanRunId: f.runId,
+      category: f.category,
+      message: f.message,
+      profile: f.purpose
+    })
 }
 
 const stripMd = (t: string): string => t.replace(/\*\*|~~|\^loop-[0-9a-f-]+/g, '').trim()
@@ -190,9 +212,24 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
                 <span class="shrink-0 text-[10px] text-mist-700"
                   >{{ f.category }} · {{ purposeLabel(f.purpose) }} · {{ when(f.at) }}</span
                 >
+                <button
+                  v-for="x in fixes(f)"
+                  :key="x.name"
+                  class="btn-ghost shrink-0 px-2 py-0 text-[11px]"
+                  :disabled="!s.connected"
+                  :title="
+                    s.connected ? `${x.title}: preview, then confirm` : 'Connect the cable to fix'
+                  "
+                  @click.stop="fix(f, x.name)"
+                >
+                  Fix…
+                </button>
               </li>
             </ul>
           </section>
+
+          <!-- actions -->
+          <ComputerActions v-if="s.deviceId" :device-id="s.deviceId" />
 
           <!-- trends -->
           <section v-if="p.series.length">

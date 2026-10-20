@@ -1,4 +1,5 @@
 import type {
+  ActionDef,
   ActionEvent,
   ActionOffer,
   ActionRecord,
@@ -64,6 +65,7 @@ export const IPC = {
   lookupSearch: 'lookup:search',
   lookupList: 'lookup:list',
   lookupProfile: 'lookup:profile',
+  actionsCatalog: 'actions:catalog',
   actionsOffers: 'actions:offers',
   actionsPreview: 'actions:preview',
   actionsRun: 'actions:run',
@@ -137,6 +139,8 @@ export interface ArhApi {
     profile(target: LookupTarget): Promise<ComputerProfile>
   }
   actions: {
+    /** Every shipped action, for Settings. */
+    catalog(): Promise<ActionDef[]>
     /** The actions a connected device offers, with what stands in the way of each. */
     offers(deviceId: string): Promise<ActionOffer[]>
     /** Measures only; nothing on the device changes. */

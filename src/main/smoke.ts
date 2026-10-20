@@ -92,6 +92,23 @@ const RENDERER_SCRIPT = String.raw`(async () => {
   out.viewer.back = true
   await closeViewer()
 
+  // Phase 3: the shipped actions reach the page, and Settings shows Access and control with one
+  // switch per action (nothing runs: there is no device in the launch test)
+  const catalog = await window.arh.actions.catalog()
+  out.actions = {
+    catalog: catalog.length,
+    hashed: catalog.every((a) => /^[0-9a-f]{64}$/.test(a.sha256)),
+    measureAndApply: catalog.every((a) => a.measure.length > 0 && a.apply.length > 0)
+  }
+  ;[...document.querySelectorAll('header button')].find((b) => b.textContent.trim() === 'Settings')?.click()
+  await until('Access and control in Settings', () => text().includes('Access and control'))
+  out.actions.settingsSwitches = await until('one switch per action', () => {
+    const n = document.querySelectorAll('details label input[type="checkbox"]').length
+    return n >= catalog.length && n
+  })
+  ;[...document.querySelectorAll('form button')].find((b) => b.textContent.trim() === 'Cancel')?.click()
+  await until('Settings to close', () => !text().includes('Access and control'))
+
   // "Computers" twice: the first click returns to the open computer page, the second to the list
   const tabs = ['Active scan', 'Results', 'Health', 'Open loops', 'Work log', 'Search', 'Link', 'Computers', 'Computers']
   out.tabs = {}
@@ -165,6 +182,12 @@ export function runSmoke(win: BrowserWindow): void {
           'back'
         ])
           if (!viewer?.[k]) problems.push(`note viewer check failed: ${k}`)
+        const acts = report['actions'] as Record<string, number | boolean> | undefined
+        if (!acts || Number(acts['catalog']) < 20)
+          problems.push(`only ${String(acts?.['catalog'])} actions loaded`)
+        if (!acts?.['hashed'] || !acts['measureAndApply'])
+          problems.push('an action has no hash or lacks a measure or apply script')
+        if (!acts?.['settingsSwitches']) problems.push('Settings shows no per-action switches')
         for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))
           if (v !== 'ok') problems.push(`tab ${k}: ${v}`)
         finish(report)

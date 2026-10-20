@@ -5,6 +5,7 @@ import { hostname } from 'node:os'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { IPC, type LogLine } from '../shared/api.ts'
 import type {
+  ActionDef,
   ActionEvent,
   ActionOffer,
   ActionRecord,
@@ -737,6 +738,11 @@ export class AppContext {
     return results
   }
 
+  /** Settings › Access and control: "Read notes". Every read of the vault goes through here. */
+  private vaultReadable(): void {
+    if (!this.settings.vaultRead) throw new Error('Settings: reading the vault is off')
+  }
+
   private async openLoops(): Promise<OpenLoopsView> {
     const path = notePaths(this.settings).openLoops
     const candidates = this.recentRuns().flatMap((r) =>
@@ -750,6 +756,7 @@ export class AppContext {
         }))
     )
     try {
+      this.vaultReadable()
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
       const tasks = parseTasks(text, await this.indexedFile('openLoops', path))
       return {
@@ -774,6 +781,7 @@ export class AppContext {
   private async workLog(limit: number): Promise<WorkLogView> {
     const path = notePaths(this.settings).workLog
     try {
+      this.vaultReadable()
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
       const file = await this.indexedFile('workLog', path)
       const entries = parseDatedEntries(text, file).slice(0, limit)
@@ -798,7 +806,10 @@ export class AppContext {
     notes: Awaited<ReturnType<VaultIndex['notes']>>
     computers: ReturnType<typeof buildComputers>
   }> {
-    const notes = await this.vaultIndex.notes(this.settings.vaultPath)
+    // with "Read notes" off, computers still come from enrollment and scans
+    const notes = this.settings.vaultRead
+      ? await this.vaultIndex.notes(this.settings.vaultPath)
+      : []
     const roles = noteRoles(notes, this.settings)
     const inventory = roles.assets ? inventoryRows(roles.assets) : []
     const merged = new Map<string, ScanRun>()
@@ -840,7 +851,9 @@ export class AppContext {
       notes,
       settings: this.settings,
       connected: this.isConnected,
-      vaultError: this.vaultIndex.error
+      vaultError: this.settings.vaultRead
+        ? this.vaultIndex.error
+        : 'Settings: reading the vault is off; showing enrollment and scans only'
     })
     return { ...profile, tookMs: Math.round(performance.now() - started) }
   }
@@ -858,6 +871,7 @@ export class AppContext {
       ? abs.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`)
       : abs.startsWith(`${root}${sep}`)
     if (!inside || !/\.md$/i.test(abs)) throw new Error('not a note inside the vault')
+    this.vaultReadable()
     const notes = await this.vaultIndex.notes(this.settings.vaultPath)
     const note = notes.find((n) => resolve(n.abs) === abs)
     if (!note || !existsSync(abs)) throw new Error(`note not found: ${name}`)
@@ -952,6 +966,7 @@ export class AppContext {
     ipcMain.handle(IPC.scanStart, (_e, deviceId: string, purpose: Purpose): ScanRun => {
       const device = this.devices.get(deviceId)
       if (!device) throw new Error('unknown device')
+      if (!this.settings.deviceScan) throw new Error('Settings: reading devices (scans) is off')
       const run = this.runner.start(device, purpose, this.link?.isConnected(deviceId) ?? false)
       this.log(
         'scan',
@@ -980,11 +995,10 @@ export class AppContext {
     ipcMain.handle(IPC.vaultApply, () => this.vaultApply())
     ipcMain.handle(IPC.vaultOpenLoops, () => this.openLoops())
     ipcMain.handle(IPC.vaultWorkLog, (_e, limit?: number) => this.workLog(limit ?? 30))
-    ipcMain.handle(
-      IPC.vaultSearch,
-      (_e, query: string): Promise<SearchHit[]> =>
-        searchVault(this.settings.vaultPath, query, { limit: 100 })
-    )
+    ipcMain.handle(IPC.vaultSearch, async (_e, query: string): Promise<SearchHit[]> => {
+      this.vaultReadable()
+      return searchVault(this.settings.vaultPath, query, { limit: 100 })
+    })
     ipcMain.handle(IPC.vaultOpenNote, (_e, file: string) => this.openNote(file))
     ipcMain.handle(IPC.vaultReadNote, (_e, file: string) => this.readNote(file))
     ipcMain.handle(IPC.lookupSearch, (_e, query: string) => this.lookupSearch(String(query ?? '')))
@@ -996,6 +1010,7 @@ export class AppContext {
       if (!device) throw new Error('unknown device')
       return device
     }
+    ipcMain.handle(IPC.actionsCatalog, (): ActionDef[] => this.actionCatalog.list())
     ipcMain.handle(IPC.actionsOffers, (_e, deviceId: string): ActionOffer[] =>
       this.actions.offers(enrolled(deviceId))
     )

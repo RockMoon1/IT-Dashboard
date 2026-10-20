@@ -16,10 +16,15 @@ import LinkPanel from './components/LinkPanel.vue'
 import PreviewModal from './components/PreviewModal.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import NoteDrawer from './components/NoteDrawer.vue'
+import ActionDialog from './components/ActionDialog.vue'
+import ExecDialog from './components/ExecDialog.vue'
+import ActionRecordModal from './components/ActionRecordModal.vue'
+import { useActions } from './actions'
 import StatusBar from './components/StatusBar.vue'
 
 const dash = useDashboard()
 const { state } = dash
+const acts = useActions()
 
 const tabs: Array<{ id: Tab; label: string }> = [
   { id: 'computer', label: 'Computers' },
@@ -57,7 +62,7 @@ function openTab(id: Tab): void {
 }
 
 onMounted(() => {
-  void dash.init()
+  void dash.init().then(() => acts.ensure())
 })
 </script>
 
@@ -167,6 +172,9 @@ onMounted(() => {
     <EnrollModal v-if="state.enrollOpen" />
     <PreviewModal v-if="state.previewOpen" />
     <SettingsPanel v-if="state.settingsOpen" />
+    <ActionDialog v-if="acts.astate.dialog" />
+    <ExecDialog v-if="acts.astate.exec" />
+    <ActionRecordModal v-if="acts.astate.view" />
     <NoteDrawer v-if="state.noteHistory.length" />
   </div>
 </template>

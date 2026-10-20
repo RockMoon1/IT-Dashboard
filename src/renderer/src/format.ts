@@ -1,4 +1,5 @@
 import type { HealthScore, Severity } from '@shared/types'
+import { STATUS_LABEL, statusTone, type ActionImpact, type ActionStatus } from '@shared/actions'
 
 const pad = (n: number): string => String(n).padStart(2, '0')
 
@@ -40,4 +41,35 @@ export function severityBadge(s: Severity): { icon: string; text: string; cls: s
   if (s === 'critical') return { icon: '●', text: 'Critical', cls: 'text-bad-400' }
   if (s === 'warning') return { icon: '▲', text: 'Warning', cls: 'text-warn-400' }
   return { icon: 'i', text: 'Info', cls: 'text-info-400' }
+}
+
+/** Action status with an icon and words (never colour alone). */
+export function actionBadge(status: ActionStatus): { icon: string; text: string; cls: string } {
+  const tone = statusTone(status)
+  const icon =
+    status === 'running'
+      ? '…'
+      : tone === 'ok'
+        ? '✓'
+        : tone === 'bad'
+          ? '✗'
+          : tone === 'warn'
+            ? '▲'
+            : '○'
+  const cls =
+    tone === 'ok'
+      ? 'text-ok-400'
+      : tone === 'bad'
+        ? 'text-bad-400'
+        : tone === 'warn'
+          ? 'text-warn-400'
+          : 'text-info-400'
+  return { icon, text: STATUS_LABEL[status], cls }
+}
+
+export function impactBadge(impact: ActionImpact): { text: string; cls: string } {
+  if (impact === 'interrupts')
+    return { text: 'interrupts work', cls: 'text-bad-400 border-bad-400/40' }
+  if (impact === 'slows') return { text: 'slows the PC', cls: 'text-warn-400 border-warn-400/40' }
+  return { text: 'quiet', cls: 'text-mist-500 border-white/10' }
 }

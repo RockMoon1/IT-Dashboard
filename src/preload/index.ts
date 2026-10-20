@@ -63,6 +63,7 @@ const api: ArhApi = {
     profile: (target) => ipcRenderer.invoke(IPC.lookupProfile, target)
   },
   actions: {
+    catalog: () => ipcRenderer.invoke(IPC.actionsCatalog),
     offers: (deviceId) => ipcRenderer.invoke(IPC.actionsOffers, deviceId),
     preview: (req) => ipcRenderer.invoke(IPC.actionsPreview, req),
     run: (req, confirm) => ipcRenderer.invoke(IPC.actionsRun, req, confirm),
