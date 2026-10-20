@@ -1,6 +1,6 @@
-import { sep } from 'node:path'
+import { posix, sep } from 'node:path'
 import type { NoteLinkTarget, NoteView } from '../../../shared/types.ts'
-import { parseMarkdown } from '../../../shared/markdown.ts'
+import { parseMarkdown, type ParsedNote } from '../../../shared/markdown.ts'
 import type { IndexedNote } from './vaultindex.ts'
 
 /**
@@ -14,23 +14,27 @@ const noExt = (p: string): string => p.replace(/\.md$/i, '')
 
 /**
  * Where a wikilink target points, the way Obsidian resolves it: a path ("Tickets/Note") must
- * match the end of a note's path; a bare name matches the file name. With several candidates
- * the one in the linking note's folder wins, then the shortest path.
+ * match the end of a note's path; a bare name matches the file name; "./" and "../" start from
+ * the linking note's folder. With several candidates the one in the linking note's folder
+ * wins, then the shortest path.
  */
 export function resolveLink(
   target: string,
   from: Pick<IndexedNote, 'rel'> | null,
   notes: IndexedNote[]
 ): IndexedNote | null {
-  const t = lower(noExt(target.replace(/\\/g, '/')))
+  const fromDir = from ? lower(slash(from.rel)).split('/').slice(0, -1).join('/') : ''
+  let t = lower(noExt(target.replace(/\\/g, '/')))
+  const relative = /^\.\.?\//.test(t)
+  t = relative ? posix.join(fromDir, t) : t.replace(/^\/+/, '')
   if (!t) return null
   const hasPath = t.includes('/')
   const candidates = notes.filter((n) => {
     const rel = lower(noExt(slash(n.rel)))
+    if (relative) return rel === t
     return hasPath ? rel === t || rel.endsWith(`/${t}`) : lower(n.name) === t
   })
   if (!candidates.length) return null
-  const fromDir = from ? lower(slash(from.rel)).split('/').slice(0, -1).join('/') : ''
   return [...candidates].sort((a, b) => {
     const da = lower(slash(a.rel)).split('/').slice(0, -1).join('/') === fromDir ? 0 : 1
     const db = lower(slash(b.rel)).split('/').slice(0, -1).join('/') === fromDir ? 0 : 1
@@ -38,30 +42,46 @@ export function resolveLink(
   })[0]!
 }
 
-/** Notes whose lines link to `note` by [[Name]], [[Name|…]], [[Name#…]] or [[folder/Name]]. */
+// a note's links as the reader shows them, parsed once per version (the index replaces the
+// object when the file changes)
+const linkCache = new WeakMap<IndexedNote, ParsedNote['linkLines']>()
+function linksOf(note: IndexedNote): ParsedNote['linkLines'] {
+  let links = linkCache.get(note)
+  if (!links) {
+    links = parseMarkdown(note.text).linkLines
+    linkCache.set(note, links)
+  }
+  return links
+}
+
+/**
+ * Notes that link to `note` where the reader shows a link: [[Name]], [[Name|…]], [[Name#…]],
+ * [[folder/Name]], [text](Name.md) and properties; not in code or comments. One per line.
+ */
 export function backlinks(
   note: IndexedNote,
   notes: IndexedNote[],
   limit = 60
 ): NoteView['backlinks'] {
   const out: NoteView['backlinks'] = []
-  const re = /!?\[\[([^\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g
+  // only notes that mention the name (as written or URL-encoded) are parsed
+  const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const names = [note.name, note.name.replace(/ /g, '%20'), encodeURI(note.name)]
+  const mentions = new RegExp(names.map(esc).join('|'), 'i')
   for (const other of notes) {
-    if (other.abs === note.abs) continue
-    other.lines.forEach((line, i) => {
-      if (out.length >= limit) return
-      for (const m of line.matchAll(re)) {
-        const target = m[1] ?? ''
-        if (resolveLink(target, other, notes)?.abs !== note.abs) continue
-        out.push({
-          file: other.rel,
-          title: other.title,
-          line: i + 1,
-          text: line.trim().slice(0, 300)
-        })
-        break
-      }
-    })
+    if (other.abs === note.abs || !mentions.test(other.text)) continue
+    const seen = new Set<number>()
+    for (const { target, line } of linksOf(other)) {
+      if (out.length >= limit) break
+      if (seen.has(line) || resolveLink(target, other, notes)?.abs !== note.abs) continue
+      seen.add(line)
+      out.push({
+        file: other.rel,
+        title: other.title,
+        line,
+        text: (other.lines[line - 1] ?? '').trim().slice(0, 300)
+      })
+    }
     if (out.length >= limit) break
   }
   return out

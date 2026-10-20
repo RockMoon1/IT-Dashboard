@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultIndex } from '../src/main/services/lookup/vaultindex.ts'
@@ -64,6 +64,75 @@ test('the viewer resolves [[links]] like Obsidian and lists what links back', as
     const other = notes.find((n) => n.rel === join('Reference', 'Checklist.md'))!
     assert.equal(backlinks(other, notes).length, 1, 'only the [[Reference/Checklist]] link')
     assert.ok(refList.length >= 1)
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
+test('backlinks are the links the reader shows: tables, Markdown links, not code or comments', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const files: Record<string, string> = {
+      'In code.md': '# A\n\n```\nExample: [[T-0001 Front desk printer]]\n```\n',
+      'In comments.md':
+        '# B\n\n%% old link [[T-0001 Front desk printer]] %%\n<!-- [[T-0001 Front desk printer]] -->\n',
+      'In code span.md': '# C\n\nWrite `[[T-0001 Front desk printer]]` to link it.\n',
+      'Markdown link.md':
+        '# D\n\nSee\n[the printer ticket](Tickets/T-0001%20Front%20desk%20printer.md).\n',
+      'Table.md':
+        '# E\n\n| Asset | Ticket |\n| --- | --- |\n| ARH-P01 | [[T-0001 Front desk printer\\|T-0001]] |\n',
+      'Property.md': '---\nrelated: "[[T-0001 Front desk printer]]"\n---\n# F\n'
+    }
+    for (const [name, text] of Object.entries(files)) await writeFile(join(vault, name), text)
+    const notes = await new VaultIndex().notes(vault)
+    const ticket = notes.find((n) => n.name === 'T-0001 Front desk printer')!
+    const back = backlinks(ticket, notes)
+      .filter((b) => b.title.length === 1)
+      .map((b) => [b.title, b.line])
+    assert.deepEqual(back.sort(), [
+      ['D', 4],
+      ['E', 5],
+      ['F', 2]
+    ])
+    const table = noteView(notes.find((n) => n.name === 'Table')!, notes)
+    assert.equal(table.links['T-0001 Front desk printer']?.file, ticket.rel)
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
+test('relative links (./, ../ and <…>) resolve from the linking note', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    await mkdir(join(vault, 'Tickets', 'Sub'), { recursive: true })
+    await writeFile(join(vault, 'Tickets', 'Sub', 'Deep.md'), '# Deep\n')
+    await writeFile(join(vault, 'Tickets', 'Sub', 'F.md'), '# F\n\n[[./Deep]]\n')
+    await writeFile(
+      join(vault, 'Tickets', 'E.md'),
+      '# E\n\n[[../Runbooks/Printer runbook]] [runbook](../Runbooks/Printer%20runbook.md)\n' +
+        '[x](<T-0001 Front desk printer.md>) [[/Runbooks/Printer runbook]] [[../../Outside]]\n'
+    )
+    const notes = await new VaultIndex().notes(vault)
+    const byName = (n: string) => notes.find((x) => x.name === n)!
+    const e = noteView(byName('E'), notes).links
+    const runbook = join('Runbooks', 'Printer runbook.md')
+    assert.equal(e['../Runbooks/Printer runbook']?.file, runbook)
+    assert.equal(e['/Runbooks/Printer runbook']?.file, runbook)
+    assert.equal(
+      e['T-0001 Front desk printer']?.file,
+      join('Tickets', 'T-0001 Front desk printer.md')
+    )
+    assert.equal(e['../../Outside'], null)
+    assert.equal(resolveLink('./Deep', byName('F'), notes)?.rel, join('Tickets', 'Sub', 'Deep.md'))
+    assert.equal(
+      resolveLink('./Deep', byName('E'), notes),
+      null,
+      'relative to the note, not the vault'
+    )
   } finally {
     await rm(tmp, { recursive: true, force: true })
   }
