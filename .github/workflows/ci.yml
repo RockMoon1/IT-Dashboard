@@ -52,6 +52,11 @@ jobs:
         env:
           ARH_LIVE_ACTIONS: '1'
         run: go test ./agent/internal/link -run TestShippedActionsMeasureHere -v -count=1 -timeout 10m
+      - name: Time PowerShell launches around a time zone change (Windows, elevated runner)
+        if: runner.os == 'Windows'
+        env:
+          ARH_LIVE_APPLY: '1'
+        run: go test ./agent/internal/executor -run TestLaunchCostAroundTimeZoneChange -v -count=1 -timeout 15m
       # Each run is measure, apply and measure again; the whole step took 6 to 11 minutes on
       # hosted runners, and the log shows each phase's time.
       - name: Apply and undo the shipped actions (Windows, elevated runner)
