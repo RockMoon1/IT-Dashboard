@@ -148,6 +148,12 @@ and first lines of System/Security events, not message bodies of application log
 - On Windows, install refuses a data folder that already exists and does not belong to SYSTEM or
   an administrator (`C:\ProgramData` lets any user create folders), takes the folder for SYSTEM,
   and trusts `policy.json` only when SYSTEM or an administrator owns it.
+- Windows PowerShell looks up a command it has not loaded by searching every module, through
+  a cache keyed on local-time file stamps; after a time zone change (or with a cold cache) that
+  search took 11 to 20 s per process on test machines. The agent imports the modules a scan check
+  or action uses by full path first (a table in `agent/internal/executor/modules.go`, proven
+  complete for the shipped scripts in CI with the search turned off), so its launches stay at
+  about 0.2 s. A custom command that uses a command outside that table may still be slow then.
 - A restart is recorded as scheduled; whether it happened is not yet confirmed from the next
   `bootTime`.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay

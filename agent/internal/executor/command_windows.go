@@ -13,6 +13,10 @@ import (
 	"github.com/RockMoon1/IT-Dashboard/profiles"
 )
 
+// noAutoload turns PowerShell's own module search off; tests set it to prove that every command
+// the shipped scripts use is imported by path.
+var noAutoload = false
+
 const preamble = "$ErrorActionPreference = 'Continue'; $ProgressPreference = 'SilentlyContinue'; try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}\n"
 
 // bootstrap reads the real script from standard input as UTF-8 and runs it. Long scripts (custom
@@ -62,11 +66,16 @@ func command(ctx context.Context, check profiles.Check) (*exec.Cmd, hooks, error
 	}
 	args := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", "-EncodedCommand"}
 	var cmd *exec.Cmd
+	// the modules the script needs, loaded by full path first (see modules.go)
+	imports := importLines(check.Script())
+	if noAutoload {
+		imports = "$PSModuleAutoLoadingPreference = 'None'\n" + imports
+	}
 	if check.LongScript {
-		cmd = exec.CommandContext(ctx, powerShellPath(), append(args, EncodeCommand(bootstrap))...)
+		cmd = exec.CommandContext(ctx, powerShellPath(), append(args, EncodeCommand(imports+bootstrap))...)
 		cmd.Stdin = strings.NewReader(check.Script() + "\n")
 	} else {
-		cmd = exec.CommandContext(ctx, powerShellPath(), append(args, EncodeCommand(preamble+check.Script()+"\n"))...)
+		cmd = exec.CommandContext(ctx, powerShellPath(), append(args, EncodeCommand(imports+preamble+check.Script()+"\n"))...)
 	}
 	if check.CleanEnv || check.FixedPath || len(check.Env) > 0 {
 		cmd.Env = childEnv(cmd.Environ(), check)
