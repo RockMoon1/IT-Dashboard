@@ -46,14 +46,17 @@ jobs:
           go test -c -o link.test ./agent/internal/link
           sudo ARH_LIVE_ACTIONS=1 ./link.test -test.run TestShippedActionsMeasureHere -test.v -test.timeout 10m
           sudo ARH_LIVE_APPLY=1 ./link.test -test.run TestShippedActionsApplyHere -test.v -test.timeout 10m
-      - name: Measure, apply and undo the shipped actions (Windows, elevated runner)
+      # (go test, not the compiled binary: PowerShell splits "-test.v" at the dot)
+      - name: Measure the shipped actions (Windows, elevated runner)
         if: runner.os == 'Windows'
-        run: |
-          go test -c -o link.test.exe ./agent/internal/link
-          $env:ARH_LIVE_ACTIONS = '1'; ./link.test.exe -test.run TestShippedActionsMeasureHere -test.v -test.timeout 10m
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:ARH_LIVE_ACTIONS = ''; $env:ARH_LIVE_APPLY = '1'; ./link.test.exe -test.run TestShippedActionsApplyHere -test.v -test.timeout 10m
-          exit $LASTEXITCODE
+        env:
+          ARH_LIVE_ACTIONS: '1'
+        run: go test ./agent/internal/link -run TestShippedActionsMeasureHere -v -count=1 -timeout 10m
+      - name: Apply and undo the shipped actions (Windows, elevated runner)
+        if: runner.os == 'Windows'
+        env:
+          ARH_LIVE_APPLY: '1'
+        run: go test ./agent/internal/link -run TestShippedActionsApplyHere -v -count=1 -timeout 10m
 
   host:
     name: dashboard (windows)
