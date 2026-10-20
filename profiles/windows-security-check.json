@@ -1,7 +1,7 @@
 {
   "schema": "arh-scan-profile/1",
   "name": "windows-security-check",
-  "version": 1,
+  "version": 2,
   "os": "windows",
   "purpose": "security-check",
   "title": "Security Check",
@@ -23,6 +23,7 @@
         "    antispywareEnabled = $s.AntispywareEnabled",
         "    networkInspectionEnabled = $s.NISEnabled",
         "    tamperProtected = $s.IsTamperProtected",
+        "    amRunningMode = [string]$s.AMRunningMode",
         "    signatureAgeDays = $s.AntivirusSignatureAge",
         "    signatureVersion = $s.AntivirusSignatureVersion",
         "    lastQuickScan = if ($s.QuickScanEndTime) { $s.QuickScanEndTime.ToString('s') } else { $null }",
@@ -71,7 +72,7 @@
       "category": "Firewall",
       "shell": "powershell",
       "command": [
-        "$p = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Select-Object Name, @{ n = 'Enabled'; e = { [string]$_.Enabled } }, @{ n = 'DefaultInboundAction'; e = { [string]$_.DefaultInboundAction } }, @{ n = 'DefaultOutboundAction'; e = { [string]$_.DefaultOutboundAction } })",
+        "$p = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Select-Object Name, @{ n = 'Enabled'; e = { [string]$_.Enabled } }, @{ n = 'DefaultInboundAction'; e = { [string]$_.DefaultInboundAction } }, @{ n = 'DefaultOutboundAction'; e = { [string]$_.DefaultOutboundAction } })",
         "ConvertTo-Json -InputObject $p -Compress"
       ],
       "format": "json",

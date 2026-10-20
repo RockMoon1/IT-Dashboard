@@ -215,7 +215,7 @@ const device: EnrolledDevice = {
   agentVersion: '0.2.0',
   profiles: [
     { name: 'windows-system-diagnostics', version: 1 },
-    { name: 'windows-security-check', version: 1 }
+    { name: 'windows-security-check', version: 2 }
   ]
 }
 
@@ -366,4 +366,49 @@ test('scan runner: start, stream, finish, log and results tree; failure part way
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// Defender steps back when another antivirus is on: its switches being off is then expected,
+// so no critical finding (and no Fix that could not work), only an info line saying who protects.
+test('health: Defender in passive mode behind another antivirus is info, not critical', () => {
+  const passive = evaluateHealth(
+    { os: 'windows', purpose: 'security-check' },
+    [
+      outcome('sec-defender', {
+        available: true,
+        antivirusEnabled: false,
+        realTimeProtectionEnabled: false,
+        amRunningMode: 'Passive Mode',
+        signatureAgeDays: 1
+      }),
+      outcome('sec-av-products', [
+        { name: 'Windows Defender', enabled: false, upToDate: true },
+        { name: 'Acme Endpoint', enabled: true, upToDate: true }
+      ])
+    ],
+    now
+  )
+  const msgs = passive.findings.map((f) => `${f.severity}:${f.message}`)
+  assert.ok(!msgs.some((m) => m.startsWith('critical:')), msgs.join('\n'))
+  assert.ok(msgs.includes('info:Defender is in Passive Mode: Acme Endpoint provides protection'))
+  // the same switches off with nothing else protecting the PC are still critical
+  const alone = evaluateHealth(
+    { os: 'windows', purpose: 'security-check' },
+    [
+      outcome('sec-defender', {
+        available: true,
+        antivirusEnabled: true,
+        realTimeProtectionEnabled: false,
+        amRunningMode: 'Normal',
+        signatureAgeDays: 1
+      }),
+      outcome('sec-av-products', [{ name: 'Windows Defender', enabled: true, upToDate: true }])
+    ],
+    now
+  )
+  assert.ok(
+    alone.findings.some(
+      (f) => f.severity === 'critical' && f.message === 'Defender real-time protection is off'
+    )
+  )
 })

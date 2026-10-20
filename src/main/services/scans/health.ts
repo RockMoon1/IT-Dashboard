@@ -221,28 +221,43 @@ function windows(
   } else if (th['supported'] === false) r.metric('Thermal', 'not exposed by firmware')
 
   const d = obj(json('sec-defender'))
+  const av = asArray(json('sec-av-products'))
+  // Defender steps back (passive mode) when another antivirus is registered and on: then its
+  // own switches being off is expected, not a finding, and turning it on would not help
+  const mode = str(d['amRunningMode'])
+  const otherAv = av.filter((p) => p['enabled'] === true && !/defender/i.test(str(p['name'])))
+  const passive = (mode !== '' && !/^normal$/i.test(mode)) || otherAv.length > 0
   if (d['available'] === true) {
     r.metric('Defender AV', d['antivirusEnabled'] === true ? 'enabled' : 'DISABLED')
     r.metric('Real-time protection', d['realTimeProtectionEnabled'] === true ? 'on' : 'OFF')
     r.metric('Signature age', `${str(d['signatureAgeDays'])} day(s)`)
     r.metric('Tamper protection', d['tamperProtected'] === true ? 'on' : 'off')
-    if (d['antivirusEnabled'] !== true)
-      r.add('critical', 'Antivirus', 'Microsoft Defender antivirus is disabled')
-    if (d['realTimeProtectionEnabled'] !== true)
-      r.add('critical', 'Antivirus', 'Defender real-time protection is off')
+    if (mode) r.metric('Defender mode', mode)
+    if (passive && (d['antivirusEnabled'] !== true || d['realTimeProtectionEnabled'] !== true))
+      r.add(
+        'info',
+        'Antivirus',
+        `Defender is ${mode && !/^normal$/i.test(mode) ? `in ${mode}` : 'stepped back'}: ${otherAv.map((p) => str(p['name'])).join(', ') || 'another antivirus'} provides protection`
+      )
+    else {
+      if (d['antivirusEnabled'] !== true)
+        r.add('critical', 'Antivirus', 'Microsoft Defender antivirus is disabled')
+      if (d['realTimeProtectionEnabled'] !== true)
+        r.add('critical', 'Antivirus', 'Defender real-time protection is off')
+    }
     const age = r.value('av-signature-age', num(d['signatureAgeDays']))
     if (age != null && age > THRESHOLDS.signatureAgeDaysStale)
       r.add('warning', 'Antivirus', `Defender signatures are ${age} days old`)
   } else if (d['available'] === false)
     r.metric('Defender AV', 'not available (third-party AV or Server without the Defender module)')
-  const av = asArray(json('sec-av-products'))
   if (av.length) {
     r.metric(
       'AV products',
       av.map((p) => `${str(p['name'])}${p['enabled'] ? '' : ' (disabled)'}`).join('; ')
     )
     for (const p of av) {
-      if (p['enabled'] === false)
+      // Security Center shows a passive Defender as disabled; that is the same expected state
+      if (p['enabled'] === false && !(passive && /defender/i.test(str(p['name']))))
         r.add('critical', 'Antivirus', `Antivirus "${str(p['name'])}" is registered but disabled`)
       if (p['upToDate'] === false)
         r.add(
