@@ -91,9 +91,16 @@ function onGlobalKey(e: KeyboardEvent): void {
 onMounted(() => window.addEventListener('keydown', onGlobalKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
+let closeTimer: ReturnType<typeof setTimeout> | null = null
 function closeSoon(): void {
   // let a click on a row land before the list disappears
-  setTimeout(() => (open.value = false), 150)
+  closeTimer = setTimeout(() => (open.value = false), 150)
+}
+function onFocus(): void {
+  // back in the box before the close fired: keep the list
+  if (closeTimer) clearTimeout(closeTimer)
+  closeTimer = null
+  open.value = query.value.trim().length > 0
 }
 </script>
 
@@ -107,7 +114,7 @@ function closeSoon(): void {
       spellcheck="false"
       aria-label="Look up a computer"
       @keydown="onKey"
-      @focus="open = query.trim().length > 0"
+      @focus="onFocus"
       @blur="closeSoon"
     />
     <span

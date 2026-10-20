@@ -717,20 +717,33 @@ test('trend "past the limit" uses exactly the comparison each health check uses'
         )
     }
   ]
+  // values that are measured, not counted, also get fractions right next to the limit
+  const continuous = new Set([
+    'disk-free:C:',
+    'ram-used',
+    'uptime-days',
+    'update-age',
+    'battery-health',
+    'cpu'
+  ])
   for (const c of cases) {
     const def = seriesDef(c.key)!
-    for (const v of [def.threshold! - 1, def.threshold!, def.threshold! + 1]) {
+    const t = def.threshold!
+    const values = [t - 1, t, t + 1]
+    if (continuous.has(c.key)) values.push(t - 0.04, t - 0.02, t + 0.02, t + 0.04)
+    for (const v of values) {
       const report = evaluateHealth(
         { os: 'windows', purpose: 'system-diagnostics' },
         [c.make(v)],
         now
       )
-      assert.equal(report.values?.[c.key], v, `${c.key} value at ${v}`)
+      const stored = report.values?.[c.key]
+      assert.equal(stored, Math.round(v * 10) / 10, `${c.key} value at ${v}`)
       const flagged = report.findings.some(
         (f) => f.category === c.category && f.category !== 'Scan'
       )
       assert.equal(
-        seriesBreach({ threshold: def.threshold, alert: def.alert }, v),
+        seriesBreach({ threshold: def.threshold, alert: def.alert }, stored),
         flagged,
         `${c.key} = ${v}: the trend card and the health check must agree`
       )

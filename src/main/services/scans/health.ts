@@ -104,10 +104,17 @@ class Report {
   metric(key: string, value: string): void {
     if (value && value !== 'undefined' && value !== 'null') this.metrics[key] = value
   }
-  /** Raw numbers kept per scan so the computer view can draw trends (keys: VALUE_KEYS). */
+  /** Numbers kept per scan for the computer view's trends (disk-free:<drive>, ram-used …). */
   values: Record<string, number> = {}
-  value(key: string, v: number | null | undefined): void {
-    if (v != null && Number.isFinite(v)) this.values[key] = Math.round(v * 10) / 10
+  /**
+   * Stores a value rounded to 0.1 and returns that same number. Threshold checks compare the
+   * returned number, so a trend card and its health finding always judge the same value.
+   */
+  value(key: string, v: number | null | undefined): number | null {
+    if (v == null || !Number.isFinite(v)) return null
+    const x = Math.round(v * 10) / 10
+    this.values[key] = x
+    return x
   }
 }
 
@@ -151,8 +158,7 @@ export function evaluateHealth(
 
 function checkDisks(r: Report, disks: Json[]): void {
   for (const d of disks) {
-    const free = num(d['freePct'])
-    r.value(`disk-free:${str(d['drive'])}`, free)
+    const free = r.value(`disk-free:${str(d['drive'])}`, num(d['freePct']))
     if (free != null && free < THRESHOLDS.diskFreePctLow) {
       r.add(
         free < 5 ? 'critical' : 'warning',
@@ -197,14 +203,13 @@ function windows(
         `${str(d['freeGB'])} GB free of ${str(d['sizeGB'])} GB (${str(d['freePct'])}%)`
       )
     checkDisks(r, asArray(o['disks']))
-    const ram = num(o['ramUsedPct'])
-    r.value('ram-used', ram)
+    const ram = r.value('ram-used', num(o['ramUsedPct']))
     if (ram != null && ram >= THRESHOLDS.ramUsedPctHigh)
       r.add('warning', 'Performance', `RAM usage is ${ram}%`)
     const up = num(o['uptimeHours'])
-    r.value('uptime-days', up != null ? up / 24 : null)
-    if (up != null && up >= THRESHOLDS.uptimeDaysLong * 24)
-      r.add('info', 'System', `Uptime is ${Math.round(up / 24)} days; a restart is overdue`, true)
+    const upDays = r.value('uptime-days', up != null ? up / 24 : null)
+    if (upDays != null && upDays >= THRESHOLDS.uptimeDaysLong)
+      r.add('info', 'System', `Uptime is ${Math.round(upDays)} days; a restart is overdue`, true)
   }
   const th = obj(json('sys-thermal'))
   if (th['supported'] === true) {
@@ -225,8 +230,7 @@ function windows(
       r.add('critical', 'Antivirus', 'Microsoft Defender antivirus is disabled')
     if (d['realTimeProtectionEnabled'] !== true)
       r.add('critical', 'Antivirus', 'Defender real-time protection is off')
-    const age = num(d['signatureAgeDays'])
-    r.value('av-signature-age', age)
+    const age = r.value('av-signature-age', num(d['signatureAgeDays']))
     if (age != null && age > THRESHOLDS.signatureAgeDaysStale)
       r.add('warning', 'Antivirus', `Defender signatures are ${age} days old`)
   } else if (d['available'] === false)
@@ -260,8 +264,7 @@ function windows(
   const hot = asArray(up['hotfixes'])
   if (hot[0]) {
     r.metric('Latest hotfix', `${str(hot[0]['HotFixID'])} on ${str(hot[0]['InstalledOn'])}`)
-    const age = daysSince(hot[0]['InstalledOn'], now)
-    r.value('update-age', age)
+    const age = r.value('update-age', daysSince(hot[0]['InstalledOn'], now))
     if (age != null && age > THRESHOLDS.updateAgeDaysStale)
       r.add(
         'warning',
@@ -305,8 +308,7 @@ function windows(
   }
   const lg = obj(json('sec-logins'))
   if (Object.keys(lg).length) {
-    const f24 = num(lg['failedLogins24h'])
-    r.value('failed-logins-24h', f24)
+    const f24 = r.value('failed-logins-24h', num(lg['failedLogins24h']))
     r.metric(
       'Failed sign-ins (24 h / 7 d)',
       `${str(lg['failedLogins24h'])} / ${str(lg['failedLogins7d'])}`
@@ -404,8 +406,7 @@ function windows(
       r.add('critical', 'Storage', `SMART predicts failure for ${str(s['instance'])}`)
   const b = obj(json('hw-battery'))
   if (b['present'] === true) {
-    const health = num(b['healthPct'])
-    r.value('battery-health', health)
+    const health = r.value('battery-health', num(b['healthPct']))
     r.metric(
       'Battery',
       `${health != null ? `${health}% health` : 'health n/a'}, ${str(b['chargePct'])}% charge${b['cycleCount'] != null ? `, ${str(b['cycleCount'])} cycles` : ''}`
@@ -424,8 +425,7 @@ function windows(
 
   const pr = obj(json('perf-resources'))
   if (Object.keys(pr).length) {
-    const cpu = num(pr['cpuPct'])
-    r.value('cpu', cpu)
+    const cpu = r.value('cpu', num(pr['cpuPct']))
     if (cpu != null) r.metric('CPU', `${cpu}%`)
     r.metric('RAM', `${str(pr['ramUsedPct'])}% of ${str(pr['ramTotalGB'])} GB`)
     if (pr['committedPct'] != null) r.metric('Committed memory', `${str(pr['committedPct'])}%`)
@@ -433,8 +433,7 @@ function windows(
     r.metric('Processes', str(pr['processCount']))
     if (cpu != null && cpu >= THRESHOLDS.cpuPctHigh)
       r.add('warning', 'Performance', `CPU is at ${cpu}% (3 s average)`)
-    const ram = num(pr['ramUsedPct'])
-    r.value('ram-used', ram)
+    const ram = r.value('ram-used', num(pr['ramUsedPct']))
     if (ram != null && ram >= THRESHOLDS.ramUsedPctHigh)
       r.add('warning', 'Performance', `RAM usage is ${ram}%`)
     const committed = num(pr['committedPct'])
