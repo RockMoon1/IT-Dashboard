@@ -35,7 +35,7 @@ Settings turns any kind, or any single action, off. A device can refuse more on 
    it is absent (reinstalling never erases a local veto): `actions` = named write and execute,
    `full` = also custom commands, `read` = scans only. The dashboard's install line uses the
    Settings choice (default `actions`). `arh-agent policy --allow custom` / `--deny write` /
-   `--deny-action windows-restart` / `--role clinical` (no `interrupts` actions, no custom) change it
+   `--deny-action windows-restart,windows-sfc` / `--set clinical` (no `interrupts` actions, no custom) change it
    on the device; no message from the dashboard can. A custom command needs custom, write and
    execute all allowed. Previews need only read. A device with custom on runs anything the
    dashboard key holder types as SYSTEM, so it can no longer trust its own policy file: the design

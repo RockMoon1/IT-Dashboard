@@ -165,8 +165,10 @@ measured; the vault records only that it ran, its hash and exit code.
 
 Device side, as administrator / sudo: `arh-agent policy` shows what the dashboard may do;
 `--set actions|full|read|clinical`, `--allow`/`--deny write,execute,custom,lan,interrupts`,
-`--deny-action windows-restart`. `arh-agent actions` lists the actions the agent carries. Changes
-are accepted only over the USB cable; a LAN connection is read only.
+`--deny-action windows-restart,windows-sfc` (and `--allow-action` to take one off the list; an
+unknown name is an error). `arh-agent actions` lists the actions the agent carries. Changes are
+accepted only over the cable, on an adapter that has no other network address; any other
+connection is read only.
 
 ## Test on a virtual machine first
 
