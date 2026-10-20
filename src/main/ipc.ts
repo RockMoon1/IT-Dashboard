@@ -5,6 +5,13 @@ import { hostname } from 'node:os'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { IPC, type LogLine } from '../shared/api.ts'
 import type {
+  ActionEvent,
+  ActionOffer,
+  ActionRecord,
+  ActionRequest,
+  ExecRequest
+} from '../shared/actions.ts'
+import type {
   AppInfo,
   ComputerProfile,
   ComputerSummary,
@@ -45,6 +52,10 @@ import {
 import { Beaconer } from './services/link/beacon.ts'
 import { DeviceStore, type EnrolledDevice } from './services/link/devices.ts'
 import { LinkServer, type LinkEvent } from './services/link/server.ts'
+import { DeviceSlots } from './services/link/slots.ts'
+import { ActionCatalog } from './services/actions/catalog.ts'
+import { ActionLog } from './services/actions/log.ts'
+import { ActionRunner } from './services/actions/runner.ts'
 import { TokenStore } from './services/link/tokens.ts'
 import { runPowerShell, spawnPowerShell } from './services/remoting/powershell.ts'
 import { ScanLog } from './services/scans/log.ts'
@@ -56,7 +67,7 @@ import { ensureHostIdentity, type HostIdentity } from './services/secrets/host-i
 import { SafeStorageStore } from './services/secrets/safestorage.ts'
 import { MemoryStore, type SecretStore } from './services/secrets/store.ts'
 import { loadSettings, mergeSettings, saveSettings } from './services/settings.ts'
-import { BLOCK_KEYS } from './services/vault/content.ts'
+import { BLOCK_KEYS, type ActionEntry } from './services/vault/content.ts'
 import { findBlock } from './services/vault/markers.ts'
 import { buildWritePlans, notePaths } from './services/vault/plans.ts'
 import { parseDatedEntries, parseTasks, searchVault } from './services/vault/reader.ts'
@@ -81,6 +92,7 @@ export interface AppPaths {
   settingsFile: string
   appDataDir: string
   profilesDir: string
+  actionsDir: string
   agentBinary: string | null
   agentDistDir: string | null
 }
@@ -105,6 +117,11 @@ export class AppContext {
   private scanLog: ScanLog
   private runStore: RunStore
   private runner: ScanRunner
+  private slots = new DeviceSlots()
+  private actionCatalog = new ActionCatalog()
+  private actionLog: ActionLog
+  private actions: ActionRunner
+  private vaultTimer: ReturnType<typeof setTimeout> | null = null
   private writer: VaultWriter
   private vaultIndex = new VaultIndex()
   private lastLinkError: string | undefined
@@ -124,9 +141,20 @@ export class AppContext {
     this.runner = new ScanRunner({
       catalog: this.catalog,
       log: this.scanLog,
+      slots: this.slots,
       send: (deviceId, message) => this.link?.send(deviceId, message) ?? false,
       technician: () =>
         this.settings.technician || process.env['USERNAME'] || process.env['USER'] || 'technician'
+    })
+    this.actionLog = new ActionLog(join(paths.appDataDir, 'actions.jsonl'))
+    this.actions = new ActionRunner({
+      catalog: this.actionCatalog,
+      log: this.actionLog,
+      slots: this.slots,
+      send: (deviceId, message) => this.link?.send(deviceId, message) ?? false,
+      capabilities: (deviceId) => this.link?.capabilities(deviceId),
+      settings: () => this.settings,
+      onRecorded: () => this.scheduleVaultWrite('action')
     })
   }
 
@@ -168,6 +196,17 @@ export class AppContext {
     } catch (err) {
       this.log('profiles', `could not load profiles: ${(err as Error).message}`)
     }
+    try {
+      await this.actionCatalog.load(this.paths.actionsDir)
+      this.log(
+        'actions',
+        `${this.actionCatalog.list().length} actions loaded from ${this.paths.actionsDir}${this.actionCatalog.errors.length ? `; refused: ${this.actionCatalog.errors.join('; ')}` : ''}`
+      )
+    } catch (err) {
+      this.log('actions', `could not load actions: ${(err as Error).message}`)
+    }
+    await this.actionLog.load()
+    this.actions.onEvent((e) => this.onActionEvent(e))
     this.secrets = await this.pickSecretStore()
     this.log('secrets', this.secrets.describe())
     await this.startLink()
@@ -179,7 +218,9 @@ export class AppContext {
     this.usb?.stop()
     this.linkWatcher?.stop()
     this.beaconer?.stop()
+    this.actions.stop()
     await this.link?.stop()
+    await this.actions.flush()
   }
 
   private async pickSecretStore(): Promise<SecretStore> {
@@ -340,10 +381,15 @@ export class AppContext {
       case 'connected':
       case 'enrolled':
         this.log('link', `${e.type}: ${e.device.displayName} (${e.device.os}) from ${e.address}`)
+        this.actions.deviceConnected(e.device.id)
         this.pushDevices()
         return
       case 'disconnected':
         this.runner.deviceLost(e.deviceId)
+        this.actions.deviceLost(e.deviceId)
+        this.pushDevices()
+        return
+      case 'capabilities':
         this.pushDevices()
         return
       case 'rejected':
@@ -351,6 +397,7 @@ export class AppContext {
         return
       case 'message':
         this.runner.handleMessage(e.deviceId, e.message)
+        this.actions.handleMessage(e.deviceId, e.message)
         return
       case 'listening':
         this.pushLink()
@@ -364,8 +411,51 @@ export class AppContext {
       void this.runStore
         .save(e.run)
         .catch((err) => this.log('scans', `could not persist run: ${(err as Error).message}`))
+        .then(() => this.scheduleVaultWrite('scan'))
       this.pushDevices()
     }
+  }
+
+  private onActionEvent(e: ActionEvent): void {
+    this.send(IPC.actionsEvent, e)
+    const r = e.record
+    if (e.type === 'update' && r?.endedAt) {
+      const what = r.kind === 'exec' ? 'custom command' : `${r.action} (${r.mode})`
+      this.log(
+        'action',
+        `${what} on ${r.displayName}: ${r.status}${r.error ? ` (${r.error})` : ''}`
+      )
+      this.pushDevices()
+    }
+  }
+
+  /**
+   * "Write to the vault after every scan or action": one write a few seconds after the last
+   * event, so a burst of updates becomes one change per note. The writer still refuses a note
+   * that changed underneath it, and never writes while the vault is not live.
+   */
+  private scheduleVaultWrite(reason: 'scan' | 'action'): void {
+    if (!this.settings.vaultAutoWrite || !this.writer.live) return
+    if (this.vaultTimer) clearTimeout(this.vaultTimer)
+    this.vaultTimer = setTimeout(() => {
+      this.vaultTimer = null
+      void this.actions
+        .flush()
+        .then(() => this.vaultApply())
+        .then((results) => {
+          const bad = results.filter((r) => r.error)
+          if (bad.length)
+            this.log('vault', `automatic write after ${reason}: ${bad.length} note(s) not written`)
+        })
+        .catch((err) => this.log('vault', `automatic write failed: ${(err as Error).message}`))
+    }, 3000)
+  }
+
+  private actionEntries(): ActionEntry[] {
+    return this.actions.list(5000).map((record) => {
+      const def = record.action ? this.actionCatalog.get(record.action) : undefined
+      return { record, def, undoDef: def?.undo ? this.actionCatalog.get(def.undo) : undefined }
+    })
   }
 
   /* ---------- views ---------- */
@@ -419,7 +509,8 @@ export class AppContext {
             }
           : undefined,
         suggestedPurpose: suggestion.purpose,
-        suggestionReason: suggestion.reason
+        suggestionReason: suggestion.reason,
+        capabilities: this.link?.capabilities(d.id)
       })
     }
     const anyConnected = out.some((d) => d.connected)
@@ -539,9 +630,9 @@ export class AppContext {
       hostFingerprint: this.identity?.fingerprint ?? '',
       label: t.label,
       commands: {
-        windows: `arh-agent-windows-amd64.exe install --token ${t.token}`,
-        macos: `sudo ./arh-agent-darwin-arm64 install --token ${t.token}`,
-        linux: `sudo ./arh-agent-linux-amd64 install --token ${t.token}`
+        windows: `arh-agent-windows-amd64.exe install --token ${t.token} --policy ${this.settings.installPolicy}`,
+        macos: `sudo ./arh-agent-darwin-arm64 install --token ${t.token} --policy ${this.settings.installPolicy}`,
+        linux: `sudo ./arh-agent-linux-amd64 install --token ${t.token} --policy ${this.settings.installPolicy}`
       }
     }
   }
@@ -560,6 +651,7 @@ export class AppContext {
       ['workLog', this.settings.workLogNote, paths.workLog]
     ]
     if (paths.hub) roles.push(['hub', this.settings.hubNote, paths.hub])
+    if (paths.changeLog) roles.push(['changeLog', this.settings.changeLogNote, paths.changeLog])
     for (const [role, name, path] of roles) {
       const noteExists = existsSync(path)
       const markers: string[] = []
@@ -623,7 +715,8 @@ export class AppContext {
     return buildWritePlans({
       settings: this.settings,
       devices: this.devices.list(),
-      runs: this.planRuns()
+      runs: this.planRuns(),
+      actions: this.actionEntries()
     })
   }
 
@@ -897,6 +990,43 @@ export class AppContext {
     ipcMain.handle(IPC.lookupSearch, (_e, query: string) => this.lookupSearch(String(query ?? '')))
     ipcMain.handle(IPC.lookupList, () => this.lookupList())
     ipcMain.handle(IPC.lookupProfile, (_e, target: LookupTarget) => this.lookupProfile(target))
+
+    const enrolled = (deviceId: unknown): EnrolledDevice => {
+      const device = typeof deviceId === 'string' ? this.devices.get(deviceId) : undefined
+      if (!device) throw new Error('unknown device')
+      return device
+    }
+    ipcMain.handle(IPC.actionsOffers, (_e, deviceId: string): ActionOffer[] =>
+      this.actions.offers(enrolled(deviceId))
+    )
+    ipcMain.handle(
+      IPC.actionsPreview,
+      (_e, req: ActionRequest): ActionRecord => this.actions.preview(enrolled(req?.deviceId), req)
+    )
+    ipcMain.handle(
+      IPC.actionsRun,
+      (
+        _e,
+        req: ActionRequest,
+        confirm?: { previewOf?: string; confirmName?: string }
+      ): ActionRecord => {
+        const r = this.actions.run(enrolled(req?.deviceId), req, {
+          previewOf: typeof confirm?.previewOf === 'string' ? confirm.previewOf : undefined,
+          confirmName: typeof confirm?.confirmName === 'string' ? confirm.confirmName : undefined
+        })
+        this.log('action', `${r.action} sent to ${r.displayName} by ${r.technician}: ${r.reason}`)
+        return r
+      }
+    )
+    ipcMain.handle(IPC.actionsExec, (_e, req: ExecRequest): ActionRecord => {
+      const r = this.actions.exec(enrolled(req?.deviceId), req)
+      this.log('action', `custom command sent to ${r.displayName} by ${r.technician}: ${r.reason}`)
+      return r
+    })
+    ipcMain.handle(IPC.actionsAbort, (_e, runId: string) => this.actions.abort(String(runId)))
+    ipcMain.handle(IPC.actionsList, (_e, limit?: number): ActionRecord[] =>
+      this.actions.list(typeof limit === 'number' ? Math.min(Math.max(limit, 1), 5000) : 200)
+    )
     ipcMain.handle(IPC.vaultOpen, async () => {
       const result = await shell.openPath(this.settings.vaultPath)
       if (result) throw new Error(result)

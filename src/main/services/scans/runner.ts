@@ -10,6 +10,7 @@ import type {
 } from '../../../shared/types.ts'
 import type { EnrolledDevice } from '../link/devices.ts'
 import type { LinkMessage } from '../link/ndjson.ts'
+import { DeviceSlots } from '../link/slots.ts'
 import { evaluateHealth } from './health.ts'
 import type { ScanLog, ScanLogEntry } from './log.ts'
 import type { ProfileCatalog, ScanProfile } from './profiles.ts'
@@ -28,6 +29,8 @@ export interface RunnerDeps {
   send: (deviceId: string, message: LinkMessage) => boolean
   technician: () => string
   now?: () => Date
+  /** Shared with the action runner: one run per device at a time. */
+  slots?: DeviceSlots
 }
 
 export class ScanRunner extends EventEmitter {
@@ -35,10 +38,12 @@ export class ScanRunner extends EventEmitter {
   private runs = new Map<string, ScanRun>()
   private active = new Map<string, string>() // deviceId -> runId
   private pendingWrites: Promise<void>[] = []
+  private slots: DeviceSlots
 
   constructor(deps: RunnerDeps) {
     super()
     this.deps = deps
+    this.slots = deps.slots ?? new DeviceSlots()
   }
 
   onEvent(cb: (e: ScanEvent) => void): () => void {
@@ -111,6 +116,11 @@ export class ScanRunner extends EventEmitter {
       })),
       durationMs: 0
     }
+    this.slots.take(
+      device.id,
+      { runId: run.runId, kind: 'scan', title: profile.title, startedAt: run.startedAt },
+      device.displayName
+    )
     this.runs.set(run.runId, run)
     this.active.set(device.id, run.runId)
     if (
@@ -123,6 +133,7 @@ export class ScanRunner extends EventEmitter {
     ) {
       this.runs.delete(run.runId)
       this.active.delete(device.id)
+      this.slots.release(device.id, run.runId)
       throw new Error(`${device.displayName} disconnected before the run could start`)
     }
     this.emitEvent({ type: 'run-start', run })
@@ -200,6 +211,7 @@ export class ScanRunner extends EventEmitter {
     run.finishedAt = now.toISOString()
     run.durationMs = now.getTime() - Date.parse(run.startedAt)
     this.active.delete(run.deviceId)
+    this.slots.release(run.deviceId, run.runId)
     const prof = profile ?? this.deps.catalog.get(run.profile)
     run.health = evaluateHealth(
       {

@@ -30,5 +30,9 @@ export const DEFAULT_SETTINGS: Settings = {
   customCommands: true,
   confirmChanges: true,
   previewFirst: true,
-  disabledActions: []
+  disabledActions: [],
+  changeLogNote: 'ARH Change Log.md',
+  // named write and execute actions; custom commands need a choice on each device (or "full")
+  installPolicy: 'actions',
+  saveCustomOutput: false
 }

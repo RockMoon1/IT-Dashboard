@@ -93,8 +93,35 @@ export interface DeviceView {
   adapterName?: string
   linkReason?: string
   lastScan?: { runId: string; purpose: Purpose; at: string; status: string; score?: HealthScore }
+  /** While connected: what the agent can and may do. */
+  capabilities?: DeviceCapabilities
   suggestedPurpose?: Purpose
   suggestionReason?: string
+}
+
+/** What the agent's own policy file allows (docs/PHASE3-DESIGN.md rule 2). */
+export interface DevicePolicy {
+  write: boolean
+  execute: boolean
+  custom: boolean
+  lan: boolean
+  interrupts: boolean
+  deny: string[]
+  /** Set when the device has no usable policy file: it is read only. */
+  error?: string
+}
+
+/** What a connected agent reported in hello (protocol 2), updated by later policy messages. */
+export interface DeviceCapabilities {
+  protocol: number
+  /** "cable" only when the agent sees a link-local peer off its default route. */
+  link: 'cable' | 'lan' | 'unknown'
+  bootTime?: string
+  actions: Array<{ name: string; version: number; sha256: string }>
+  /** null: an agent from before Phase 3, or no policy reported: read only. */
+  policy: DevicePolicy | null
+  running?: string
+  pendingRestartUntil?: string
 }
 
 export interface LinkAdapterView {
@@ -280,7 +307,7 @@ export interface VaultApplyResult {
 }
 
 export interface VaultNoteStatus {
-  role: 'hub' | 'workLog' | 'openLoops' | 'assets'
+  role: 'hub' | 'workLog' | 'openLoops' | 'assets' | 'changeLog'
   name: string
   path: string
   exists: boolean
@@ -582,6 +609,12 @@ export interface Settings {
   previewFirst: boolean
   /** Actions switched off one by one, by name. */
   disabledActions: string[]
+  /** Note that gets one row per change (the vault's own Change Log). Empty: never written. */
+  changeLogNote: string
+  /** What the enrollment command lets the dashboard do on a new device (its local policy). */
+  installPolicy: 'actions' | 'full' | 'read' | 'clinical'
+  /** Keep custom command output in the action log (it may contain patient data). */
+  saveCustomOutput: boolean
 }
 
 export interface AppInfo {

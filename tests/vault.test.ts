@@ -411,7 +411,7 @@ test('content: work log entries newest first, MT times, duration, findings as su
   const log1 = mergeLog(null, [run()])
   assert.equal(log1.added, 1)
   const l1 = log1.body.split('\n')
-  assert.equal(l1[0], '## 🖥️ Device scans — ARH IT Dashboard')
+  assert.equal(l1[0], '## 🖥️ Device scans and actions — ARH IT Dashboard')
   assert.equal(
     l1[4],
     '- 2026-10-14 08:05 MT · **LAPTOP-01** · serial SER1 · Security Check · windows-security-check v1 · ok · 5 min 0 s · 3 findings · Lisandro · run r_1'
@@ -439,6 +439,10 @@ test('content: work log entries newest first, MT times, duration, findings as su
   assert.ok(entries[1]?.includes('run r_1'), 'older entry stays below')
   assert.equal(mergeLog(log2.body, [run(), failed]).added, 0)
   assert.equal(mergeLog(log2.body, [run(), failed]).body, log2.body)
+  // a block written under the old heading keeps its entries and gets the new heading once
+  const old = log2.body.replace('Device scans and actions', 'Device scans')
+  const again = mergeLog(old, [run(), failed])
+  assert.equal(again.body, log2.body)
 })
 
 const device = {

@@ -1,4 +1,11 @@
 import type {
+  ActionEvent,
+  ActionOffer,
+  ActionRecord,
+  ActionRequest,
+  ExecRequest
+} from './actions.ts'
+import type {
   AppInfo,
   ComputerProfile,
   ComputerSummary,
@@ -57,6 +64,13 @@ export const IPC = {
   lookupSearch: 'lookup:search',
   lookupList: 'lookup:list',
   lookupProfile: 'lookup:profile',
+  actionsOffers: 'actions:offers',
+  actionsPreview: 'actions:preview',
+  actionsRun: 'actions:run',
+  actionsExec: 'actions:exec',
+  actionsAbort: 'actions:abort',
+  actionsList: 'actions:list',
+  actionsEvent: 'actions:event',
   log: 'app:log'
 } as const
 
@@ -121,5 +135,20 @@ export interface ArhApi {
     search(query: string): Promise<LookupResult>
     list(): Promise<ComputerSummary[]>
     profile(target: LookupTarget): Promise<ComputerProfile>
+  }
+  actions: {
+    /** The actions a connected device offers, with what stands in the way of each. */
+    offers(deviceId: string): Promise<ActionOffer[]>
+    /** Measures only; nothing on the device changes. */
+    preview(req: ActionRequest): Promise<ActionRecord>
+    /** A real run, confirmed from a preview (previewOf) while "preview first" is on. */
+    run(
+      req: ActionRequest,
+      confirm: { previewOf?: string; confirmName?: string }
+    ): Promise<ActionRecord>
+    exec(req: ExecRequest): Promise<ActionRecord>
+    abort(runId: string): Promise<boolean>
+    list(limit?: number): Promise<ActionRecord[]>
+    onEvent(cb: (e: ActionEvent) => void): () => void
   }
 }

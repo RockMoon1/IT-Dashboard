@@ -30,7 +30,7 @@
     "$pol = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection' -ErrorAction SilentlyContinue",
     "if ($pol -and $pol.DisableRealtimeMonitoring -eq 1) { Add-ArhBlocker 'Group Policy turns real-time protection off' }",
     "$mode = [string]$s.AMRunningMode",
-    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in $mode: another antivirus is in charge\" }",
+    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in ${mode}: another antivirus is in charge\" }",
     "foreach ($p in @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue)) {",
     "  if ($p.displayName -notmatch 'Defender') { Add-ArhInfo 'Other antivirus' $p.displayName }",
     "}",

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import tls from 'node:tls'
+import type { DeviceCapabilities, DevicePolicy } from '../../../shared/types.ts'
 import type { DeviceStore, EnrolledDevice } from './devices.ts'
 import { normalizeOs } from './devices.ts'
 import { encode, LineSplitter, type LinkMessage } from './ndjson.ts'
@@ -41,7 +42,55 @@ export type LinkEvent =
   | { type: 'enrolled'; device: EnrolledDevice; address: string }
   | { type: 'rejected'; fingerprint: string; address: string; reason: string }
   | { type: 'message'; deviceId: string; message: LinkMessage }
+  | { type: 'capabilities'; deviceId: string; capabilities: DeviceCapabilities }
   | { type: 'listening'; port: number }
+
+function policyOf(v: unknown): DevicePolicy | null {
+  if (!v || typeof v !== 'object') return null
+  const p = v as Record<string, unknown>
+  const flag = (k: string): boolean => p[k] === true
+  return {
+    write: flag('write'),
+    execute: flag('execute'),
+    custom: flag('custom'),
+    lan: flag('lan'),
+    interrupts: flag('interrupts'),
+    deny: Array.isArray(p['deny'])
+      ? p['deny'].filter((x): x is string => typeof x === 'string')
+      : [],
+    error: typeof p['error'] === 'string' && p['error'] ? p['error'] : undefined
+  }
+}
+
+/** Reads the protocol-2 fields of hello or enroll. An older agent reports none: read only. */
+export function capabilitiesOf(m: LinkMessage): DeviceCapabilities {
+  const protocol = typeof m['protocol'] === 'number' ? m['protocol'] : 1
+  const link = m['link'] === 'cable' || m['link'] === 'lan' ? m['link'] : 'unknown'
+  const actions = (Array.isArray(m['actions']) ? m['actions'] : [])
+    .map((a) => (a ?? {}) as Record<string, unknown>)
+    .filter(
+      (a) =>
+        typeof a['name'] === 'string' &&
+        typeof a['version'] === 'number' &&
+        typeof a['sha256'] === 'string'
+    )
+    .map((a) => ({
+      name: a['name'] as string,
+      version: a['version'] as number,
+      sha256: a['sha256'] as string
+    }))
+  const str = (k: string): string | undefined =>
+    typeof m[k] === 'string' && m[k] ? (m[k] as string) : undefined
+  return {
+    protocol,
+    link,
+    bootTime: str('bootTime'),
+    actions: protocol >= 2 ? actions : [],
+    policy: protocol >= 2 ? policyOf(m['policy']) : null,
+    running: str('running'),
+    pendingRestartUntil: str('pendingRestartUntil')
+  }
+}
 
 export function fingerprintOf(socket: tls.TLSSocket): string | null {
   const cert = socket.getPeerCertificate(false)
@@ -59,6 +108,7 @@ interface Session {
   idleTimer?: ReturnType<typeof setTimeout>
   stepTimer?: ReturnType<typeof setTimeout>
   state: 'new' | 'enrolling' | 'active'
+  caps?: DeviceCapabilities
   pendingEnroll?: {
     token: string
     label?: string
@@ -144,6 +194,11 @@ export class LinkServer extends EventEmitter {
 
   isConnected(deviceId: string): boolean {
     return this.byDevice.has(deviceId)
+  }
+
+  /** What the connected agent reported; undefined while it is not connected. */
+  capabilities(deviceId: string): DeviceCapabilities | undefined {
+    return this.byDevice.get(deviceId)?.caps
   }
 
   send(deviceId: string, message: LinkMessage): boolean {
@@ -243,6 +298,11 @@ export class LinkServer extends EventEmitter {
           return
         }
         if (m.type === 'pong') return
+        if (m.type === 'policy' && s.caps && s.deviceId) {
+          s.caps = { ...s.caps, policy: policyOf(m['policy']) }
+          this.emitEvent({ type: 'capabilities', deviceId: s.deviceId, capabilities: s.caps })
+          return
+        }
         if (s.deviceId) this.emitEvent({ type: 'message', deviceId: s.deviceId, message: m })
         return
     }
@@ -276,6 +336,7 @@ export class LinkServer extends EventEmitter {
       agentVersion: typeof m['agentVersion'] === 'string' ? m['agentVersion'] : device.agentVersion,
       profiles: this.profilesOf(m)
     })
+    s.caps = capabilitiesOf(m)
     this.activate(s, device)
     this.write(s, {
       type: 'welcome',
@@ -316,6 +377,7 @@ export class LinkServer extends EventEmitter {
       agentVersion: typeof m['agentVersion'] === 'string' ? m['agentVersion'] : '',
       profiles: this.profilesOf(m)
     }
+    s.caps = capabilitiesOf(m)
     if (s.stepTimer) clearTimeout(s.stepTimer)
     s.stepTimer = setTimeout(() => {
       if (s.state === 'enrolling') this.close(s, 'enrollment not confirmed within 30 s')

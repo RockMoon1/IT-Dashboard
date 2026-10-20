@@ -26,6 +26,11 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
         ].slice(0, 500)
       continue
     }
+    if (key === 'installPolicy') {
+      if (value === 'actions' || value === 'full' || value === 'read' || value === 'clinical')
+        out.installPolicy = value
+      continue
+    }
     if (key === 'dueStyle') {
       if (value === 'tasks-emoji' || value === 'dataview' || value === 'plain' || value === 'none')
         out.dueStyle = value

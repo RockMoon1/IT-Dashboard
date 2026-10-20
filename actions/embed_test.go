@@ -193,6 +193,7 @@ func TestValidateRefusesUnsafeScripts(t *testing.T) {
 		"call operator":     {`& sc.exe start $env:ARH_PARAM_NAME`},
 		"cmd /c":            {`cmd /c "sc start x"`},
 		"unchecked native":  {`Invoke-ArhNative 'sc.exe' 'start' 'x'`, `Add-ArhNote 'done'`},
+		"scoped name":       {`Add-ArhNote "mode $mode: x"`},
 	} {
 		a := ps
 		a.Apply = apply

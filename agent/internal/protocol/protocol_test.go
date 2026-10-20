@@ -3,6 +3,10 @@ package protocol
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -98,4 +102,66 @@ func TestCodecRoundTripAndLimits(t *testing.T) {
 	if _, err := NewCodec(huge).Read(); err != ErrLineTooLong {
 		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
+}
+
+// The shared fixture is decoded by the TypeScript tests as well (tests/actions.test.ts). Every
+// field in it must survive a Go decode and re-encode, so the agent knows every field the
+// dashboard sends or expects.
+func TestGoldenActionMessagesRoundTrip(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "tests", "fixtures", "protocol", "actions.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var m Message
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("line %d: %v", i+1, err)
+		}
+		out, _ := json.Marshal(m)
+		var want, got any
+		_ = json.Unmarshal([]byte(line), &want)
+		_ = json.Unmarshal(out, &got)
+		if !reflect.DeepEqual(dropEmpty(want), dropEmpty(got)) {
+			t.Errorf("line %d (%s) changed in a round trip:\n in: %s\nout: %s", i+1, m.Type, line, out)
+		}
+	}
+}
+
+// dropEmpty removes values Go omits (omitempty) so only real losses count.
+func dropEmpty(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, val := range x {
+			val = dropEmpty(val)
+			switch y := val.(type) {
+			case nil:
+				continue
+			case bool:
+				if !y && k != "dryRun" && k != "applied" && k != "ok" && k != "change" && k != "write" && k != "execute" && k != "custom" && k != "lan" && k != "interrupts" {
+					continue
+				}
+			case string:
+				if y == "" {
+					continue
+				}
+			case []any:
+				if len(y) == 0 && k != "items" && k != "deny" {
+					continue
+				}
+			case map[string]any:
+				if len(y) == 0 {
+					continue
+				}
+			}
+			out[k] = val
+		}
+		return out
+	case []any:
+		for i := range x {
+			x[i] = dropEmpty(x[i])
+		}
+		return x
+	}
+	return v
 }

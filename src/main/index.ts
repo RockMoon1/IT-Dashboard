@@ -54,10 +54,10 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-function profilesDir(): string {
-  const packaged = join(process.resourcesPath, 'profiles')
+function resourceDir(name: 'profiles' | 'actions'): string {
+  const packaged = join(process.resourcesPath, name)
   if (app.isPackaged && existsSync(packaged)) return packaged
-  return join(app.getAppPath(), 'profiles')
+  return join(app.getAppPath(), name)
 }
 
 void app.whenReady().then(async () => {
@@ -66,7 +66,8 @@ void app.whenReady().then(async () => {
   ctx = await AppContext.create({
     settingsFile: join(appDataDir, 'settings.json'),
     appDataDir,
-    profilesDir: profilesDir(),
+    profilesDir: resourceDir('profiles'),
+    actionsDir: resourceDir('actions'),
     agentBinary: agent.binary,
     agentDistDir: agent.distDir
   })

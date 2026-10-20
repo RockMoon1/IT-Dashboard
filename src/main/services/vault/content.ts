@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import type { ActionDef, ActionRecord } from '../../../shared/actions.ts'
+import { changedItems, STATUS_LABEL, belongsInChangeLog } from '../../../shared/actions.ts'
 import type { ScanRun, HealthFinding, HealthScore } from '../../../shared/types.ts'
 import { purposeLabel } from '../../../shared/types.ts'
 import type { EnrolledDevice } from '../link/devices.ts'
@@ -16,7 +18,8 @@ import { parseTasks } from './reader.ts'
  *   DEVICES        Asset Inventory: one row per computer; the technician's columns are kept
  *   DEVICE-HEALTH  hub (optional): one row per computer with its latest health
  *   HEALTH-LOOPS   Open Loops: one task per finding; lines are never edited once written
- *   SCAN-LOG       Work Log: one entry per scan, newest first, append-only
+ *   SCAN-LOG       Work Log: one entry per scan, action or custom command, newest first, append-only
+ *   CHANGES        Change Log: one row per change made on a device, oldest first, append-only
  *
  * Each block starts with its own "##" heading so it reads as its own section wherever the
  * marker pair sits (at the end of the note by default, or wherever the technician moves it).
@@ -26,7 +29,8 @@ export const BLOCK_KEYS = {
   devices: 'DEVICES',
   health: 'DEVICE-HEALTH',
   loops: 'HEALTH-LOOPS',
-  log: 'SCAN-LOG'
+  log: 'SCAN-LOG',
+  changes: 'CHANGES'
 } as const
 
 export type DueStyle = 'tasks-emoji' | 'dataview' | 'plain' | 'none'
@@ -38,6 +42,7 @@ export interface ContentOptions {
   assetNoteName: string
   openLoopsNoteName: string
   workLogNoteName: string
+  changeLogNoteName: string
   dueDaysWarning: number
   dueDaysCritical: number
   maxFindingsPerLogEntry: number
@@ -50,6 +55,7 @@ export const DEFAULT_CONTENT_OPTIONS: ContentOptions = {
   assetNoteName: 'Asset Inventory',
   openLoopsNoteName: 'ARH Open Loops',
   workLogNoteName: 'ARH Work Log',
+  changeLogNoteName: 'ARH Change Log',
   dueDaysWarning: 7,
   dueDaysCritical: 1,
   maxFindingsPerLogEntry: 5
@@ -59,8 +65,14 @@ export const HEADINGS = {
   devices: '## 🖥️ Computers — from ARH IT Dashboard scans',
   health: '## 🖥️ Device health — ARH IT Dashboard',
   loops: '## 🩺 Device health findings — ARH IT Dashboard',
-  log: '## 🖥️ Device scans — ARH IT Dashboard'
+  log: '## 🖥️ Device scans and actions — ARH IT Dashboard',
+  changes: '## 🔧 Device changes — ARH IT Dashboard'
 } as const
+
+/** Headings earlier versions wrote; still recognised so they are replaced, not kept as text. */
+const OLD_HEADINGS: Record<string, string[]> = {
+  [HEADINGS.log]: ['## 🖥️ Device scans — ARH IT Dashboard']
+}
 
 /** Date and time in the vault's time zone (Mountain Time by default). */
 export function zoned(d: Date, timeZone: string): { date: string; time: string } {
@@ -86,8 +98,32 @@ export function stamp(iso: string, opts: ContentOptions): string {
   return `${z.date} ${z.time} ${opts.tzLabel}`
 }
 
+/**
+ * Makes text that came from a device, a script or a finding safe to put in a note: every kind of
+ * line break and control character becomes a space (so nothing can start a new line, close a
+ * block or forge a marker), and the characters Markdown, HTML, Obsidian and its plugins give a
+ * meaning to are escaped (code spans, tags, links and embeds, comments, math, block ids, table
+ * cells). Length is capped before escaping so an escape is never cut in half.
+ */
+export function vaultText(text: string, max = 240): string {
+  let t = String(text ?? '')
+    .replace(
+      /[\u0000-\u001f\u007f-\u009f\u00a0\u2028\u2029\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g,
+      ' '
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+  const chars = [...t]
+  if (chars.length > max)
+    t = `${chars
+      .slice(0, max - 1)
+      .join('')
+      .trimEnd()}…`
+  return t.replace(/[\\`<>[\]|$#^]/g, (c) => `\\${c}`).replace(/%%/g, '\\%\\%')
+}
+
 function cell(text: string): string {
-  return text.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim()
+  return vaultText(text, 400)
 }
 
 function sentence(text: string): string {
@@ -418,9 +454,10 @@ export function latestPerProfile(runs: ScanRun[]): ScanRun[] {
 }
 
 function bodyLines(existingBody: string | null, heading: string): string[] {
+  const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
   return (existingBody ?? '')
     .split(/\r?\n/)
-    .filter((l) => l.trim() && l.trim() !== heading && !/^_.*_$/.test(l.trim()))
+    .filter((l) => l.trim() && !headings.has(l.trim()) && !/^_.*_$/.test(l.trim()))
 }
 
 /**
@@ -526,26 +563,238 @@ export function logEntry(run: ScanRun, opts: ContentOptions): string[] {
   return [head, ...sub]
 }
 
-/** Append-only by run id; new entries go on top, newest first, like the Work Log itself. */
+/* ---------- actions and custom commands (Phase 3) ---------- */
+
+export interface ActionEntry {
+  record: ActionRecord
+  def?: ActionDef
+  undoDef?: ActionDef
+}
+
+const actionTime = (r: ActionRecord): string => r.appliedAt ?? r.startedAt ?? r.requestedAt
+const unknownMark = 'outcome unknown'
+const resultRef = (runId: string): string => `result ${runId}`
+const mentions = (line: string, token: string): boolean =>
+  new RegExp(`(^|[^\\w-])${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(line)
+
+/** Real runs the vault should show: finished, or applied with the outcome still unknown. */
+function shown(e: ActionEntry): boolean {
+  const r = e.record
+  if (r.mode !== 'apply' || r.status === 'refused' || r.status === 'running') return false
+  if (r.status === 'unknown') return !!r.appliedAt
+  return !!r.endedAt
+}
+
+function machine(r: ActionRecord): string {
+  const names = [r.displayName, r.hostname].filter(
+    (n, i, all) => n && all.findIndex((x) => x.toLowerCase() === n.toLowerCase()) === i
+  )
+  return [...names, r.serial ? `serial ${r.serial}` : ''].filter(Boolean).join(' · ')
+}
+
+/** "Firewall Public: off → on" for each measured item that moved. */
+export function whatChanged(e: ActionEntry): string {
+  const r = e.record
+  if (r.kind === 'exec') {
+    const exit = r.result?.exitCode
+    return `Custom command (effect not measured): sha256 ${(r.scriptSha256 ?? '').slice(0, 12)}, ${r.scriptLines ?? '?'} line(s)${exit == null ? '' : `, exit ${exit}`}`
+  }
+  if (r.status === 'unknown')
+    return `OUTCOME UNKNOWN: ${r.title} started; the result has not come back yet. Check the device.`
+  const moved = changedItems(r.result?.before, r.result?.after).map(
+    (c) => `${c.item}: ${c.before} → ${c.after}`
+  )
+  const evidence = r.result?.apply?.changes ?? []
+  const parts = [...moved, ...evidence]
+  const text = parts.length ? parts.join('; ') : r.title
+  if (r.status === 'partly-applied')
+    return `Partly applied: ${text}. Still to do: ${r.result?.after?.plan ?? 'see the dashboard'}`
+  return text
+}
+
+function reversible(e: ActionEntry): string {
+  if (e.record.kind === 'exec') return 'Unknown'
+  if (e.def?.undo) return 'Yes (Undo in the dashboard)'
+  if (e.def?.manualUndo) return 'Yes, by hand'
+  return 'No'
+}
+
+function rollback(e: ActionEntry): string {
+  if (e.record.kind === 'exec') return 'Unknown (custom command)'
+  const def = e.def
+  if (def?.undo) {
+    const restore = Object.entries(e.record.result?.before?.restore ?? {})
+      .map(([k, v]) => `${k} ${v}`)
+      .join(', ')
+    return `Undo in the dashboard: ${e.undoDef?.title ?? def.undo}${restore ? ` (back to ${restore})` : ''}`
+  }
+  return def?.manualUndo ? `Manual: ${def.manualUndo}` : ''
+}
+
+/** "2026-10-20 14:05"; in the repeated hour when daylight saving time ends, "01:30 MDT". */
+export function changeStamp(iso: string, opts: ContentOptions): string {
+  const d = new Date(iso)
+  const z = zoned(d, opts.timeZone)
+  const near = [-3_600_000, 3_600_000].map((ms) => zoned(new Date(d.getTime() + ms), opts.timeZone))
+  const twice = near.some((n) => n.date === z.date && n.time === z.time)
+  if (!twice) return `${z.date} ${z.time}`
+  const abbr =
+    new Intl.DateTimeFormat('en-US', { timeZone: opts.timeZone, timeZoneName: 'short' })
+      .formatToParts(d)
+      .find((p) => p.type === 'timeZoneName')?.value ?? opts.tzLabel
+  return `${z.date} ${z.time} ${abbr}`
+}
+
+function changeRow(e: ActionEntry, opts: ContentOptions, late: boolean): string {
+  const r = e.record
+  const when = late ? (r.endedAt ?? actionTime(r)) : actionTime(r)
+  const what = late ? `Result of run ${r.runId}: ${whatChanged(e)}` : whatChanged(e)
+  const by = `${r.technician || 'n/a'} · ${late ? resultRef(r.runId) : runRef(r.runId)}`
+  return `| ${[
+    changeStamp(when, opts),
+    cell(machine(r)),
+    vaultText(what, 600),
+    cell(r.reason || 'n/a'),
+    cell(reversible(e)),
+    cell(rollback(e)),
+    cell(by)
+  ].join(' | ')} |`
+}
+
+const CHANGE_COLUMNS =
+  '| Timestamp (MT) | System / machine | What changed | Why | Reversible? | Rollback | By |'
+
+/**
+ * The Change Log block: one row per change, oldest first like the note's own table, appended by
+ * run id and never edited. A row written while the outcome was unknown is followed by a second
+ * row once the device reports, keyed "result <run id>".
+ */
+export function mergeChanges(
+  existingBody: string | null,
+  entries: ActionEntry[],
+  opts: ContentOptions
+): { body: string; added: number } {
+  const rows = bodyLines(existingBody, HEADINGS.changes).filter(
+    (l) => l.trim().startsWith('|') && l.trim() !== CHANGE_COLUMNS && !/^\|\s*-{3}/.test(l.trim())
+  )
+  const fresh: Array<{ at: string; line: string }> = []
+  for (const e of entries) {
+    const r = e.record
+    if (!shown(e)) continue
+    if (
+      !belongsInChangeLog({
+        mode: r.mode,
+        kind: r.kind,
+        access: r.access,
+        status: r.status,
+        result: r.result
+      })
+    )
+      continue
+    const mine = rows.filter((l) => mentions(l, runRef(r.runId)))
+    if (!mine.length) {
+      fresh.push({ at: actionTime(r), line: changeRow(e, opts, false) })
+      continue
+    }
+    const wasUnknown = mine.some((l) => l.includes('OUTCOME UNKNOWN'))
+    const hasResult = rows.some((l) => mentions(l, resultRef(r.runId)))
+    if (wasUnknown && !hasResult && r.status !== 'unknown')
+      fresh.push({ at: r.endedAt ?? actionTime(r), line: changeRow(e, opts, true) })
+  }
+  fresh.sort((a, b) => a.at.localeCompare(b.at))
+  const all = [...rows, ...fresh.map((f) => f.line)]
+  const intro = `_One row per change the ARH IT Dashboard made on a computer, oldest first (times ${opts.tzLabel}, by the dashboard's clock). What changed is measured on the device before and after; custom commands are listed but not measured. Full record: the dashboard's action log. Scans and every action are also in [[${opts.workLogNoteName}]]._`
+  return {
+    body: [
+      HEADINGS.changes,
+      '',
+      intro,
+      '',
+      CHANGE_COLUMNS,
+      '| --- | --- | --- | --- | --- | --- | --- |',
+      ...all
+    ].join('\n'),
+    added: fresh.length
+  }
+}
+
+export function actionLogEntry(e: ActionEntry, opts: ContentOptions, late = false): string[] {
+  const r = e.record
+  const when = late ? (r.endedAt ?? actionTime(r)) : actionTime(r)
+  const what =
+    r.kind === 'exec'
+      ? `Custom command (sha256 ${(r.scriptSha256 ?? '').slice(0, 12)}, ${r.scriptLines ?? '?'} line(s))`
+      : `Action: ${cell(r.title)} (${r.action} v${r.version})`
+  const status =
+    r.status === 'unknown'
+      ? `${unknownMark}: the link was lost; the result is added when the device reports`
+      : STATUS_LABEL[r.status]
+  const moved = changedItems(r.result?.before, r.result?.after)
+    .map((c) => `${c.item}: ${c.before} → ${c.after}`)
+    .join('; ')
+  const exit = r.kind === 'exec' && r.result?.exitCode != null ? `exit ${r.result.exitCode}` : ''
+  const head = [
+    `- ${stamp(when, opts)}`,
+    `**${cell(r.hostname)}**`,
+    `serial ${cell(r.serial || 'n/a')}`,
+    late ? `result of run ${r.runId}` : '',
+    what,
+    status,
+    moved ? vaultText(moved, 400) : '',
+    exit,
+    `why: ${cell(r.reason || 'n/a')}`,
+    cell(r.technician || 'n/a'),
+    late ? resultRef(r.runId) : runRef(r.runId)
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  const sub = [
+    ...(r.result?.apply?.changes ?? []),
+    ...(r.result?.apply?.warnings ?? []),
+    ...(r.status === 'failed' && r.error ? [r.error] : [])
+  ]
+    .slice(0, opts.maxFindingsPerLogEntry)
+    .map((t) => `    - ${cell(t)}`)
+  return [head, ...sub]
+}
+
+/**
+ * Append-only by run id; new entries go on top, newest first, like the Work Log itself. Scans,
+ * actions and custom commands share the block. A run first written as "outcome unknown" gets a
+ * second entry, keyed "result <run id>", when the device reports.
+ */
 export function mergeLog(
   existingBody: string | null,
   runs: ScanRun[],
-  opts: ContentOptions = DEFAULT_CONTENT_OPTIONS
+  opts: ContentOptions = DEFAULT_CONTENT_OPTIONS,
+  actions: ActionEntry[] = []
 ): { body: string; added: number } {
   const lines = bodyLines(existingBody, HEADINGS.log)
-  const fresh: string[] = []
-  let added = 0
-  for (const run of [...runs].filter((r) => r.status !== 'running').sort(newestFirst)) {
+  const fresh: Array<{ at: string; lines: string[] }> = []
+  for (const run of runs.filter((r) => r.status !== 'running')) {
     if (lines.some((l) => mentionsRun(l, run.runId))) continue
-    fresh.push(...logEntry(run, opts))
-    added++
+    fresh.push({ at: runTime(run), lines: logEntry(run, opts) })
   }
-  const all = [...fresh, ...lines]
-  const intro = `_One entry per scan, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]]._`
+  for (const e of actions) {
+    if (!shown(e)) continue
+    const r = e.record
+    const mine = lines.filter((l) => mentions(l, runRef(r.runId)))
+    if (!mine.length) {
+      fresh.push({ at: actionTime(r), lines: actionLogEntry(e, opts) })
+      continue
+    }
+    const wasUnknown = mine.some((l) => l.includes(unknownMark))
+    const hasResult = lines.some((l) => mentions(l, resultRef(r.runId)))
+    if (wasUnknown && !hasResult && r.status !== 'unknown')
+      fresh.push({ at: r.endedAt ?? actionTime(r), lines: actionLogEntry(e, opts, true) })
+  }
+  fresh.sort((a, b) => b.at.localeCompare(a.at))
+  const all = [...fresh.flatMap((f) => f.lines), ...lines]
+  const intro = `_One entry per scan, action or custom command, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]], changes to [[${opts.changeLogNoteName}]]._`
   return {
     body: [HEADINGS.log, '', intro, '', ...(all.length ? all : ['_No scans logged yet._'])].join(
       '\n'
     ),
-    added
+    added: fresh.length
   }
 }

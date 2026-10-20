@@ -117,7 +117,7 @@ jobs:
         shell: pwsh
         run: |
           $res = 'dist/win-unpacked/resources'
-          foreach ($f in 'agent/arh-agent-windows-amd64.exe', 'agent/arh-agent-darwin-arm64', 'agent/arh-agent-linux-amd64', 'profiles/windows-system-diagnostics.json') {
+          foreach ($f in 'agent/arh-agent-windows-amd64.exe', 'agent/arh-agent-darwin-arm64', 'agent/arh-agent-linux-amd64', 'profiles/windows-system-diagnostics.json', 'actions/windows-dns-flush.json') {
             if (-not (Test-Path (Join-Path $res $f))) { throw "missing $f in the package" }
           }
           Get-ChildItem dist -Filter *.exe | Format-Table Name, Length

@@ -61,6 +61,15 @@ const api: ArhApi = {
     search: (query) => ipcRenderer.invoke(IPC.lookupSearch, query),
     list: () => ipcRenderer.invoke(IPC.lookupList),
     profile: (target) => ipcRenderer.invoke(IPC.lookupProfile, target)
+  },
+  actions: {
+    offers: (deviceId) => ipcRenderer.invoke(IPC.actionsOffers, deviceId),
+    preview: (req) => ipcRenderer.invoke(IPC.actionsPreview, req),
+    run: (req, confirm) => ipcRenderer.invoke(IPC.actionsRun, req, confirm),
+    exec: (req) => ipcRenderer.invoke(IPC.actionsExec, req),
+    abort: (runId) => ipcRenderer.invoke(IPC.actionsAbort, runId),
+    list: (limit) => ipcRenderer.invoke(IPC.actionsList, limit),
+    onEvent: (cb) => subscribe(IPC.actionsEvent, cb)
   }
 }
 

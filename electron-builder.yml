@@ -17,6 +17,11 @@ extraResources:
     to: profiles
     filter:
       - '*.json'
+  # Named actions, the same files the agent embeds (hashed byte for byte).
+  - from: actions
+    to: actions
+    filter:
+      - '*.json'
 win:
   target:
     - nsis

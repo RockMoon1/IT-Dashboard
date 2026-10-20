@@ -31,7 +31,7 @@
     "$pol = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender' -ErrorAction SilentlyContinue",
     "if ($pol -and $null -ne $pol.PUAProtection) { Add-ArhBlocker 'Group Policy sets this' }",
     "$mode = [string]$s.AMRunningMode",
-    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in $mode: another antivirus is in charge\" }",
+    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in ${mode}: another antivirus is in charge\" }",
     "if ($cur -eq 1) { Set-ArhPlan $false 'Already blocking' } else { Set-ArhPlan $true 'Turn blocking on' }"
   ],
   "apply": [

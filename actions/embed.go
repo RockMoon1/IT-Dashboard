@@ -206,6 +206,12 @@ var banned = []*regexp.Regexp{
 
 var nativeCall = regexp.MustCompile(`Invoke-ArhNative\b`)
 
+// psScopedName finds "$name:" that PowerShell would read as a drive- or scope-qualified variable
+// (a parse error inside "…$mode: text…"); write ${name} instead.
+var psScopedName = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*):([^:]|$)`)
+
+var psScopes = map[string]bool{"env": true, "script": true, "global": true, "local": true, "private": true, "using": true, "variable": true}
+
 // unquotedShParam reports $ARH_PARAM_X (or ${ARH_PARAM_X}) outside double quotes on an sh line,
 // where the shell would split and glob the value.
 func unquotedShParam(line string) bool {
@@ -295,6 +301,13 @@ func Validate(a *Action) error {
 		}
 	}
 	if a.Shell == "powershell" {
+		for _, line := range append(append([]string{}, a.Measure...), a.Apply...) {
+			for _, m := range psScopedName.FindAllStringSubmatch(line, -1) {
+				if !psScopes[strings.ToLower(m[1])] {
+					return fmt.Errorf("%s: PowerShell reads $%s: as a scoped name; write ${%s}: %q", a.Name, m[1], m[1], strings.TrimSpace(line))
+				}
+			}
+		}
 		for i, line := range a.Apply {
 			if !nativeCall.MatchString(line) {
 				continue
