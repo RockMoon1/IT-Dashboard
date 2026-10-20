@@ -80,6 +80,8 @@ interface DashboardState {
   profile: ComputerProfile | null
   profileTarget: LookupTarget | null
   profileLoading: boolean
+  /** A past scan opened in Results/Health while another scan is running; null = currentRun. */
+  viewRunId: string | null
 }
 
 const MAX_CONSOLE = 5000
@@ -123,12 +125,19 @@ const state = reactive<DashboardState>({
   computers: [],
   profile: null,
   profileTarget: null,
-  profileLoading: false
+  profileLoading: false,
+  viewRunId: null
 })
 
 const selectedDevice = computed(() => state.devices.find((d) => d.id === state.selectedId) ?? null)
 const currentRun = computed(() => state.runs.find((r) => r.runId === state.currentRunId) ?? null)
 const runningRun = computed(() => state.runs.find((r) => r.status === 'running') ?? null)
+/** What Results and Health show: a past scan picked during a live one, else the current run. */
+const viewedRun = computed(
+  () =>
+    (state.viewRunId ? state.runs.find((r) => r.runId === state.viewRunId) : undefined) ??
+    currentRun.value
+)
 
 function api(): Window['arh'] {
   return window.arh
@@ -155,6 +164,7 @@ function applyScanEvent(e: ScanEvent): void {
     case 'run-start':
       upsertRun(e.run)
       state.currentRunId = e.run.runId
+      state.viewRunId = null
       state.console = []
       pushConsole(
         'status',
@@ -197,6 +207,8 @@ function applyScanEvent(e: ScanEvent): void {
     }
     case 'run-end':
       upsertRun(e.run)
+      // Preview and Health follow the scan that just finished
+      state.currentRunId = e.run.runId
       pushConsole(
         'status',
         `■ ${e.run.status.toUpperCase()} · ${e.run.health?.findings.length ?? 0} finding(s) · ${(e.run.durationMs / 1000).toFixed(0)} s${e.run.error ? ` · ${e.run.error}` : ''}`
@@ -339,6 +351,7 @@ async function abortCurrent(): Promise<void> {
 
 function showRun(runId: string): void {
   state.currentRunId = runId
+  state.viewRunId = null
   const run = state.runs.find((r) => r.runId === runId)
   if (run) {
     state.console = []
@@ -476,12 +489,12 @@ async function renameDevice(id: string, name: string): Promise<void> {
 /* ---------- computer lookup ---------- */
 
 let lookupSeq = 0
+/** Runs a lookup; only the newest one is shown in the list, but every caller gets its answer. */
 async function runLookup(query: string): Promise<LookupResult | null> {
   const seq = ++lookupSeq
   try {
     const result = await api().lookup.search(query)
-    if (seq !== lookupSeq) return null // a newer keystroke won
-    state.lookup = result
+    if (seq === lookupSeq) state.lookup = result
     return result
   } catch (err) {
     fail(err)
@@ -497,27 +510,39 @@ async function loadComputers(): Promise<void> {
   }
 }
 
-/** Opens the computer view; nothing has to be connected, it reads stored scans and the vault. */
-async function openProfile(target: LookupTarget): Promise<void> {
+let profileSeq = 0
+
+/** Loads a computer page without changing tabs. Only the latest request may land. */
+async function loadProfile(target: LookupTarget): Promise<void> {
+  const seq = ++profileSeq
   state.profileTarget = target
   state.profileLoading = true
-  state.tab = 'computer'
   try {
-    state.profile = await api().lookup.profile(target)
+    const profile = await api().lookup.profile(target)
+    if (seq === profileSeq) state.profile = profile
   } catch (err) {
-    fail(err)
+    if (seq === profileSeq) fail(err)
   } finally {
-    state.profileLoading = false
+    if (seq === profileSeq) state.profileLoading = false
   }
 }
 
+/** Opens the computer view; nothing has to be connected, it reads stored scans and the vault. */
+async function openProfile(target: LookupTarget): Promise<void> {
+  state.tab = 'computer'
+  await loadProfile(target)
+}
+
+/** Background refresh (after a scan, or the page's Refresh button): stays on the current tab. */
 async function refreshProfile(): Promise<void> {
-  if (state.profileTarget) await openProfile(state.profileTarget)
+  if (state.profileTarget) await loadProfile(state.profileTarget)
 }
 
 function closeProfile(): void {
+  profileSeq++ // a page still loading must not reappear
   state.profile = null
   state.profileTarget = null
+  state.profileLoading = false
   void loadComputers()
 }
 
@@ -529,7 +554,11 @@ async function openNote(file: string): Promise<void> {
   }
 }
 
-/** Shows any stored scan in the Results tab, fetching it if it is older than the recent list. */
+/**
+ * Shows any stored scan in the Results tab, fetching it if it is older than the recent list.
+ * While a scan is running it is shown beside it (viewRunId): the live console, the current run
+ * and the Preview of the scan in progress are left alone.
+ */
 async function openRunById(runId: string): Promise<void> {
   try {
     if (!state.runs.some((r) => r.runId === runId)) {
@@ -537,7 +566,8 @@ async function openRunById(runId: string): Promise<void> {
       if (!run) throw new Error(`scan ${runId} is no longer stored`)
       state.runs.push(run)
     }
-    showRun(runId)
+    if (runningRun.value && runningRun.value.runId !== runId) state.viewRunId = runId
+    else showRun(runId)
     state.tab = 'results'
   } catch (err) {
     fail(err)
@@ -558,6 +588,7 @@ export function useDashboard() {
     selectedDevice,
     currentRun,
     runningRun,
+    viewedRun,
     init,
     refreshVault,
     refreshHistory,

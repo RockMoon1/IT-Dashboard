@@ -740,15 +740,21 @@ export class AppContext {
     return { ...profile, tookMs: Math.round(performance.now() - started) }
   }
 
-  /** Opens a vault note in Obsidian; refuses anything outside the vault folder. */
+  /**
+   * Opens a vault note in Obsidian. Only a Markdown file the vault index knows is opened: inside
+   * the vault folder, a regular file (the index skips symlinks and junctions), no null bytes.
+   */
   private async openNote(file: string): Promise<void> {
+    const name = String(file)
+    if (name.includes('\0')) throw new Error('not a note inside the vault')
     const root = resolve(this.settings.vaultPath)
-    const abs = resolve(root, String(file))
+    const abs = resolve(root, name)
     const inside = isWindows
       ? abs.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`)
       : abs.startsWith(`${root}${sep}`)
     if (!inside || !/\.md$/i.test(abs)) throw new Error('not a note inside the vault')
-    if (!existsSync(abs)) throw new Error(`note not found: ${file}`)
+    const known = (await this.vaultIndex.notes(this.settings.vaultPath)).some((n) => n.abs === abs)
+    if (!known || !existsSync(abs)) throw new Error(`note not found: ${name}`)
     try {
       await shell.openExternal(`obsidian://open?path=${encodeURIComponent(abs)}`)
     } catch {

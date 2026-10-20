@@ -5,7 +5,7 @@ import { useDashboard } from '../store'
 
 const dash = useDashboard()
 const { state } = dash
-const run = computed(() => dash.currentRun.value)
+const run = computed(() => dash.viewedRun.value)
 const health = computed(() => run.value?.health ?? null)
 
 const groups = computed(() => {

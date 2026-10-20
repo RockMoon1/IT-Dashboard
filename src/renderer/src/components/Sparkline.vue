@@ -80,7 +80,8 @@ const breach = computed(() => {
   const t = props.series.threshold
   const v = latest.value?.value
   if (t == null || v == null) return false
-  return props.series.better === 'higher' ? v < t : v > t
+  // same comparisons as health.ts: low-is-bad values alert below the limit, the rest at or above
+  return props.series.better === 'higher' ? v < t : v >= t
 })
 const threshold = computed(() => props.series.threshold)
 const tooltipLeft = computed(() =>

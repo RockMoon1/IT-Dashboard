@@ -41,15 +41,38 @@ function choose(i: number): void {
   const c = computers.value[i]
   const text = query.value.trim()
   if (c) void dash.openProfile({ key: c.key })
-  else if (text) void dash.openProfile({ term: text })
+  else if (showVaultRow.value) void dash.openProfile({ term: text })
+  else return // nothing to open for one or two characters
+  open.value = false
+  input.value?.blur()
+}
+
+/**
+ * Enter right after typing: use this query's own answer (asked for now if the debounced one is
+ * not back), so an IP, room or partial serial still opens the computer, not a notes-only page.
+ */
+async function enter(): Promise<void> {
+  const text = query.value.trim()
+  if (!text) return
+  let answer = result.value
+  if (!answer) {
+    if (timer) clearTimeout(timer)
+    answer = await dash.runLookup(text)
+    if (query.value.trim() !== text) return // typed on while waiting
+  }
+  const list = answer?.computers.slice(0, 8) ?? []
+  const c = list[Math.max(0, index.value)]
+  if (c) void dash.openProfile({ key: c.key })
+  else if (text.length >= 3) void dash.openProfile({ term: text })
+  else return // nothing to open for one or two characters
   open.value = false
   input.value?.blur()
 }
 
 function onKey(e: KeyboardEvent): void {
-  if (e.key === 'ArrowDown') index.value = Math.min(rows.value - 1, index.value + 1)
+  if (e.key === 'ArrowDown') index.value = Math.max(0, Math.min(rows.value - 1, index.value + 1))
   else if (e.key === 'ArrowUp') index.value = Math.max(0, index.value - 1)
-  else if (e.key === 'Enter') choose(index.value)
+  else if (e.key === 'Enter') void enter()
   else if (e.key === 'Escape') {
     open.value = false
     input.value?.blur()

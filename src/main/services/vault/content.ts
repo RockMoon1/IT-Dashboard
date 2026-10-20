@@ -181,7 +181,7 @@ export function deviceFacts(runs: ScanRun[], opts: ContentOptions): DeviceFacts 
   // worst of the latest run of each profile: a newer Slow Performance scan does not hide a
   // critical finding that the latest Security Check still reports
   const order: HealthScore[] = ['critical', 'attention', 'healthy']
-  const scores = currentRuns(runs).map((r) => r.health?.score)
+  const scores = latestPerProfile(runs).map((r) => r.health?.score)
   const worst = order.find((s) => scores.includes(s))
   if (worst) facts.health = healthMark(worst)
   for (const r of sorted) {
@@ -378,14 +378,33 @@ export function loopLine(
   return `- [ ] ${severityMark(f.severity)} **${cell(run.hostname)} — ${cell(sentence(f.message))}** ${cell(f.category)} · ${purposeLabel(run.purpose)} scan ${stamp(runTime(run), opts)} · ${runRef(run.runId)}.${again}${dueSuffix(opts.dueStyle, zoned(due, opts.timeZone).date)} ^loop-${id}`
 }
 
-/** The latest finished run of each profile on each device: the current state of what it checks. */
-export function currentRuns(runs: ScanRun[]): ScanRun[] {
+/**
+ * Which machine a run belongs to: its serial, else the enrolled device id (stable across a
+ * rename of a PC whose firmware reports no serial), else the hostname.
+ */
+export function runIdentity(r: ScanRun): string {
+  if (r.serial.trim()) return `sn:${r.serial.trim().toLowerCase()}`
+  if (r.deviceId) return `dev:${r.deviceId}`
+  return `host:${r.hostname.trim().toLowerCase()}`
+}
+
+function latestBy(runs: ScanRun[], key: (r: ScanRun) => string): ScanRun[] {
   const latest = new Map<string, ScanRun>()
   for (const r of [...runs].filter((x) => x.status !== 'running' && x.health).sort(newestFirst)) {
-    const k = `${deviceKey(r.serial, r.hostname)}|${r.profile}`
+    const k = key(r)
     if (!latest.has(k)) latest.set(k, r)
   }
   return [...latest.values()].sort((a, b) => runTime(a).localeCompare(runTime(b)))
+}
+
+/** The latest finished run of each profile on each machine: the current state of what it checks. */
+export function currentRuns(runs: ScanRun[]): ScanRun[] {
+  return latestBy(runs, (r) => `${runIdentity(r)}|${r.profile}`)
+}
+
+/** For runs already known to be one machine's: the latest of each profile, whatever its name was. */
+export function latestPerProfile(runs: ScanRun[]): ScanRun[] {
+  return latestBy(runs, (r) => r.profile)
 }
 
 function bodyLines(existingBody: string | null, heading: string): string[] {

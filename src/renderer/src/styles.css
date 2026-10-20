@@ -30,14 +30,21 @@
   --ease-site: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-html {
-  color-scheme: dark;
-}
+/*
+  Layers: base and component classes sit below Tailwind's utilities, so a utility written on an
+  element (hover:bg-ink-800 on a .card, pr-14 on a .field) wins, as Tailwind intends. Unlayered
+  rules would beat every utility whatever the specificity.
+*/
+@layer base {
+  html {
+    color-scheme: dark;
+  }
 
-body {
-  @apply bg-ink-950 text-mist-100 antialiased;
-  margin: 0;
-  background-image: radial-gradient(ellipse at 50% -20%, rgba(27, 67, 50, 0.35), transparent 60%);
+  body {
+    @apply bg-ink-950 text-mist-100 antialiased;
+    margin: 0;
+    background-image: radial-gradient(ellipse at 50% -20%, rgba(27, 67, 50, 0.35), transparent 60%);
+  }
 }
 
 ::-webkit-scrollbar {
@@ -52,69 +59,71 @@ body {
   background: transparent;
 }
 
-.display {
-  font-family: var(--font-display);
-  letter-spacing: 0.01em;
-}
-.eyebrow {
-  @apply text-[10px] font-semibold uppercase text-mist-500;
-  letter-spacing: 0.18em;
-}
-.label {
-  @apply mb-1 block text-[11px] font-semibold uppercase text-mist-500;
-  letter-spacing: 0.12em;
-}
-.field {
-  @apply w-full rounded-[3px] border bg-ink-900 px-3 py-2 text-sm text-mist-100 outline-none placeholder:text-mist-700;
-  border-color: rgba(255, 255, 255, 0.08);
-  transition: border-color 0.25s var(--ease-site);
-}
-.field:focus {
-  border-color: rgba(201, 165, 72, 0.6);
-}
-.btn-gold,
-.btn-ghost,
-.btn-danger {
-  @apply inline-flex items-center justify-center gap-2 rounded-[2px] px-4 py-2 text-[12px] font-medium uppercase disabled:cursor-not-allowed disabled:opacity-40;
-  letter-spacing: 0.07em;
-  transition: all 0.25s var(--ease-site);
-}
-.btn-gold {
-  @apply bg-gold-400 text-ink-950 hover:bg-gold-300;
-}
-.btn-ghost {
-  @apply border text-mist-300 hover:text-mist-100;
-  border-color: rgba(201, 165, 72, 0.25);
-}
-.btn-ghost:hover {
-  border-color: rgba(201, 165, 72, 0.6);
-}
-.btn-danger {
-  @apply border text-bad-400 hover:bg-bad-400/10;
-  border-color: rgba(226, 100, 90, 0.4);
-}
-.card {
-  @apply rounded-[4px] border bg-ink-900;
-  border-color: rgba(255, 255, 255, 0.055);
-}
-.card-gold {
-  border-color: rgba(201, 165, 72, 0.14);
-}
-.badge {
-  @apply inline-flex items-center rounded-[2px] px-1.5 py-0.5 text-[10px] font-semibold uppercase;
-  letter-spacing: 0.1em;
-}
-.tab {
-  @apply px-3 py-2 text-[12px] font-medium uppercase text-mist-500 hover:text-mist-100;
-  letter-spacing: 0.1em;
-  border-bottom: 2px solid transparent;
-  transition: all 0.25s var(--ease-site);
-}
-.tab-active {
-  @apply text-gold-300;
-  border-bottom-color: #c9a548;
-}
-.rule-gold {
-  background: linear-gradient(to right, #c9a548, transparent);
-  height: 1px;
+@layer components {
+  .display {
+    font-family: var(--font-display);
+    letter-spacing: 0.01em;
+  }
+  .eyebrow {
+    @apply text-[10px] font-semibold uppercase text-mist-500;
+    letter-spacing: 0.18em;
+  }
+  .label {
+    @apply mb-1 block text-[11px] font-semibold uppercase text-mist-500;
+    letter-spacing: 0.12em;
+  }
+  .field {
+    @apply w-full rounded-[3px] border bg-ink-900 px-3 py-2 text-sm text-mist-100 outline-none placeholder:text-mist-700;
+    border-color: rgba(255, 255, 255, 0.08);
+    transition: border-color 0.25s var(--ease-site);
+  }
+  .field:focus {
+    border-color: rgba(201, 165, 72, 0.6);
+  }
+  .btn-gold,
+  .btn-ghost,
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-[2px] px-4 py-2 text-[12px] font-medium uppercase disabled:cursor-not-allowed disabled:opacity-40;
+    letter-spacing: 0.07em;
+    transition: all 0.25s var(--ease-site);
+  }
+  .btn-gold {
+    @apply bg-gold-400 text-ink-950 hover:bg-gold-300;
+  }
+  .btn-ghost {
+    @apply border text-mist-300 hover:text-mist-100;
+    border-color: rgba(201, 165, 72, 0.25);
+  }
+  .btn-ghost:hover {
+    border-color: rgba(201, 165, 72, 0.6);
+  }
+  .btn-danger {
+    @apply border text-bad-400 hover:bg-bad-400/10;
+    border-color: rgba(226, 100, 90, 0.4);
+  }
+  .card {
+    @apply rounded-[4px] border bg-ink-900;
+    border-color: rgba(255, 255, 255, 0.055);
+  }
+  .card-gold {
+    border-color: rgba(201, 165, 72, 0.14);
+  }
+  .badge {
+    @apply inline-flex items-center rounded-[2px] px-1.5 py-0.5 text-[10px] font-semibold uppercase;
+    letter-spacing: 0.1em;
+  }
+  .tab {
+    @apply px-3 py-2 text-[12px] font-medium uppercase text-mist-500 hover:text-mist-100;
+    letter-spacing: 0.1em;
+    border-bottom: 2px solid transparent;
+    transition: all 0.25s var(--ease-site);
+  }
+  .tab-active {
+    @apply text-gold-300;
+    border-bottom-color: #c9a548;
+  }
+  .rule-gold {
+    background: linear-gradient(to right, #c9a548, transparent);
+    height: 1px;
+  }
 }

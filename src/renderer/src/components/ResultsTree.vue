@@ -5,7 +5,9 @@ import { resultsTree, statusMark } from '../results'
 import JsonTree from './JsonTree.vue'
 
 const dash = useDashboard()
-const run = computed(() => dash.currentRun.value)
+const { state } = dash
+const run = computed(() => dash.viewedRun.value)
+const live = computed(() => dash.runningRun.value)
 const tree = computed(() => (run.value ? resultsTree(run.value) : []))
 const open = ref<Record<string, boolean>>({})
 
@@ -19,6 +21,16 @@ function toggle(id: string): void {
     Run a scan to see results here.
   </div>
   <div v-else class="space-y-4 p-6">
+    <div
+      v-if="state.viewRunId && live"
+      class="flex items-center justify-between rounded-[3px] border border-gold-400/30 bg-gold-400/5 px-3 py-2 text-xs text-gold-300"
+    >
+      <span
+        >Showing a past scan of {{ run.hostname }} ({{ run.finishedAt?.slice(0, 10) }}) while
+        {{ live.hostname }} is being scanned.</span
+      >
+      <button class="underline" @click="state.viewRunId = null">Back to the live scan</button>
+    </div>
     <div v-for="node in tree" :key="node.category" class="card">
       <div class="flex items-center justify-between border-b border-white/5 px-4 py-2">
         <h3 class="display text-lg">{{ node.category }}</h3>

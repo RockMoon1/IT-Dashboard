@@ -13,8 +13,14 @@ import {
   noteRoles,
   rankComputers,
   summarize,
-  termRegex
+  termRegex,
+  zonedToIso
 } from '../src/main/services/lookup/computers.ts'
+import {
+  currentRuns,
+  mergeLoops,
+  DEFAULT_CONTENT_OPTIONS
+} from '../src/main/services/vault/content.ts'
 import { evaluateHealth } from '../src/main/services/scans/health.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
 import type { ScanRun } from '../src/shared/types.ts'
@@ -428,5 +434,169 @@ test('lookup stays fast on a vault ten times the size of ARH IT', async () => {
     assert.ok(ms < 1500, `profile on ${notes.length} notes took ${ms.toFixed(0)} ms`)
   } finally {
     await rm(tmp, { recursive: true, force: true })
+  }
+})
+
+/* ---------- regressions from the review of the lookup commit ---------- */
+
+const sec = (
+  id: string,
+  at: string,
+  hostname: string,
+  serial: string,
+  critical: boolean
+): ScanRun => ({
+  ...run(
+    id,
+    at,
+    {},
+    critical
+      ? [
+          {
+            id: 'av',
+            severity: 'critical',
+            category: 'Antivirus',
+            message: 'Defender real-time protection is off',
+            loop: true
+          }
+        ]
+      : []
+  ),
+  hostname,
+  serial
+})
+
+test('a serial-less PC renamed between scans: only its latest scan of each purpose is current', () => {
+  const dev: EnrolledDevice = { ...device, id: 'fp-wb', serial: '', hostname: 'ARH-PC2' }
+  const runs = [
+    { ...sec('r_old', '2026-10-01T15:00:00.000Z', 'DESKTOP-7GH2K', '', true), deviceId: 'fp-wb' },
+    { ...sec('r_new', '2026-10-10T15:00:00.000Z', 'ARH-PC2', '', false), deviceId: 'fp-wb' }
+  ]
+  const computers = buildComputers([dev], runs, [])
+  assert.equal(computers.length, 1)
+  const s = summarize(computers[0]!, () => false)
+  assert.equal(s.health, 'healthy', "the old name's critical scan is history, not current")
+  assert.deepEqual(s.aliases, ['Front desk laptop', 'DESKTOP-7GH2K'])
+  const p = buildProfile({
+    target: { deviceId: 'fp-wb' },
+    computers,
+    notes: [],
+    settings: DEFAULT_SETTINGS,
+    connected: () => false
+  })
+  assert.deepEqual(p.findings, [])
+  assert.equal(p.recurring[0]?.current, false)
+  // the vault's open loops use the same rule across all devices
+  assert.deepEqual(
+    currentRuns(runs).map((r) => r.runId),
+    ['r_new']
+  )
+  assert.equal(mergeLoops(null, runs, DEFAULT_CONTENT_OPTIONS).added, 0)
+})
+
+test('two enrolled devices under one hostname stay two computers, each with its own page', () => {
+  const old: EnrolledDevice = {
+    ...device,
+    id: 'fp-old',
+    serial: '',
+    hostname: 'ARH-PC1',
+    displayName: 'Front desk PC'
+  }
+  const laptop: EnrolledDevice = {
+    ...device,
+    id: 'fp-new',
+    serial: 'SN-NEW',
+    hostname: 'ARH-PC1',
+    displayName: 'New laptop'
+  }
+  const computers = buildComputers([old, laptop], [], [])
+  assert.equal(computers.length, 2)
+  for (const id of ['fp-old', 'fp-new']) {
+    const p = buildProfile({
+      target: { deviceId: id },
+      computers,
+      notes: [],
+      settings: DEFAULT_SETTINGS,
+      connected: (x) => x === 'fp-new'
+    })
+    assert.equal(p.summary.name, 'ARH-PC1')
+    assert.equal(p.summary.deviceId, id)
+    assert.equal(p.summary.connected, id === 'fp-new')
+  }
+})
+
+test('an inventory row with a serial goes to the computer with that serial, not an earlier name match', () => {
+  const old: EnrolledDevice = {
+    ...device,
+    id: 'fp-old',
+    serial: '',
+    hostname: 'ARH-PC1',
+    displayName: 'Front desk PC'
+  }
+  const laptop: EnrolledDevice = {
+    ...device,
+    id: 'fp-new',
+    serial: '5CD1234XYZ',
+    hostname: 'DESKTOP-K3J9L',
+    displayName: 'New laptop'
+  }
+  const row = {
+    file: 'Assets/Asset Inventory.md',
+    line: 10,
+    cells: { Name: 'ARH-PC1', Serial: '5CD1234XYZ', Location: 'Site A' }
+  }
+  const computers = buildComputers([old, laptop], [], [row])
+  const withRow = computers.filter((c) => c.inventory.length)
+  assert.deepEqual(
+    withRow.map((c) => c.device?.id),
+    ['fp-new']
+  )
+  const keys = computers.map((c) => c.key)
+  assert.equal(new Set(keys).size, keys.length, 'every computer has its own key')
+  // even when two records really carry the same serial, keys stay unique
+  const dup = buildComputers([laptop, { ...laptop, id: 'fp-dup', displayName: 'dup' }], [], [])
+  assert.deepEqual(
+    dup.map((c) => c.key),
+    ['sn:5cd1234xyz', 'sn:5cd1234xyz#2']
+  )
+})
+
+test('MT wall times convert to UTC correctly on both DST change days', () => {
+  const tz = 'America/Denver'
+  const cases: Array<[string, string, string]> = [
+    ['2026-10-14', '10:20', '2026-10-14T16:20:00.000Z'], // MDT
+    ['2026-01-10', '09:00', '2026-01-10T16:00:00.000Z'], // MST
+    ['2026-11-01', '02:30', '2026-11-01T09:30:00.000Z'], // after the fall-back: MST
+    ['2026-11-01', '07:30', '2026-11-01T14:30:00.000Z'],
+    ['2026-03-08', '03:30', '2026-03-08T09:30:00.000Z'], // after the spring-forward: MDT
+    ['2026-03-08', '08:30', '2026-03-08T14:30:00.000Z'],
+    ['2026-03-08', '09:30', '2026-03-08T15:30:00.000Z'],
+    ['2027-03-14', '08:45', '2027-03-14T14:45:00.000Z']
+  ]
+  for (const [date, time, iso] of cases)
+    assert.equal(zonedToIso(date, time, tz), iso, `${date} ${time} MT`)
+})
+
+test('vault index: changing the vault folder mid-refresh never returns the old vault', async () => {
+  const a = await copyVault()
+  const b = await copyVault()
+  try {
+    await writeFile(join(b.vault, 'Only in B.md'), '# Only in B\n')
+    const index = new VaultIndex({ maxAgeMs: 60_000 })
+    const [fromA, fromB] = await Promise.all([index.notes(a.vault), index.notes(b.vault)])
+    assert.ok(fromA.every((n) => n.abs.startsWith(a.vault)))
+    assert.ok(
+      fromB.every((n) => n.abs.startsWith(b.vault)),
+      'B gets B notes'
+    )
+    assert.ok(fromB.some((n) => n.name === 'Only in B'))
+    const again = await index.notes(b.vault)
+    assert.ok(
+      again.every((n) => n.abs.startsWith(b.vault)),
+      'the cache holds B, not a late A'
+    )
+  } finally {
+    await a.done()
+    await b.done()
   }
 })

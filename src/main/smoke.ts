@@ -28,6 +28,18 @@ const RENDERER_SCRIPT = String.raw`(async () => {
   out.lookup = { computers: lk.computers.map((c) => c.name), vaultNotes: lk.vaultNotes, ms: lk.tookMs }
 
   const input = await until('the lookup box', () => document.querySelector('input[aria-label="Look up a computer"]'))
+
+  // Enter straight after typing a room name, before any result is back: still the computer
+  input.focus()
+  input.value = 'front desk'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until('the computer page from a room name', () => [...document.querySelectorAll('h2')].some((h) => h.textContent.trim() === 'ARH-T01'))
+  out.enterBeforeResults = !text().includes('Not a known computer')
+  const back = [...document.querySelectorAll('button')].find((b) => b.textContent.includes('All computers'))
+  back?.click()
+  await until('the computers list again', () => text().includes('Computers on record'))
+
   input.focus()
   input.value = 'ARH-T01'
   input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -97,6 +109,8 @@ export function runSmoke(win: BrowserWindow): void {
         const report = JSON.parse(json) as Record<string, unknown>
         const profile = report['profile'] as Record<string, boolean> | undefined
         if (!report['bridge']) problems.push('preload bridge missing')
+        if (!report['enterBeforeResults'])
+          problems.push('Enter before the lookup answered opened a notes-only page')
         for (const [k, v] of Object.entries(profile ?? {}))
           if (!v) problems.push(`computer page is missing its ${k}`)
         for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))

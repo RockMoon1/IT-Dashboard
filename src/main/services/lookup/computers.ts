@@ -23,8 +23,8 @@ import type { EnrolledDevice } from '../link/devices.ts'
 import { THRESHOLDS } from '../scans/health.ts'
 import {
   DEFAULT_CONTENT_OPTIONS,
-  currentRuns,
   deviceFacts,
+  latestPerProfile,
   findingShape,
   splitRow,
   zoned
@@ -123,9 +123,16 @@ function dashboardLines(note: IndexedNote): Set<number> {
 export function zonedToIso(date: string, time: string, timeZone: string): string {
   const guess = new Date(`${date}T${time}:00Z`)
   if (Number.isNaN(guess.getTime())) return date
-  const z = zoned(guess, timeZone)
-  const offset = new Date(`${z.date}T${z.time}:00Z`).getTime() - guess.getTime()
-  return new Date(guess.getTime() - offset).toISOString()
+  // offset of the zone at an instant: (wall clock there, read as UTC) minus the instant
+  const offsetAt = (t: number): number => {
+    const z = zoned(new Date(t), timeZone)
+    return Date.parse(`${z.date}T${z.time}:00Z`) - t
+  }
+  // first pass uses the offset 6-7 h too early; on a DST change day that can be the other side
+  // of the change, so take the offset again at the candidate instant
+  const first = guess.getTime() - offsetAt(guess.getTime())
+  const second = guess.getTime() - offsetAt(first)
+  return new Date(second).toISOString()
 }
 
 /** The "### HH:MM MT — title" parts of a Work Log day that mention the computer. */
@@ -166,15 +173,23 @@ export function buildComputers(
   inventory: VaultRow[]
 ): Computer[] {
   const list: Computer[] = []
-  const find = (serial: string, name: string, deviceId?: string): Computer | undefined =>
-    list.find((c) => {
-      if (deviceId && c.device?.id === deviceId) return true
-      const s = isBlank(serial) ? '' : norm(serial)
-      if (s && c.serials.some((x) => norm(x) === s)) return true
-      // two different serials are two machines, even under the same name
-      if (s && c.serials.length) return false
-      return !isBlank(name) && c.names.some((n) => norm(n) === norm(name))
-    })
+  // In order of certainty: the enrolled device, then an exact serial, then the name, and the name
+  // only when the serials cannot disagree (two different serials are two machines).
+  const find = (serial: string, name: string, deviceId?: string): Computer | undefined => {
+    if (deviceId) {
+      const byDevice = list.find((c) => c.device?.id === deviceId)
+      if (byDevice) return byDevice
+    }
+    const s = isBlank(serial) ? '' : norm(serial)
+    if (s) {
+      const bySerial = list.find((c) => c.serials.some((x) => norm(x) === s))
+      if (bySerial) return bySerial
+    }
+    if (isBlank(name)) return undefined
+    return list.find(
+      (c) => (!s || !c.serials.length) && c.names.some((n) => norm(n) === norm(name))
+    )
+  }
   const remember = (c: Computer, serial: string, name: string): void => {
     if (!isBlank(serial) && !c.serials.some((x) => norm(x) === norm(serial)))
       c.serials.push(serial.trim())
@@ -186,8 +201,9 @@ export function buildComputers(
     return c
   }
 
+  // every enrolled device is its own computer, even when two share a hostname
   for (const d of devices) {
-    const c = find(d.serial, d.hostname, d.id) ?? create()
+    const c = create()
     c.device = d
     remember(c, d.serial, d.hostname)
   }
@@ -205,8 +221,14 @@ export function buildComputers(
     c.inventory.push(row)
     remember(c, serial, name)
   }
-  for (const c of list)
-    c.key = c.serials[0] ? `sn:${norm(c.serials[0])}` : `host:${norm(c.names[0] ?? 'unknown')}`
+  const used = new Set<string>()
+  for (const c of list) {
+    const base = c.serials[0] ? `sn:${norm(c.serials[0])}` : `host:${norm(c.names[0] ?? 'unknown')}`
+    let key = base
+    for (let n = 2; used.has(key); n++) key = `${base}#${n}`
+    used.add(key)
+    c.key = key
+  }
   return list
 }
 
@@ -214,7 +236,7 @@ const SCORE_ORDER: HealthScore[] = ['critical', 'attention', 'healthy']
 const SEVERITY_ORDER: Severity[] = ['critical', 'warning', 'info']
 
 function worstScore(runs: ScanRun[]): HealthScore | undefined {
-  const scores = currentRuns(runs).map((r) => r.health?.score)
+  const scores = latestPerProfile(runs).map((r) => r.health?.score)
   return SCORE_ORDER.find((s) => scores.includes(s))
 }
 
@@ -502,7 +524,7 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   )
 
   // scans
-  const current = currentRuns(runs)
+  const current = latestPerProfile(runs)
   const findings: ProfileFinding[] = current
     .flatMap((r) =>
       (r.health?.findings ?? []).map((f) => ({

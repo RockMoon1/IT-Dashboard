@@ -77,7 +77,7 @@ export class VaultIndex {
   private root = ''
   private cache = new Map<string, IndexedNote>()
   private lastRefresh = 0
-  private pending: Promise<IndexedNote[]> | null = null
+  private pending: { root: string; promise: Promise<IndexedNote[]> } | null = null
   private readonly maxAgeMs: number
   private readonly maxFileBytes: number
   error: string | undefined
@@ -96,39 +96,49 @@ export class VaultIndex {
     }
     if (!force && Date.now() - this.lastRefresh < this.maxAgeMs && this.cache.size)
       return [...this.cache.values()]
-    this.pending ??= this.refresh(root).finally(() => {
-      this.pending = null
-    })
-    return this.pending
+    // share a refresh only with callers asking for the same folder
+    if (this.pending?.root !== root) {
+      const promise = this.refresh(root).finally(() => {
+        if (this.pending?.promise === promise) this.pending = null
+      })
+      this.pending = { root, promise }
+    }
+    return this.pending.promise
   }
 
+  /**
+   * Builds the note set for `root` from the cache plus whatever changed, then keeps it only if
+   * the vault folder is still `root` (the folder can change in Settings while OneDrive is slow).
+   */
   private async refresh(root: string): Promise<IndexedNote[]> {
-    const seen = new Set<string>()
+    const previous = new Map(this.cache)
+    const next = new Map<string, IndexedNote>()
+    let error: string | undefined
     try {
       await stat(root)
-      this.error = undefined
-    } catch (err) {
-      this.error = `vault folder not readable: ${(err as Error).message}`
-      this.cache.clear()
-      this.lastRefresh = Date.now()
-      return []
-    }
-    for await (const abs of markdownFiles(root)) {
-      seen.add(abs)
-      try {
-        const s = await stat(abs)
-        const cached = this.cache.get(abs)
-        if (cached && cached.mtimeMs === s.mtimeMs && cached.size === s.size) continue
-        if (s.size > this.maxFileBytes) continue
-        const note = toNote(root, abs, await readFile(abs, 'utf8'), s.mtimeMs)
-        note.size = s.size // bytes on disk, compared on the next refresh
-        this.cache.set(abs, note)
-      } catch {
-        this.cache.delete(abs)
+      for await (const abs of markdownFiles(root)) {
+        try {
+          const s = await stat(abs)
+          const cached = previous.get(abs)
+          if (cached && cached.mtimeMs === s.mtimeMs && cached.size === s.size) {
+            next.set(abs, cached)
+            continue
+          }
+          if (s.size > this.maxFileBytes) continue
+          const note = toNote(root, abs, await readFile(abs, 'utf8'), s.mtimeMs)
+          note.size = s.size // bytes on disk, compared on the next refresh
+          next.set(abs, note)
+        } catch {
+          /* unreadable or removed while walking: leave it out */
+        }
       }
+    } catch (err) {
+      error = `vault folder not readable: ${(err as Error).message}`
     }
-    for (const abs of [...this.cache.keys()]) if (!seen.has(abs)) this.cache.delete(abs)
+    if (this.root !== root) return [...next.values()]
+    this.cache = next
+    this.error = error
     this.lastRefresh = Date.now()
-    return [...this.cache.values()]
+    return [...next.values()]
   }
 }
