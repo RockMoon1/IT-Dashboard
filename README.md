@@ -49,6 +49,17 @@ npm run dev              # starts the dashboard
 
 `npm run dist:win` produces the same installer as Option A in `dist\`.
 
+### If `npm run dev` says "Error: Electron uninstall"
+
+The `electron` package was installed but its program (about 110 MB) was not downloaded, usually
+because the download failed during `npm install`. `npm run dev` now checks this first and
+downloads it again, showing the reason if it fails. To do it by hand, in the project folder:
+
+```powershell
+node node_modules\electron\install.js
+npm run dev
+```
+
 ## First-time setup (in this order)
 
 1. **Check WMI on this PC** (read-only):

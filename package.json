@@ -11,9 +11,12 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "predev": "node scripts/ensure-electron.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "prepreview": "node scripts/ensure-electron.mjs",
     "preview": "electron-vite preview",
+    "prestart": "node scripts/ensure-electron.mjs",
     "start": "electron-vite preview",
     "agent:build": "node scripts/build-agent.mjs",
     "agent:build:host": "node scripts/build-agent.mjs --host",
