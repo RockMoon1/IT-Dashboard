@@ -42,6 +42,7 @@ const (
 	dialTimeout    = 10 * time.Second
 	readTimeout    = 60 * time.Second
 	pingEvery      = 20 * time.Second
+	drainWait      = 15 * time.Second // launchd allows 20 s after SIGTERM, systemd 90 s
 	retryPause     = 3 * time.Second
 )
 
@@ -84,7 +85,8 @@ type Agent struct {
 	runKind      string // "scan", "action" or "exec"
 	runPhase     string // for actions: measure, apply, measure-after
 	runAbortable bool
-	restartAt    time.Time // a restart the dashboard scheduled
+	restartAt    time.Time      // a restart the dashboard scheduled
+	flight       sync.WaitGroup // actions and custom commands still running
 
 	sessMu sync.Mutex
 	codec  *protocol.Codec // the session connected now, if any
@@ -101,7 +103,13 @@ func New(cfg Config) *Agent {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
-	return &Agent{cfg: cfg, journal: openJournal(cfg.DataDir), audit: audit.Open(cfg.DataDir), catalog: actions.ForOS}
+	a := &Agent{cfg: cfg, journal: openJournal(cfg.DataDir), audit: audit.Open(cfg.DataDir), catalog: actions.ForOS}
+	for _, r := range a.journal.recover(time.Now().UTC().Format(time.RFC3339)) {
+		cfg.Logger.Printf("run %s: interrupted when the agent last stopped; reported as such", r.RunID)
+		_ = a.audit.Record("outcome", map[string]any{"runId": r.RunID, "kind": r.Kind, "action": r.Action, "applied": r.Applied,
+			"aborted": true, "interrupted": true})
+	}
+	return a
 }
 
 // root is the agent's lifetime context: actions and custom commands hang off it, not off the
@@ -162,10 +170,27 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			a.drain(drainWait)
 			return nil
 		case d := <-in:
 			a.handleBeacon(ctx, d)
 		}
+	}
+}
+
+// drain gives running actions and custom commands a short time to finish when the agent is
+// stopped: a started change is not cancelled, and its result should reach the outbox. What is
+// still running after that is reported as interrupted by the next agent start.
+func (a *Agent) drain(limit time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		a.flight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(limit):
+		a.cfg.Logger.Printf("stopping with a run still in progress; the next start reports it as interrupted")
 	}
 }
 
@@ -457,6 +482,7 @@ func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec,
 		t := time.NewTicker(pingEvery)
 		defer t.Stop()
 		lastPolicy := policy.Load(a.cfg.DataDir).Fingerprint()
+		lastState := a.stateMessage().PendingRestartUntil
 		for {
 			select {
 			case <-stop:
@@ -472,6 +498,11 @@ func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec,
 				if pol := policy.Load(a.cfg.DataDir); pol.Fingerprint() != lastPolicy {
 					lastPolicy = pol.Fingerprint()
 					_ = codec.Write(protocol.Message{Type: "policy", Policy: &pol})
+				}
+				// and so is the end of a pending restart's grace period
+				if st := a.stateMessage(); st.PendingRestartUntil != lastState {
+					lastState = st.PendingRestartUntil
+					_ = codec.Write(st)
 				}
 			}
 		}

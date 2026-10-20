@@ -238,6 +238,15 @@ test('actions end to end: preview, run, cable pulled mid-change, late result, ac
     await until('the late result', () => runner.get(r.runId)?.status === 'done')
     assert.equal(runner.get(r.runId)?.result?.after?.items?.[0]?.value, '0')
 
+    // a restart scheduled or cancelled during the session reaches the gates at once
+    const until15 = new Date(Date.now() + 15 * 60_000).toISOString()
+    sock.write(encode({ type: 'state', pendingRestartUntil: until15 }))
+    await until('the pending restart', () => !!server.capabilities(deviceId)?.pendingRestartUntil)
+    assert.match(runner.blockers(device, flush, 'apply').join(), /restart is scheduled/)
+    sock.write(encode({ type: 'state' }))
+    await until('the restart cleared', () => !server.capabilities(deviceId)?.pendingRestartUntil)
+    assert.deepEqual(runner.blockers(device, flush, 'apply'), [])
+
     // a policy changed on the device reaches the dashboard's gates at once
     sock.write(
       encode({

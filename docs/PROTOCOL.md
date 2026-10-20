@@ -95,6 +95,8 @@ host → agent  { "type": "welcome", "deviceId", "hostTime": "<ISO-8601>" }   (o
 agent → host  { "type": "result", "runId", "result": { … } }   once per result still in the outbox
 either side   { "type": "ping" } / { "type": "pong" }   every 20 s; 60 s silence closes the socket
 agent → host  { "type": "policy", "policy": { … } }   when policy.json changed on the device
+agent → host  { "type": "state", "pendingRestartUntil"?: "<ISO-8601>" }   when a restart is
+              scheduled or cancelled, or its wait ends (no field: no restart pending)
 ```
 
 Protocol-1 agents send none of the protocol-2 fields; the dashboard then treats the device as
@@ -165,7 +167,13 @@ Rules enforced by the agent:
   (`restart-pending`).
 - Once apply has started, the run is no longer tied to the session: it finishes if the cable is
   pulled, and its result waits in the outbox until acknowledged. Abort stops a measure, an
-  abortable apply or a custom command; otherwise `not-abortable`.
+  abortable apply or a custom command; otherwise `not-abortable`. A stop that arrives before
+  apply starts is honoured: the change is not started.
+- A run the agent itself was stopped in the middle of (shutdown, restart, the agent stopped or
+  killed) is sent on the next connection as a result with `aborted: true`, the error "the agent
+  stopped before this run finished …", what was measured before, and `applied` saying whether the
+  change had started. When the agent is stopped on Linux or macOS, a running change gets 15
+  seconds to finish and report normally first.
 - Every action and custom command is recorded on the device (`actions.log`, intent before the
   process starts and outcome after, never output) and in the OS log.
 

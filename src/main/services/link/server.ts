@@ -303,6 +303,15 @@ export class LinkServer extends EventEmitter {
           this.emitEvent({ type: 'capabilities', deviceId: s.deviceId, capabilities: s.caps })
           return
         }
+        if (m.type === 'state' && s.caps && s.deviceId) {
+          const until = m['pendingRestartUntil']
+          s.caps = {
+            ...s.caps,
+            pendingRestartUntil: typeof until === 'string' && until ? until : undefined
+          }
+          this.emitEvent({ type: 'capabilities', deviceId: s.deviceId, capabilities: s.caps })
+          return
+        }
         if (s.deviceId) this.emitEvent({ type: 'message', deviceId: s.deviceId, message: m })
         return
     }

@@ -16,3 +16,5 @@
 {"type":"abort-refused","runId":"a_k1_000004","errorCode":"not-abortable","error":"the change has started"}
 {"type":"run-end","runId":"a_k1_000005","ok":false,"errorCode":"lan-session","error":"changes are allowed only over the USB cable"}
 {"type":"policy","policy":{"schema":"arh-policy/1","write":false,"execute":false,"custom":false,"lan":false,"interrupts":false,"deny":[],"error":"no policy file on this device: read only"}}
+{"type":"state","pendingRestartUntil":"2026-10-20T20:25:00Z"}
+{"type":"state"}

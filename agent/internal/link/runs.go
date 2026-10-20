@@ -15,14 +15,19 @@ const (
 	keepOutbox = 50
 )
 
-// runJournal remembers the last run ids (so a repeated request never runs twice) and keeps every
-// action result until the dashboard acknowledges it (so a result survives a pulled cable).
+// interruptedNote is the error on a run the agent was stopped in the middle of.
+const interruptedNote = "the agent stopped before this run finished (the computer shut down or restarted, or the agent was stopped); nothing after that point was measured"
+
+// runJournal remembers the last run ids (so a repeated request never runs twice), what is running
+// now, and every result until the dashboard acknowledges it (so a result survives a pulled
+// cable, and a run cut short by a shutdown still reports what is known).
 type runJournal struct {
 	path string
 	mu   sync.Mutex
 	data struct {
-		IDs    []string         `json:"ids"`
-		Outbox []actions.Result `json:"outbox"`
+		IDs     []string         `json:"ids"`
+		Running []actions.Result `json:"running,omitempty"`
+		Outbox  []actions.Result `json:"outbox"`
 	}
 }
 
@@ -32,6 +37,49 @@ func openJournal(dataDir string) *runJournal {
 		_ = json.Unmarshal(b, &j.data)
 	}
 	return j
+}
+
+// recover turns every run a previous agent process left running into an interrupted result in
+// the outbox. Only a new process calls it: nothing of the old one is still running then.
+func (j *runJournal) recover(endedAt string) []actions.Result {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.data.Running) == 0 {
+		return nil
+	}
+	var done []actions.Result
+	for _, r := range j.data.Running {
+		r.Aborted, r.EndedAt, r.Error = true, endedAt, interruptedNote
+		if !r.Applied && r.Skipped == "" {
+			r.Skipped = "the agent stopped before any change"
+		}
+		done = append(done, r)
+	}
+	j.data.Running = nil
+	j.data.Outbox = append(j.data.Outbox, done...)
+	if len(j.data.Outbox) > keepOutbox {
+		j.data.Outbox = j.data.Outbox[len(j.data.Outbox)-keepOutbox:]
+	}
+	_ = j.saveLocked()
+	return done
+}
+
+// running records (or updates) what is known of a run that has not finished.
+func (j *runJournal) running(r actions.Result) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.data.Running = append(without(j.data.Running, r.RunID), r)
+	return j.saveLocked()
+}
+
+func without(list []actions.Result, id string) []actions.Result {
+	out := list[:0:0]
+	for _, x := range list {
+		if x.RunID != id {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // claim records a run id before the run starts. It reports false for an id already used.
@@ -50,17 +98,12 @@ func (j *runJournal) claim(id string) (bool, error) {
 	return true, j.saveLocked()
 }
 
-// put stores (or replaces) a result in the outbox.
+// put stores (or replaces) a finished run's result in the outbox.
 func (j *runJournal) put(r actions.Result) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	out := j.data.Outbox[:0]
-	for _, x := range j.data.Outbox {
-		if x.RunID != r.RunID {
-			out = append(out, x)
-		}
-	}
-	out = append(out, r)
+	j.data.Running = without(j.data.Running, r.RunID)
+	out := append(without(j.data.Outbox, r.RunID), r)
 	if len(out) > keepOutbox {
 		out = out[len(out)-keepOutbox:]
 	}
@@ -71,13 +114,7 @@ func (j *runJournal) put(r actions.Result) error {
 func (j *runJournal) ack(id string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	out := j.data.Outbox[:0]
-	for _, x := range j.data.Outbox {
-		if x.RunID != id {
-			out = append(out, x)
-		}
-	}
-	j.data.Outbox = out
+	j.data.Outbox = without(j.data.Outbox, id)
 	return j.saveLocked()
 }
 

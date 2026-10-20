@@ -114,10 +114,20 @@ func (a *Agent) takeSlot(runID, kind string) (context.Context, func(), string) {
 	}, ""
 }
 
-func (a *Agent) setPhase(phase string, abortable bool) {
+// enterPhase moves the run holding the slot to the next phase. A concurrent action is not the
+// slot holder and changes nothing here. The check and the switch happen under runMu, the lock
+// abort and sessionEnded cancel under, so a stop that arrives before apply is never lost: it
+// reports false and the change is not started.
+func (a *Agent) enterPhase(ctx context.Context, runID, phase string, abortable bool) bool {
 	a.runMu.Lock()
-	a.runPhase, a.runAbortable = phase, abortable
-	a.runMu.Unlock()
+	defer a.runMu.Unlock()
+	if phase == actions.PhaseApply && ctx.Err() != nil {
+		return false
+	}
+	if a.runID == runID {
+		a.runPhase, a.runAbortable = phase, abortable
+	}
+	return true
 }
 
 func (a *Agent) startAction(codec *protocol.Codec, link string, m protocol.Message) {
@@ -168,7 +178,11 @@ func (a *Agent) startAction(codec *protocol.Codec, link string, m protocol.Messa
 		params[p.Name] = v
 	}
 	if act.Concurrent {
-		go a.runAction(context.WithoutCancel(a.root()), act, params, m, link)
+		a.flight.Add(1)
+		go func() {
+			defer a.flight.Done()
+			a.runAction(context.WithoutCancel(a.root()), act, params, m, link)
+		}()
 		return
 	}
 	ctx, release, holder := a.takeSlot(m.RunID, "action")
@@ -176,7 +190,9 @@ func (a *Agent) startAction(codec *protocol.Codec, link string, m protocol.Messa
 		refuse(codec, m.RunID, protocol.CodeBusy, "busy: run "+holder+" is in progress")
 		return
 	}
+	a.flight.Add(1)
 	go func() {
+		defer a.flight.Done()
 		defer release()
 		a.runAction(ctx, act, params, m, link)
 	}()
@@ -198,6 +214,9 @@ func (a *Agent) runAction(ctx context.Context, act actions.Action, params map[st
 	_ = a.audit.Record("intent", map[string]any{"runId": m.RunID, "kind": "action", "action": act.Name, "version": act.Version, "sha256": act.SHA256(),
 		"params": params, "mode": m.Mode, "technician": m.Technician, "reason": m.Reason, "link": link})
 	a.cfg.Logger.Printf("run %s: action %s v%d (%s)", m.RunID, act.Name, act.Version, m.Mode)
+	if err := a.journal.running(res); err != nil {
+		a.cfg.Logger.Printf("run %s: cannot note the run as started: %v", m.RunID, err)
+	}
 
 	before := a.phase(ctx, act, params, actions.PhaseMeasure, m.RunID, actions.MeasureTimeout)
 	res.Before = &before
@@ -214,18 +233,26 @@ func (a *Agent) runAction(ctx context.Context, act actions.Action, params map[st
 		res.Skipped = "the measurement gave no plan, so nothing was changed"
 	case !*before.Change:
 		res.Skipped = "nothing to change: " + before.Plan
+		if !preview && strings.HasSuffix(act.Name, "-restart-cancel") {
+			a.setRestart(time.Time{}) // measured: no restart is waiting, whatever was scheduled
+		}
+	case !a.enterPhase(ctx, m.RunID, actions.PhaseApply, act.Abortable):
+		res.Aborted = true
+		res.Skipped = "stopped before any change"
 	default:
-		a.setPhase(actions.PhaseApply, act.Abortable)
 		applyCtx := ctx
 		if !act.Abortable {
 			applyCtx = context.WithoutCancel(ctx) // a started change finishes
 		}
 		res.Applied, res.AppliedAt = true, now()
+		if err := a.journal.running(res); err != nil {
+			a.cfg.Logger.Printf("run %s: cannot note the change as started: %v", m.RunID, err)
+		}
 		ap := a.phase(applyCtx, act, params, actions.PhaseApply, m.RunID, time.Duration(act.TimeoutSeconds)*time.Second)
 		res.Apply = &ap
 		res.Aborted = applyCtx.Err() != nil
 		a.noteRestart(act, params, ap)
-		a.setPhase(actions.PhaseAfter, false)
+		a.enterPhase(ctx, m.RunID, actions.PhaseAfter, false)
 		limit := actions.MeasureTimeout
 		if res.Aborted || ap.TimedOut {
 			limit = afterAbortMeasure
@@ -259,16 +286,32 @@ func (a *Agent) noteRestart(act actions.Action, params map[string]string, ap act
 	if ap.ExitCode != 0 {
 		return
 	}
-	a.runMu.Lock()
-	defer a.runMu.Unlock()
 	switch {
 	case strings.HasSuffix(act.Name, "-restart-cancel"):
-		a.restartAt = time.Time{}
+		a.setRestart(time.Time{})
 	case strings.HasSuffix(act.Name, "-restart"):
 		if n, err := strconv.Atoi(params["minutes"]); err == nil {
-			a.restartAt = time.Now().Add(time.Duration(n) * time.Minute)
+			a.setRestart(time.Now().Add(time.Duration(n) * time.Minute))
 		}
 	}
+}
+
+// setRestart records the pending restart (zero for none) and tells the connected dashboard,
+// whose gates hold every other change while one is pending.
+func (a *Agent) setRestart(at time.Time) {
+	a.runMu.Lock()
+	a.restartAt = at
+	a.runMu.Unlock()
+	a.send(a.stateMessage())
+}
+
+// stateMessage reports the device state that can change during a session besides the policy.
+func (a *Agent) stateMessage() protocol.Message {
+	m := protocol.Message{Type: "state"}
+	if at, pending := a.restartPending(); pending {
+		m.PendingRestartUntil = at.UTC().Format(time.RFC3339)
+	}
+	return m
 }
 
 func phaseTitle(phase string) string {
@@ -388,7 +431,9 @@ func (a *Agent) startExec(codec *protocol.Codec, link string, m protocol.Message
 		refuse(codec, m.RunID, protocol.CodeBusy, "busy: run "+holder+" is in progress")
 		return
 	}
+	a.flight.Add(1)
 	go func() {
+		defer a.flight.Done()
 		defer release()
 		a.runExec(ctx, m, timeout, link)
 	}()
@@ -406,6 +451,9 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	_ = a.audit.Record("intent", map[string]any{"runId": m.RunID, "kind": "exec", "shell": m.Shell, "scriptSha256": digest, "script": m.Script,
 		"technician": m.Technician, "reason": m.Reason, "link": link})
 	a.cfg.Logger.Printf("run %s: custom command (%d lines, sha256 %.12s)", m.RunID, lines, digest)
+	if err := a.journal.running(res); err != nil {
+		a.cfg.Logger.Printf("run %s: cannot note the run as started: %v", m.RunID, err)
+	}
 	a.send(protocol.Message{Type: "check-start", RunID: m.RunID, CheckID: "exec", Title: "Custom command", Category: "Custom"})
 	check := profiles.Check{ID: "exec", Title: "Custom command", Category: "Custom", Shell: m.Shell, Command: []string{m.Script}, Format: "text",
 		TimeoutSeconds: timeout, Access: "execute", CleanEnv: true, LongScript: true}
