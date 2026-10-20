@@ -1,7 +1,7 @@
 {
   "schema": "arh-action/1",
   "name": "windows-update-search",
-  "version": 1,
+  "version": 2,
   "os": "windows",
   "access": "execute",
   "category": "Updates",
@@ -22,7 +22,8 @@
   "params": [],
   "measure": [
     "$wu = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' -ErrorAction SilentlyContinue",
-    "Add-ArhInfo 'Update source' $(if ($wu -and $wu.WUServer) { \"WSUS $($wu.WUServer)\" } else { 'Windows Update' })",
+    "$au = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' -ErrorAction SilentlyContinue",
+    "Add-ArhInfo 'Update source' $(if ($wu -and $wu.WUServer -and $au -and $au.UseWUServer -eq 1) { \"WSUS $($wu.WUServer)\" } elseif ($wu -and $wu.WUServer) { \"Windows Update (WSUS $($wu.WUServer) is set but not in use)\" } else { 'Windows Update' })",
     "$last = $null",
     "try { $last = (New-Object -ComObject Microsoft.Update.AutoUpdate).Results.LastSearchSuccessDate } catch { }",
     "Add-ArhInfo 'Last automatic check' (Format-ArhTime $last)",

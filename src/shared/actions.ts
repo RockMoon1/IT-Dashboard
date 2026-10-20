@@ -210,7 +210,9 @@ export function actionStatus(
     return applyOk ? 'done' : 'failed'
   }
   const after = r.after
-  if (!measured(after) || after!.blockers?.length) return 'not-verified'
+  // a blocker afterwards is not a failure (Group Policy still holds a profile the run left
+  // alone); what cannot show a change is an item that was not measured again
+  if (!measured(after)) return 'not-verified'
   // only items measured both times can show a change
   const afterNames = new Set((after!.items ?? []).map((i) => i.item))
   if ((before!.items ?? []).some((i) => !afterNames.has(i.item))) return 'not-verified'

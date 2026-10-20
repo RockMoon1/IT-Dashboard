@@ -1,7 +1,7 @@
 {
   "schema": "arh-action/1",
   "name": "windows-service-start",
-  "version": 1,
+  "version": 2,
   "os": "windows",
   "access": "write",
   "category": "Services",
@@ -23,7 +23,7 @@
     {
       "name": "name",
       "label": "Service name (not the display name)",
-      "pattern": "[A-Za-z0-9][A-Za-z0-9_.-]{0,79}",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9_.$-]{0,79}",
       "maxLength": 80,
       "required": true,
       "default": "",
@@ -33,13 +33,13 @@
           "Spooler",
           "wuauserv",
           "W32Time",
-          "BITS"
+          "BITS",
+          "MSSQL$SQLEXPRESS"
         ],
         "bad": [
           "",
           "Print Spooler",
-          "a;b",
-          "a$b"
+          "a;b"
         ]
       }
     }

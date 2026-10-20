@@ -1,7 +1,7 @@
 {
   "schema": "arh-action/1",
   "name": "linux-service-start",
-  "version": 1,
+  "version": 2,
   "os": "linux",
   "access": "write",
   "category": "Services",
@@ -46,12 +46,19 @@
   ],
   "measure": [
     "unit=\"$ARH_PARAM_NAME\"",
-    "state=$(systemctl is-active -- \"$unit\" 2>/dev/null)",
+    "props=$(systemctl show -p ActiveState -p Result -p Type -p RemainAfterExit -- \"$unit\" 2>/dev/null)",
+    "state=$(printf '%s\\n' \"$props\" | sed -n 's/^ActiveState=//p')",
+    "result=$(printf '%s\\n' \"$props\" | sed -n 's/^Result=//p')",
+    "type=$(printf '%s\\n' \"$props\" | sed -n 's/^Type=//p')",
+    "remain=$(printf '%s\\n' \"$props\" | sed -n 's/^RemainAfterExit=//p')",
     "enabled=$(systemctl is-enabled -- \"$unit\" 2>/dev/null)",
     "arh_item \"Service $unit\" \"${state:-unknown}\"",
+    "arh_info \"Last result\" \"${result:-unknown}\"",
     "arh_info \"Enabled at boot\" \"${enabled:-unknown}\"",
     "if [ \"$enabled\" != enabled ]; then arh_blocker \"Only services enabled at boot are started here; $unit is ${enabled:-unknown}\"; fi",
-    "if [ \"$state\" = active ]; then arh_plan false \"Already running\"; else arh_plan true \"Start $unit\"; fi"
+    "if [ \"$state\" = active ]; then arh_plan false \"Already running\"",
+    "elif [ \"$type\" = oneshot ] && [ \"$remain\" = no ] && [ \"$state\" = inactive ] && [ \"$result\" = success ]; then arh_plan false \"Ran and finished (a one-shot service)\"",
+    "else arh_plan true \"Start $unit\"; fi"
   ],
   "apply": [
     "systemctl start -- \"$ARH_PARAM_NAME\" || exit $?"

@@ -1,7 +1,7 @@
 {
   "schema": "arh-action/1",
   "name": "windows-restart",
-  "version": 1,
+  "version": 2,
   "os": "windows",
   "access": "execute",
   "category": "Power",
@@ -48,12 +48,12 @@
     "$min = [int]$env:ARH_PARAM_MINUTES",
     "if ($min -lt 2 -or $min -gt 60) { Add-ArhBlocker 'The delay must be 2 to 60 minutes' }",
     "$os = Get-CimInstance Win32_OperatingSystem",
-    "$user = (Get-CimInstance Win32_ComputerSystem).UserName",
-    "$locked = [bool](Get-Process -Name LogonUI -ErrorAction SilentlyContinue)",
+    "# every session with a desktop (console and Remote Desktop), and which of them are locked",
+    "$sessions = @(Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\" -ErrorAction SilentlyContinue | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; if ($o -and $o.User) { [pscustomobject]@{ User = \"$($o.Domain)\\$($o.User)\"; Session = [int]$_.SessionId } } } | Sort-Object Session, User -Unique)",
+    "$lockedIds = @(Get-Process -Name LogonUI -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.SessionId })",
     "Add-ArhInfo 'Up since' (Format-ArhTime $os.LastBootUpTime)",
-    "Add-ArhInfo 'Signed in' $(if ($user) { $user } else { 'nobody' })",
-    "Add-ArhInfo 'Screen' $(if (-not $user) { 'sign-in screen' } elseif ($locked) { 'locked' } else { 'in use' })",
-    "if ($user -and -not $locked) { Add-ArhWarning \"$user is signed in and the screen is not locked: unsaved work is lost when the restart comes\" }",
+    "Add-ArhInfo 'Signed in' $(if ($sessions.Count) { ($sessions | ForEach-Object { \"$($_.User) (session $($_.Session)$(if ($lockedIds -contains $_.Session) { ', locked' }))\" }) -join '; ' } else { 'nobody' })",
+    "foreach ($s in $sessions) { if ($lockedIds -notcontains $s.Session) { Add-ArhWarning \"$($s.User) is signed in (session $($s.Session)) and not locked: unsaved work is lost when the restart comes\" } }",
     "Set-ArhPlan $true \"Restart in $min minutes, with a warning on screen\""
   ],
   "apply": [

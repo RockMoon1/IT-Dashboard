@@ -316,6 +316,34 @@ func TestShippedActionsApplyHere(t *testing.T) {
 				t.Fatal("started a service that is not enabled")
 			}
 		})
+		// a one-shot service that failed: started, it runs and finishes ("inactive"), which is done
+		t.Run("service-start-oneshot", func(t *testing.T) {
+			const name = "arh-test-oneshot.service"
+			unit := "/etc/systemd/system/" + name
+			write := func(cmd string) {
+				body := "[Unit]\nDescription=ARH live test\n[Service]\nType=oneshot\nExecStart=" + cmd + "\n[Install]\nWantedBy=multi-user.target\n"
+				if err := os.WriteFile(unit, []byte(body), 0o644); err != nil {
+					t.Skipf("cannot write a unit here: %v", err)
+				}
+				sh(t, "systemctl daemon-reload")
+			}
+			t.Cleanup(func() {
+				sh(t, "systemctl disable "+name+"; systemctl reset-failed "+name)
+				_ = os.Remove(unit)
+				sh(t, "systemctl daemon-reload")
+			})
+			write("/bin/false")
+			sh(t, "systemctl enable "+name+"; systemctl start "+name)
+			if got := sh(t, "systemctl is-active "+name); got != "failed" {
+				t.Skipf("the test unit is %q, not failed", got)
+			}
+			write("/bin/true")
+			r := runLive(t, a, "linux-service-start", map[string]string{"name": name})
+			wantApplied(t, r)
+			if value(r.Before, "Service "+name) != "failed" || value(r.After, "Service "+name) != "inactive" || r.After.Change == nil || *r.After.Change {
+				t.Fatalf("before %v after %v change %v", r.Before.Items, r.After.Items, r.After.Change)
+			}
+		})
 		t.Run("time-resync", func(t *testing.T) { runLive(t, a, "linux-time-resync", nil) })
 		t.Run("restart-and-cancel", func(t *testing.T) { restart(t, "linux") })
 	}

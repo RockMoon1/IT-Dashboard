@@ -1,7 +1,7 @@
 {
   "schema": "arh-action/1",
   "name": "windows-firewall-on",
-  "version": 1,
+  "version": 2,
   "os": "windows",
   "access": "write",
   "category": "Firewall",
@@ -23,7 +23,8 @@
   "measure": [
     "$gpo = @{}",
     "foreach ($g in @(Get-NetFirewallProfile -PolicyStore RSOP -ErrorAction SilentlyContinue)) { if (\"$($g.Enabled)\" -ne 'NotConfigured') { $gpo[$g.Name] = \"$($g.Enabled)\" } }",
-    "$active = @(Get-NetFirewallProfile -PolicyStore ActiveStore)",
+    "$active = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction SilentlyContinue)",
+    "if (-not $active.Count) { Add-ArhBlocker 'Could not read the firewall state (is the Windows Defender Firewall service running?)'; Set-ArhPlan $false 'Not measured'; exit 0 }",
     "",
     "foreach ($p in $active) { Add-ArhItem \"Firewall $($p.Name)\" $(if (\"$($p.Enabled)\" -eq 'True') { 'on' } else { 'off' }) }",
     "foreach ($n in $gpo.Keys) { Add-ArhInfo \"Group Policy sets $n\" $gpo[$n] }",
@@ -35,7 +36,7 @@
     "if ($ports.Count) { Add-ArhWarning ('Inbound connections are in use on port(s) ' + ($ports -join ', ') + '; a profile turned on may block them unless a rule allows them') }",
     "$off = @($active | Where-Object { \"$($_.Enabled)\" -ne 'True' } | ForEach-Object { $_.Name })",
     "$todo = @($off | Where-Object { -not $gpo.ContainsKey($_) })",
-    "foreach ($n in @($off | Where-Object { $gpo.ContainsKey($_) })) { Add-ArhBlocker \"Group Policy keeps the $n profile off\" }",
+    "foreach ($n in @($off | Where-Object { $gpo.ContainsKey($_) })) { if ($todo.Count) { Add-ArhWarning \"Group Policy keeps the $n profile off; it is left as is\" } else { Add-ArhBlocker \"Group Policy keeps the $n profile off\" } }",
     "if ($todo.Count) { Set-ArhPlan $true ('Turn on: ' + ($todo -join ', ')) } else { Set-ArhPlan $false $(if ($off.Count) { 'Only profiles Group Policy controls are off' } else { 'All profiles are on' }) }"
   ],
   "apply": [

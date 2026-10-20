@@ -835,6 +835,18 @@ test('status: an after-measurement that failed, was blocked or skipped an item i
     'not-verified',
     'no items afterwards is not proof of a change'
   )
+  // a blocker afterwards with every item measured is not a failure: Public went on, Group Policy
+  // still holds Domain off
+  const gpo = result({
+    after: m(
+      [
+        ['Firewall Public', 'on'],
+        ['Firewall Domain', 'on']
+      ],
+      { change: false, blockers: ['Group Policy keeps the Domain profile off'] }
+    )
+  })
+  assert.equal(actionStatus(gpo), 'changed')
   const missing = result({ after: m([['Firewall Public', 'on']], { change: false }) })
   assert.equal(actionStatus(missing), 'not-verified', 'Firewall Domain was not measured afterwards')
   // the agent was stopped mid-apply (its next start reports the run as interrupted)
