@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { inlineText, parseInline, parseMarkdown, type Block } from '../src/shared/markdown.ts'
+import {
+  headingKey,
+  inlineText,
+  parseInline,
+  parseMarkdown,
+  type Block,
+  type Inline
+} from '../src/shared/markdown.ts'
 
 const kinds = (blocks: Block[]): string[] => blocks.map((b) => b.t)
 
@@ -232,4 +239,232 @@ test('a note with every construct parses in a few milliseconds and never loops',
   assert.ok(ms < 1500, `took ${ms.toFixed(0)} ms for ${big.length} chars`)
   // unbalanced markers degrade to text instead of hanging
   assert.equal(inlineText(parseInline('**open `tick [[half ![x](')), '**open `tick [[half ![x](')
+})
+
+const texts = (blocks: Block[]): Array<[string, number, string]> =>
+  blocks.map((b) => [
+    b.t,
+    b.line,
+    b.t === 'para' || b.t === 'heading' ? inlineText(b.c) : b.t === 'code' ? b.v : ''
+  ])
+
+test('a bare "https://" is text, and parsing always moves on', () => {
+  for (const s of [
+    'https://',
+    'see https:// now',
+    'Admin page: https://<printer-ip>/admin',
+    'x https://.'
+  ]) {
+    const c = parseInline(s)
+    assert.ok(!c.some((x) => x.t === 'link'), s)
+    assert.equal(inlineText(c), s)
+  }
+  assert.equal(inlineText(parseInline('**https://**')), 'https://')
+  const table = parseMarkdown('| Admin | https:// |\n| - | - |\n| a | https:// |').blocks[0]
+  assert.equal(table?.t, 'table')
+})
+
+test('comment markers inside code are text and hide nothing', () => {
+  const md = [
+    'Batch tip: `echo 100%%` prints a percent.',
+    '',
+    '## Next section',
+    '',
+    'The marker is `<!-- DASH:SCAN-LOG:START -->` in the note.',
+    '',
+    '> [!danger] Do not run on the DC',
+    '> ```bat',
+    '> echo 50%%',
+    '> ```',
+    '',
+    '- [ ] task %% hidden %% after'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(texts(p.blocks), [
+    ['para', 1, 'Batch tip: echo 100%% prints a percent.'],
+    ['heading', 3, 'Next section'],
+    ['para', 5, 'The marker is <!-- DASH:SCAN-LOG:START --> in the note.'],
+    ['callout', 7, ''],
+    ['list', 12, '']
+  ])
+  const callout = p.blocks[3] as Extract<Block, { t: 'callout' }>
+  assert.deepEqual(texts(callout.c), [['code', 8, 'echo 50%%']])
+  const item = (p.blocks[4] as Extract<Block, { t: 'list' }>).items[0]!
+  assert.deepEqual(texts(item.c), [['para', 12, 'task  after']])
+  const cmd = parseInline('`for %%f in (*.log) do del %%f`')
+  assert.deepEqual(cmd, [{ t: 'code', v: 'for %%f in (*.log) do del %%f' }])
+})
+
+test('a fence opened on a list item keeps the comments after it hidden', () => {
+  const md = [
+    '- ```ps',
+    '  Get-X %% not a comment in code',
+    '  ```',
+    '',
+    'Text %% private note %% end',
+    '',
+    '<!-- DASH:SCAN-LOG:START -->',
+    '## Scans',
+    '<!-- DASH:SCAN-LOG:END -->'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(texts(p.blocks).slice(1), [
+    ['para', 5, 'Text  end'],
+    ['heading', 8, 'Scans']
+  ])
+  const code = (p.blocks[0] as Extract<Block, { t: 'list' }>).items[0]!.c[0]
+  assert.deepEqual(code && texts([code]), [['code', 1, 'Get-X %% not a comment in code']])
+})
+
+test('escaped pipes in tables: aliased wikilinks and code cells read like Obsidian', () => {
+  const md = [
+    '| Asset | Ticket | Command |',
+    '| --- | --- | --- |',
+    '| ARH-P01 | [[T-0001 Front desk printer\\|T-0001]] | `Get-X \\| Select Name` |',
+    '| ` | PowerShell escape | x |'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  const table = p.blocks[0] as Extract<Block, { t: 'table' }>
+  const wiki = table.rows[0]![1]![0]
+  assert.ok(wiki?.t === 'wiki')
+  assert.deepEqual([wiki.target, wiki.alias], ['T-0001 Front desk printer', 'T-0001'])
+  assert.deepEqual(table.rows[0]![2], [{ t: 'code', v: 'Get-X | Select Name' }])
+  assert.deepEqual(table.rows[1]!.map(inlineText), ['`', 'PowerShell escape', 'x'])
+  assert.deepEqual(p.links, ['T-0001 Front desk printer'])
+  // the same link copied out of the table keeps its escape
+  const copied = parseInline('[[T-0001 Front desk printer\\|T-0001]]')[0]
+  assert.ok(copied?.t === 'wiki' && copied.target === 'T-0001 Front desk printer')
+})
+
+test('URLs keep the parentheses that belong to them', () => {
+  const href = (s: string): string[] =>
+    parseInline(s).flatMap((x) => (x.t === 'link' ? [x.href] : []))
+  const docs = 'https://learn.microsoft.com/en-us/previous-versions/cc732443(v=ws.11)'
+  assert.deepEqual(href(`[docs](${docs}) after`), [docs])
+  assert.equal(inlineText(parseInline(`[docs](${docs}) after`)), 'docs after')
+  assert.deepEqual(href(`see ${docs} now`), [docs])
+  assert.deepEqual(href('https://en.wikipedia.org/wiki/Foo_(bar).'), [
+    'https://en.wikipedia.org/wiki/Foo_(bar)'
+  ])
+  assert.deepEqual(href('(see https://example.org/kb)'), ['https://example.org/kb'])
+  const angle = parseInline('[x](<Tickets/T 1.md>)')[0]
+  assert.ok(angle?.t === 'wiki' && angle.target === 'Tickets/T 1')
+})
+
+test('a single * or _ is not closed inside a ** or __ run', () => {
+  const shape = (c: Inline[]): unknown =>
+    c.map((x) => ('c' in x ? { [x.t]: shape(x.c) } : x.t === 'text' ? x.v : x.t))
+  assert.deepEqual(shape(parseInline('*Remember to run **sfc /scannow** first*')), [
+    { em: ['Remember to run ', { strong: ['sfc /scannow'] }, ' first'] }
+  ])
+  assert.deepEqual(shape(parseInline('_a __b__ c_')), [{ em: ['a ', { strong: ['b'] }, ' c'] }])
+  assert.deepEqual(shape(parseInline('*a **b***')), [{ em: ['a ', { strong: ['b'] }] }])
+  assert.deepEqual(shape(parseInline('**a *b***')), [{ strong: ['a ', { em: ['b'] }] }])
+})
+
+test('block ids are hidden once, at the end of a block, and on their own line', () => {
+  assert.equal(inlineText(parseInline('**x ^2** then text')), 'x ^2 then text')
+  const md = ['| 1 | 2 |', '| - | - |', '| a | b |', '', '^table-1', '', 'para ^p-1'].join('\n')
+  assert.deepEqual(texts(parseMarkdown(md).blocks), [
+    ['table', 1, ''],
+    ['para', 7, 'para']
+  ])
+  assert.deepEqual(kinds(parseMarkdown('> [!note]\n> body\n\n^callout-1').blocks), ['callout'])
+  const h = parseMarkdown('## Heading ^h1').blocks[0] as Extract<Block, { t: 'heading' }>
+  assert.equal(h.text, 'Heading')
+})
+
+test('frontmatter: block scalars, nested keys and quoted values', () => {
+  const md = [
+    '---',
+    'desc: |',
+    '  multi',
+    '  line',
+    'summary: >-',
+    '  folded',
+    '  text',
+    'parent:',
+    '  child: x',
+    'time: "11:31"',
+    "owner: 'O''Brien'",
+    'tags:',
+    '  - "arh"',
+    '---',
+    'body'
+  ].join('\n')
+  assert.deepEqual(parseMarkdown(md).frontmatter, [
+    ['desc', 'multi\nline'],
+    ['summary', 'folded text'],
+    ['parent', 'child: x'],
+    ['time', '11:31'],
+    ['owner', "O'Brien"],
+    ['tags', 'arh']
+  ])
+})
+
+test('indented code after a blank line is literal code', () => {
+  const md = [
+    'Intro paragraph.',
+    '',
+    '    Get-Service | Where Status -eq *Running*',
+    '    C:\\\\Temp\\\\x %% not a comment',
+    '',
+    'After.',
+    '- item',
+    '',
+    '    continued item text'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(texts(p.blocks).slice(0, 3), [
+    ['para', 1, 'Intro paragraph.'],
+    ['code', 3, 'Get-Service | Where Status -eq *Running*\nC:\\\\Temp\\\\x %% not a comment'],
+    ['para', 6, 'After.']
+  ])
+  const item = (p.blocks[3] as Extract<Block, { t: 'list' }>).items[0]!
+  assert.deepEqual(texts(item.c), [
+    ['para', 7, 'item'],
+    ['para', 9, 'continued item text']
+  ])
+})
+
+test('only a list that starts at 1 interrupts a paragraph', () => {
+  const p = parseMarkdown(
+    'The laptop was bought in\n2024. It was refurbished.\n1. first\n2. second'
+  )
+  assert.deepEqual(kinds(p.blocks), ['para', 'list'])
+  const para = p.blocks[0] as Extract<Block, { t: 'para' }>
+  assert.equal(inlineText(para.c), 'The laptop was bought in 2024. It was refurbished.')
+  assert.equal((p.blocks[1] as Extract<Block, { t: 'list' }>).items.length, 2)
+})
+
+test('table rows keep their own source lines', () => {
+  const md = ['# Change log', '', '| Date | Change |', '| - | - |', '| 1 | a |', '| 2 | b |']
+  const table = parseMarkdown(md.join('\n')).blocks[1] as Extract<Block, { t: 'table' }>
+  assert.equal(table.line, 3)
+  assert.deepEqual(table.rowLines, [5, 6])
+})
+
+test('heading links match headings the way Obsidian writes them', () => {
+  const same = (a: string, b: string): void => assert.equal(headingKey(a), headingKey(b))
+  same('08:55 MT — Backup job checked', '08 55 MT — Backup job checked')
+  same('Step 1: Setup', 'step 1 setup')
+  same('[[2026-10-14]] (Wednesday)', '2026-10-14 (Wednesday)')
+  same('2026-10-13 — **Tuesday**', '2026-10-13 — Tuesday')
+  assert.notEqual(headingKey('Step 1'), headingKey('Step 2'))
+})
+
+test('a long paragraph of unmatched openers parses in linear time', () => {
+  const runs = ['*a ', '_b ', '[[c ', '[d ', '~~e ', '==f ', '**g ', '*h _i [[j [k ']
+  const line = runs.map((u) => u.repeat(Math.ceil(25_000 / u.length))).join('')
+  // ~200 KB as one long line, then as one paragraph of 80-character lines: about 100 ms when
+  // each opener costs one step, minutes when each one scans to the end of the paragraph
+  for (const text of [line, line.replace(/(.{80})/g, '$1\n')]) {
+    const t0 = performance.now()
+    const p = parseMarkdown(text)
+    const ms = performance.now() - t0
+    assert.ok(ms < 500, `took ${ms.toFixed(0)} ms for ${text.length} chars`)
+    assert.equal(p.blocks.length, 1)
+    const para = p.blocks[0] as Extract<Block, { t: 'para' }>
+    if (text === line) assert.equal(inlineText(para.c), line.trim(), 'every opener stays text')
+  }
 })

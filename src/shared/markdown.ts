@@ -4,11 +4,12 @@
  * note can never inject markup or script into the dashboard.
  *
  * Covered: frontmatter, headings, paragraphs (single newlines are line breaks, as in Obsidian),
- * fenced code, block quotes and callouts (> [!danger]- Title), ordered/unordered/nested lists
- * with task boxes, tables, rules, **bold** *italic* ~~strike~~ ==highlight== `code`, [links](),
- * bare https:// links, [[wikilinks|alias]] [[Note#Heading]] ![[embeds]], #tags. Hidden like in
- * Obsidian's reading view: <!-- comments --> (including the dashboard's markers), %% comments %%
- * and ^block-ids. Every block keeps its 1-based source line so the viewer can jump to a line.
+ * fenced and indented code, block quotes and callouts (> [!danger]- Title), ordered/unordered/
+ * nested lists with task boxes, tables, rules, **bold** *italic* ~~strike~~ ==highlight==
+ * `code`, [links](), bare https:// links, [[wikilinks|alias]] [[Note#Heading]] ![[embeds]],
+ * #tags. Hidden like in Obsidian's reading view: <!-- comments --> (including the dashboard's
+ * markers), %% comments %% and ^block-ids. Every block keeps its 1-based source line so the
+ * viewer can jump to a line.
  */
 
 export type Inline =
@@ -47,6 +48,8 @@ export type Block =
       align: Array<'left' | 'center' | 'right' | null>
       head: Inline[][]
       rows: Inline[][][]
+      /** Source line of each row. */
+      rowLines: number[]
     }
   | { t: 'hr'; line: number }
 
@@ -55,6 +58,8 @@ export interface ParsedNote {
   blocks: Block[]
   /** Every wikilink target in the note (without #heading or |alias), in order, once each. */
   links: string[]
+  /** Each wikilink with its source line, properties included (for backlinks). */
+  linkLines: Array<{ target: string; line: number }>
 }
 
 interface Line {
@@ -64,82 +69,153 @@ interface Line {
 
 /* ---------- frontmatter and comments ---------- */
 
+/** A YAML scalar without its quotes: "11:31" and 'it''s' show as written in Obsidian. */
+function unquote(v: string): string {
+  if (v.length >= 2 && v[0] === "'" && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'")
+  if (v.length >= 2 && v[0] === '"' && v.endsWith('"'))
+    return v.slice(1, -1).replace(/\\(["\\])/g, '$1')
+  return v
+}
+
+/** The text of a YAML block scalar: `|` keeps its line breaks, `>` folds lines into one. */
+function blockScalar(lines: string[], fold: boolean): string {
+  const indent = Math.min(...lines.filter((l) => l.trim()).map(indentOf))
+  const text = lines
+    .map((l) => l.slice(indent).trimEnd())
+    .join('\n')
+    .trim()
+  return fold ? text.replace(/([^\n])\n(?=[^\n])/g, '$1 ').replace(/\n\n+/g, '\n') : text
+}
+
 function frontmatter(lines: string[]): { data: Array<[string, string]>; end: number } {
   if ((lines[0] ?? '').trim() !== '---') return { data: [], end: 0 }
   const data: Array<[string, string]> = []
+  // the indented lines of a "key: |" or "key: >" block being read
+  let scalar: { fold: boolean; lines: string[] } | null = null
   for (let i = 1; i < lines.length && i < 400; i++) {
     const line = lines[i] ?? ''
+    const last = data[data.length - 1]
+    if (scalar && last) {
+      if (!line.trim() || /^\s/.test(line)) {
+        scalar.lines.push(line)
+        continue
+      }
+      last[1] = blockScalar(scalar.lines, scalar.fold)
+      scalar = null
+    }
     if (line.trim() === '---' || line.trim() === '...') return { data, end: i + 1 }
     const kv = /^([^\s:#][^:]*):\s*(.*)$/.exec(line)
-    if (kv?.[1]) data.push([kv[1].trim(), (kv[2] ?? '').trim()])
-    else {
-      // "- item" under a key: a YAML list, shown as "a, b"
+    if (kv?.[1]) {
+      const v = (kv[2] ?? '').trim()
+      const block = /^([|>])[+-]?[1-9]?$/.exec(v)
+      if (block) scalar = { fold: block[1] === '>', lines: [] }
+      data.push([kv[1].trim(), block ? '' : unquote(v)])
+    } else if (last) {
+      // "- item" under a key: a YAML list, shown as "a, b"; "  child: x" under a key: "child: x"
       const item = /^\s*-\s+(.*)$/.exec(line)
-      const last = data[data.length - 1]
-      if (item?.[1] && last) last[1] = last[1] ? `${last[1]}, ${item[1].trim()}` : item[1].trim()
+      const child = /^\s+([^\s:#][^:]*):\s*(.*)$/.exec(line)
+      const v = item?.[1]
+        ? unquote(item[1].trim())
+        : child?.[1]
+          ? `${child[1].trim()}: ${unquote((child[2] ?? '').trim())}`.trim()
+          : ''
+      if (v) last[1] = last[1] ? `${last[1]}, ${v}` : v
     }
   }
   return { data: [], end: 0 } // no closing line: not frontmatter
 }
 
 const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^`\s]*)/
+/** A fence line as stripComments sees it: also after quote markers and a list marker. */
+const FENCE_IN = /^((?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])\s))*\s*)(`{3,}|~{3,})(.*)$/
+const quoteDepth = (s: string): number => (/^(?:\s*>)*/.exec(s)?.[0].match(/>/g) ?? []).length
 
-/** Blanks out <!-- --> and %% %% comments outside code, keeping every line where it was. */
+/**
+ * Blanks out <!-- --> and %% %% comments outside code, keeping every line where it was. Code
+ * is what parseBlocks reads as code: fences (also in a callout or list item), indented code
+ * after a blank line outside lists, and `code spans`; comment markers in it are text.
+ */
 function stripComments(lines: string[]): string[] {
   const out: string[] = []
-  let fence: string | null = null
+  let fence: { mark: string; depth: number } | null = null
   let inHtml = false
   let inPct = false
+  let indented = false // inside an indented code block
+  let list = -1 // indent of the open list's outermost item; -1 when no list is open
+  let prevBlank = true
   for (const raw of lines) {
-    const f = FENCE.exec(raw)
-    if (!inHtml && !inPct && f?.[2]) {
-      if (!fence) fence = f[2]
-      else if (f[2][0] === fence[0] && f[2].length >= fence.length && raw.trim() === f[2])
-        fence = null
-      out.push(raw)
-      continue
+    const blank = !raw.trim()
+    if (!inHtml && !inPct) {
+      // a fence ends with its closing line, or with the quote it was opened in
+      if (fence && quoteDepth(raw) < fence.depth) fence = null
+      const f = FENCE_IN.exec(raw)
+      if (fence) {
+        const mark = f?.[2] ?? ''
+        if (mark[0] === fence.mark[0] && mark.length >= fence.mark.length && !f?.[3]?.trim())
+          fence = null
+        out.push(raw)
+        continue
+      }
+      if (indented && (blank || indentOf(raw) >= 4)) {
+        out.push(raw)
+        prevBlank = blank
+        continue
+      }
+      indented = false
+      if (!blank) {
+        const ind = indentOf(raw)
+        const item = ITEM.exec(raw)?.[4] !== undefined
+        if (item && (list < 0 || ind < list)) list = ind
+        else if (!item && ind <= list && (prevBlank || HEADING.test(raw) || f)) list = -1
+        if (f?.[2]) {
+          fence = { mark: f[2], depth: quoteDepth(f[1] ?? '') }
+        } else if (!item && prevBlank && ind >= 4 && list < 0 && !quoteDepth(raw)) {
+          indented = true
+        }
+        if (fence || indented) {
+          out.push(raw)
+          prevBlank = false
+          continue
+        }
+      }
     }
-    if (fence) {
-      out.push(raw)
-      continue
-    }
-    let s = raw
+    prevBlank = blank
     let result = ''
-    while (s.length) {
-      if (inHtml) {
-        const end = s.indexOf('-->')
-        if (end === -1) {
-          s = ''
-          break
-        }
-        s = s.slice(end + 3)
-        inHtml = false
+    let i = 0
+    // next comment opener and backtick from i, found again only once i has passed them
+    let html = -2
+    let pct = -2
+    let tick = -2
+    while (i < raw.length) {
+      if (inHtml || inPct) {
+        const close = inHtml ? '-->' : '%%'
+        const end = raw.indexOf(close, i)
+        if (end === -1) break
+        i = end + close.length
+        inHtml = inPct = false
         continue
       }
-      if (inPct) {
-        const end = s.indexOf('%%')
-        if (end === -1) {
-          s = ''
-          break
-        }
-        s = s.slice(end + 2)
-        inPct = false
-        continue
-      }
-      const html = s.indexOf('<!--')
-      const pct = s.indexOf('%%')
-      const next = [html, pct].filter((x) => x >= 0).sort((a, b) => a - b)[0]
-      if (next === undefined) {
-        result += s
+      if (html !== -1 && html < i) html = raw.indexOf('<!--', i)
+      if (pct !== -1 && pct < i) pct = raw.indexOf('%%', i)
+      if (tick !== -1 && tick < i) tick = raw.indexOf('`', i)
+      const next = Math.min(...[html, pct, tick].filter((x) => x >= 0))
+      if (next === Infinity) {
+        result += raw.slice(i)
         break
       }
-      result += s.slice(0, next)
-      if (next === html) {
+      result += raw.slice(i, next)
+      if (next === tick) {
+        // a `code span` (closed on this line) is copied as it is; a lone backtick is text
+        const run = /^`+/.exec(raw.slice(next))?.[0] ?? '`'
+        const end = raw.indexOf(run, next + run.length)
+        i = end === -1 ? next + run.length : end + run.length
+        result += raw.slice(next, i)
+      } else if (next === html) {
         inHtml = true
-        s = s.slice(next + 4)
+        i = next + 4
       } else {
         inPct = true
-        s = s.slice(next + 2)
+        i = next + 2
       }
     }
     // a line that held only a comment disappears (blank), like in reading view
@@ -167,13 +243,15 @@ export function safeHref(url: string): string | null {
 function wiki(content: string, embed: boolean): Inline {
   const [beforeAlias, ...aliasParts] = content.split('|')
   const alias = aliasParts.join('|').trim() || undefined
-  const [target, ...headingParts] = (beforeAlias ?? '').split('#')
+  // [[Note\|alias]] copied out of a table keeps its escape: the \ is not part of the name
+  const [target, ...headingParts] = (beforeAlias ?? '').replace(/\\$/, '').split('#')
   const heading = headingParts.join('#').replace(/^\^/, '').trim() || undefined
   return { t: 'wiki', target: (target ?? '').trim(), heading, alias, embed }
 }
 
 /** Finds the closing delimiter for an emphasis run: not escaped, not preceded by a space. */
 function findClose(s: string, from: number, delim: string): number {
+  const c = delim[0]!
   for (let i = from; i <= s.length - delim.length; i++) {
     if (s[i] === '\\') {
       i++
@@ -185,18 +263,18 @@ function findClose(s: string, from: number, delim: string): number {
       if (end !== -1) i = end + run.length - 1
       continue
     }
-    if (s.startsWith(delim, i) && i > from && !/\s/.test(s[i - 1] ?? ' ')) {
-      if (delim === '_' || delim === '__') {
-        const after = s[i + delim.length] ?? ''
-        if (/[A-Za-z0-9]/.test(after)) continue // intraword underscore
-      }
-      // ** must not be read as the end of * (and the reverse)
-      if (delim === '*' && s[i + 1] === '*' && s[i + 2] !== '*') {
-        i++
-        continue
-      }
-      return i
+    if ((c === '*' || c === '_') && s[i] === c) {
+      // a run of * or _ is read whole: it closes a delimiter as long as itself, or with its last
+      // one or two characters a * or ** inside *** (the rest closes the inner text)
+      const start = i
+      while (s[i + 1] === c) i++
+      const len = i - start + 1
+      const at = len === delim.length ? start : len === 3 ? i + 1 - delim.length : -1
+      if (at === -1 || start <= from || /\s/.test(s[start - 1] ?? ' ')) continue
+      if (c === '_' && /[A-Za-z0-9]/.test(s[i + 1] ?? '')) continue // intraword underscore
+      return at
     }
+    if (s.startsWith(delim, i) && i > from && !/\s/.test(s[i - 1] ?? ' ')) return i
   }
   return -1
 }
@@ -211,11 +289,27 @@ const EMPHASIS: Array<[string, Inline['t']]> = [
   ['_', 'em']
 ]
 
-export function parseInline(src: string): Inline[] {
-  const s = src.replace(/\s\^[A-Za-z0-9-]+\s*$/, '') // ^block-id at the end: hidden
+export function parseInline(s: string): Inline[] {
   const out: Inline[] = []
+  // What one scan already showed, so a long paragraph full of unmatched openers (* _ [[ [ `)
+  // costs one scan per kind instead of one per opener: delimiters with no closer, the shortest
+  // backtick run with no closer, the next ]] and line break, and where each [ and ( closes.
+  const noClose = new Set<string>()
+  let noTick = Infinity
+  let wikiEnd = -2
+  let lineEnd = -2
+  let brackets: Map<number, number> | null = null
+  let parens: Map<number, number> | null = null
   let i = 0
+  let last = -1
   while (i < s.length) {
+    // every branch below moves on; should one ever fail to, the character is taken as text
+    if (i === last) {
+      pushText(out, s[i] ?? '')
+      i++
+      continue
+    }
+    last = i
     const ch = s[i] ?? ''
     const rest = s.slice(i)
 
@@ -229,14 +323,15 @@ export function parseInline(src: string): Inline[] {
       i++
       continue
     }
-    if (/^<br\s*\/?>/i.test(rest)) {
+    if (ch === '<' && /^<br\s*\/?>/i.test(rest)) {
       out.push({ t: 'br' })
       i += /^<br\s*\/?>/i.exec(rest)?.[0].length ?? 4
       continue
     }
     if (ch === '`') {
       const run = /^`+/.exec(rest)?.[0] ?? '`'
-      const end = s.indexOf(run, i + run.length)
+      // no run of n backticks after here means none of n or more either
+      const end = run.length < noTick ? s.indexOf(run, i + run.length) : -1
       if (end !== -1) {
         let v = s.slice(i + run.length, end)
         if (/^ .* $/.test(v)) v = v.slice(1, -1)
@@ -244,6 +339,7 @@ export function parseInline(src: string): Inline[] {
         i = end + run.length
         continue
       }
+      noTick = Math.min(noTick, run.length)
       pushText(out, run)
       i += run.length
       continue
@@ -251,24 +347,29 @@ export function parseInline(src: string): Inline[] {
     if (rest.startsWith('![[') || rest.startsWith('[[')) {
       const embed = ch === '!'
       const open = i + (embed ? 3 : 2)
-      const end = s.indexOf(']]', open)
-      if (end !== -1 && !s.slice(open, end).includes('\n')) {
-        out.push(wiki(s.slice(open, end), embed))
-        i = end + 2
+      if (wikiEnd !== -1 && wikiEnd < open) wikiEnd = s.indexOf(']]', open)
+      if (lineEnd !== -1 && lineEnd < open) lineEnd = s.indexOf('\n', open)
+      if (wikiEnd !== -1 && (lineEnd === -1 || wikiEnd < lineEnd)) {
+        out.push(wiki(s.slice(open, wikiEnd), embed))
+        i = wikiEnd + 2
         continue
       }
     }
     if (ch === '[' || (ch === '!' && s[i + 1] === '[')) {
       const image = ch === '!'
       const textStart = i + (image ? 2 : 1)
-      const close = findBracket(s, textStart)
+      brackets ??= pairs(s, '[', ']')
+      const close = brackets.get(textStart - 1) ?? -1
       if (close !== -1 && s[close + 1] === '(') {
-        const urlEnd = s.indexOf(')', close + 2)
+        // the destination ends at the ) that balances its ( (Docs links end in "(v=ws.11)")
+        parens ??= pairs(s, '(', ')')
+        const urlEnd = parens.get(close + 1) ?? -1
         if (urlEnd !== -1) {
           const rawUrl = s
             .slice(close + 2, urlEnd)
             .trim()
             .replace(/\s+"[^"]*"$/, '')
+            .replace(/^<(.*)>$/, '$1')
           const label = s.slice(textStart, close)
           const href = safeHref(rawUrl)
           if (image) {
@@ -289,12 +390,18 @@ export function parseInline(src: string): Inline[] {
         }
       }
     }
-    if (/^https?:\/\//i.test(rest) && (i === 0 || /[\s(]/.test(s[i - 1] ?? ''))) {
-      let url = /^https?:\/\/[^\s<>]+/i.exec(rest)?.[0] ?? ''
-      url = url.replace(/[.,;:!?)\]]+$/, '')
-      out.push({ t: 'link', href: url, c: [{ t: 'text', v: url }] })
-      i += url.length
-      continue
+    if (
+      (ch === 'h' || ch === 'H') &&
+      /^https?:\/\/[^\s<>]/i.test(rest) &&
+      (i === 0 || /[\s(]/.test(s[i - 1] ?? ''))
+    ) {
+      const url = trimUrl(/^https?:\/\/[^\s<>]+/i.exec(rest)?.[0] ?? '')
+      // "https://" alone (or "https://." at the end of a sentence) is text, not a link
+      if (/^https?:\/\/./i.test(url)) {
+        out.push({ t: 'link', href: url, c: [{ t: 'text', v: url }] })
+        i += url.length
+        continue
+      }
     }
     if (ch === '#' && (i === 0 || /\s/.test(s[i - 1] ?? ''))) {
       const tag = /^#([A-Za-z0-9_/-]*[A-Za-z_/-][A-Za-z0-9_/-]*)/.exec(rest)
@@ -304,11 +411,14 @@ export function parseInline(src: string): Inline[] {
         continue
       }
     }
-    const emph = EMPHASIS.find(([d]) => rest.startsWith(d))
+    const emph = '*_~='.includes(ch) ? EMPHASIS.find((e) => rest.startsWith(e[0])) : undefined
     if (emph && !/\s/.test(s[i + emph[0].length] ?? ' ')) {
-      const [d, kind] = emph
+      const d = emph[0]
+      const kind = emph[1]
       const intraword = (d === '_' || d === '__') && /[A-Za-z0-9]/.test(s[i - 1] ?? '')
-      const end = intraword ? -1 : findClose(s, i + d.length, d)
+      // a delimiter that found no closer from an earlier opener finds none from a later one
+      const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d)
+      if (end === -1 && !intraword) noClose.add(d)
       if (end !== -1) {
         const inner = parseInline(s.slice(i + d.length, end))
         if (d === '***') out.push({ t: 'strong', c: [{ t: 'em', c: inner }] })
@@ -334,20 +444,33 @@ function decodeSafe(u: string): string {
   }
 }
 
-function findBracket(s: string, from: number): number {
-  let depth = 0
-  for (let i = from; i < s.length; i++) {
-    if (s[i] === '\\') {
-      i++
-      continue
-    }
-    if (s[i] === '[') depth++
-    else if (s[i] === ']') {
-      if (depth === 0) return i
-      depth--
-    } else if (s[i] === '\n') return -1
+/** Where each `open` closes on its line (by position), nesting counted, \-escapes skipped. */
+function pairs(s: string, open: string, close: string): Map<number, number> {
+  const out = new Map<number, number>()
+  const stack: number[] = []
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (ch === '\\') i++
+    else if (ch === open) stack.push(i)
+    else if (ch === close) {
+      const o = stack.pop()
+      if (o !== undefined) out.set(o, i)
+    } else if (ch === '\n') stack.length = 0
   }
-  return -1
+  return out
+}
+
+/** A bare URL without the punctuation after it; a ) stays when it closes a ( in the URL. */
+function trimUrl(url: string): string {
+  let unbalanced = (url.match(/\)/g) ?? []).length - (url.match(/\(/g) ?? []).length
+  let end = url.length
+  while (end > 0) {
+    const c = url[end - 1] ?? ''
+    if (c === ')' && unbalanced > 0) unbalanced--
+    else if (!/[.,;:!?\]]/.test(c)) break
+    end--
+  }
+  return url.slice(0, end)
 }
 
 /** Plain text of inline content (headings, search, aria labels). */
@@ -388,14 +511,19 @@ function isTableStart(lines: Line[], i: number): boolean {
   return a.includes('|') && b.includes('|') && TABLE_SEP.test(b) && b.includes('-')
 }
 
-function isBlockStart(lines: Line[], i: number): boolean {
+/**
+ * Whether line i starts a new block. Inside a paragraph (`para`) only a numbered item that
+ * starts at 1 begins a list, as in CommonMark: "bought in\n2024. It was…" stays one paragraph.
+ */
+function isBlockStart(lines: Line[], i: number, para = false): boolean {
   const s = lines[i]?.s ?? ''
+  const item = ITEM.exec(s)
   return (
     HEADING.test(s) ||
     FENCE.test(s) ||
     QUOTE.test(s) ||
     HR.test(s) ||
-    (ITEM.test(s) && !!ITEM.exec(s)?.[4]) ||
+    (!!item?.[4] && (!para || !item[3] || Number(item[3]) === 1)) ||
     isTableStart(lines, i)
   )
 }
@@ -406,16 +534,20 @@ function splitCells(row: string): string[] {
   if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1)
   const cells: string[] = []
   let cur = ''
-  let inCode = false
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
     if (ch === '\\' && s[i + 1] === '|') {
-      cur += '\\|'
+      // \| is a pipe in the cell, also in [[Note\|alias]] and `code` (GFM)
+      cur += '|'
       i++
     } else if (ch === '`') {
-      inCode = !inCode
-      cur += ch
-    } else if (ch === '|' && !inCode) {
+      // a `code span` keeps its pipes; a lone backtick is text
+      const run = /^`+/.exec(s.slice(i))?.[0] ?? '`'
+      const end = s.indexOf(run, i + run.length)
+      const stop = end === -1 ? i + run.length : end + run.length
+      cur += s.slice(i, stop).replace(/\\\|/g, '|')
+      i = stop - 1
+    } else if (ch === '|') {
       cells.push(cur.trim())
       cur = ''
     } else cur += ch
@@ -454,9 +586,23 @@ function parseBlocks(lines: Line[]): Block[] {
       continue
     }
 
+    // indented code: 4+ columns after a blank line (it never continues a paragraph); an
+    // indented list item stays a list, as nested lists in Obsidian often skip a level
+    const afterBlank = i === 0 || !lines[i - 1]!.s.trim()
+    if (afterBlank && indentOf(s) >= 4 && ITEM.exec(s)?.[4] === undefined) {
+      const body: string[] = []
+      while (i < lines.length && (!lines[i]!.s.trim() || indentOf(lines[i]!.s) >= 4)) {
+        body.push(expandTabs(lines[i]!.s).slice(4))
+        i++
+      }
+      while (body.length && !body[body.length - 1]!.trim()) body.pop()
+      out.push({ t: 'code', line: line.n, lang: '', v: body.join('\n') })
+      continue
+    }
+
     const h = HEADING.exec(s)
     if (h?.[1]) {
-      const c = parseInline(h[2] ?? '')
+      const c = parseInline(stripBlockId(h[2] ?? ''))
       out.push({ t: 'heading', line: line.n, level: h[1].length, c, text: inlineText(c).trim() })
       i++
       continue
@@ -476,13 +622,16 @@ function parseBlocks(lines: Line[]): Block[] {
         return l && r ? 'center' : r ? 'right' : l ? 'left' : null
       })
       const rows: Inline[][][] = []
+      const rowLines: number[] = []
       i += 2
       while (i < lines.length && lines[i]!.s.includes('|') && lines[i]!.s.trim()) {
         const cells = splitCells(lines[i]!.s)
         rows.push(head.map((_, j) => parseInline(cells[j] ?? '')))
+        rowLines.push(lines[i]!.n)
         i++
       }
-      out.push({ t: 'table', line: line.n, align, head: head.map((c) => parseInline(c)), rows })
+      const headCells = head.map((c) => parseInline(c))
+      out.push({ t: 'table', line: line.n, align, head: headCells, rows, rowLines })
       continue
     }
 
@@ -501,7 +650,7 @@ function parseBlocks(lines: Line[]): Block[] {
           line: line.n,
           kind,
           fold: (head[2] ?? '') as '' | '+' | '-',
-          title: parseInline(titleText),
+          title: parseInline(stripBlockId(titleText)),
           c: parseBlocks(inner.slice(1))
         })
       } else out.push({ t: 'quote', line: line.n, c: parseBlocks(inner) })
@@ -581,19 +730,30 @@ function parseBlocks(lines: Line[]): Block[] {
     const para: string[] = [s.trim()]
     const start = line.n
     i++
-    while (i < lines.length && lines[i]!.s.trim() && !isBlockStart(lines, i)) {
+    while (i < lines.length && lines[i]!.s.trim() && !isBlockStart(lines, i, true)) {
       para.push(lines[i]!.s.trim())
       i++
     }
-    out.push({ t: 'para', line: start, c: parseInline(para.join('\n')) })
+    const text = stripBlockId(para.join('\n'))
+    // a ^block-id on its own line (after a table or callout) is hidden too
+    if (!BLOCK_ID_ONLY.test(text)) out.push({ t: 'para', line: start, c: parseInline(text) })
   }
   return out
 }
 
-function collectLinks(blocks: Block[], out: Set<string>): void {
-  const inl = (c: Inline[]): void => {
+const BLOCK_ID_ONLY = /^\^[A-Za-z0-9-]+$/
+
+/** A ^block-id at the end of a paragraph, item or heading is hidden, like in reading view. */
+function stripBlockId(s: string): string {
+  return s.replace(/\s\^[A-Za-z0-9-]+\s*$/, '')
+}
+
+/** Wikilinks in order with their line: a paragraph's line breaks move it down one line each. */
+function collectLinks(blocks: Block[], out: Array<{ target: string; line: number }>): void {
+  const inl = (c: Inline[], line: number): number => {
     for (const x of c) {
-      if (x.t === 'wiki' && x.target) out.add(x.target)
+      if (x.t === 'wiki' && x.target) out.push({ target: x.target, line })
+      else if (x.t === 'br') line++
       else if (
         x.t === 'strong' ||
         x.t === 'em' ||
@@ -601,19 +761,20 @@ function collectLinks(blocks: Block[], out: Set<string>): void {
         x.t === 'mark' ||
         x.t === 'link'
       )
-        inl(x.c)
+        line = inl(x.c, line)
     }
+    return line
   }
   for (const b of blocks) {
-    if (b.t === 'heading' || b.t === 'para') inl(b.c)
+    if (b.t === 'heading' || b.t === 'para') inl(b.c, b.line)
     else if (b.t === 'quote') collectLinks(b.c, out)
     else if (b.t === 'callout') {
-      inl(b.title)
+      inl(b.title, b.line)
       collectLinks(b.c, out)
     } else if (b.t === 'list') for (const it of b.items) collectLinks(it.c, out)
     else if (b.t === 'table') {
-      b.head.forEach(inl)
-      b.rows.forEach((r) => r.forEach(inl))
+      b.head.forEach((c) => inl(c, b.line))
+      b.rows.forEach((r, k) => r.forEach((c) => inl(c, b.rowLines[k] ?? b.line)))
     }
   }
 }
@@ -624,7 +785,25 @@ export function parseMarkdown(text: string): ParsedNote {
   const body = stripComments(raw.slice(fm.end))
   const lines = body.map((s, k) => ({ n: fm.end + k + 1, s }))
   const blocks = parseBlocks(lines)
-  const links = new Set<string>()
-  collectLinks(blocks, links)
-  return { frontmatter: fm.data, blocks, links: [...links] }
+  // links in properties ("related: [[Note]]") are links too, as in Obsidian's backlinks
+  const props = raw
+    .slice(1, Math.max(1, fm.end - 1))
+    .map((s, k): Block => ({ t: 'para', line: k + 2, c: parseInline(s) }))
+  const linkLines: ParsedNote['linkLines'] = []
+  collectLinks(props, linkLines)
+  const inProps = linkLines.length
+  collectLinks(blocks, linkLines)
+  const links = new Set(linkLines.slice(inProps).map((l) => l.target))
+  return { frontmatter: fm.data, blocks, links: [...links], linkLines }
+}
+
+/**
+ * A heading the way [[Note#Heading]] links name it: read as Markdown, then letters and digits
+ * only, case ignored. Obsidian links "## Step 1: Setup" as #Step 1 Setup.
+ */
+export function headingKey(text: string): string {
+  return inlineText(parseInline(text))
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .toLowerCase()
 }
