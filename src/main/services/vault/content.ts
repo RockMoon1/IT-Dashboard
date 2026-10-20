@@ -348,8 +348,13 @@ const mentionsRun = (line: string, runId: string): boolean =>
   new RegExp(`\\brun ${runId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(line)
 
 /** Stable identity of a finding: device plus the message with its numbers blanked out. */
+/** A finding with its numbers blanked out: the same problem on every scan that reports it. */
+export function findingShape(f: Pick<HealthFinding, 'category' | 'message'>): string {
+  return `${f.category}|${f.message}`.toLowerCase().replace(/\d+(?:[.,]\d+)?/g, '#')
+}
+
 export function loopKey(serial: string, hostname: string, f: HealthFinding): string {
-  const shape = `${f.category}|${f.message}`.toLowerCase().replace(/\d+(?:[.,]\d+)?/g, '#')
+  const shape = findingShape(f)
   return createHash('sha256')
     .update(`${deviceKey(serial, hostname)}|${shape}`)
     .digest('hex')

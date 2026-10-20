@@ -8,6 +8,7 @@ status: STARTED — computers not yet captured
 
 | Name | Location | Room / role | Model | Serial | MAC | IP | OS | Age | Warranty | PHI? | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ARH-T01 | Site A | Front desk | Dell Latitude 3510 | SN-T01 |  |  | Windows 11 Pro | 2021 | 2027-03 | no | synthetic row |
 
 ## Network equipment
 

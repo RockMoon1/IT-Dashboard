@@ -2,6 +2,10 @@ import { computed, reactive } from 'vue'
 import type { LogLine } from '@shared/api'
 import type {
   AppInfo,
+  ComputerProfile,
+  ComputerSummary,
+  LookupResult,
+  LookupTarget,
   DeviceView,
   EnrollmentView,
   LinkStatus,
@@ -19,7 +23,15 @@ import type {
   WorkLogView
 } from '@shared/types'
 
-export type Tab = 'scan' | 'results' | 'health' | 'loops' | 'worklog' | 'search' | 'link'
+export type Tab =
+  | 'computer'
+  | 'scan'
+  | 'results'
+  | 'health'
+  | 'loops'
+  | 'worklog'
+  | 'search'
+  | 'link'
 
 export interface ConsoleLine {
   id: number
@@ -63,6 +75,11 @@ interface DashboardState {
   searching: boolean
   logLines: LogLine[]
   busy: string | null
+  lookup: LookupResult | null
+  computers: ComputerSummary[]
+  profile: ComputerProfile | null
+  profileTarget: LookupTarget | null
+  profileLoading: boolean
 }
 
 const MAX_CONSOLE = 5000
@@ -72,7 +89,7 @@ const state = reactive<DashboardState>({
   ready: false,
   bridgeMissing: false,
   error: null,
-  tab: 'scan',
+  tab: 'computer',
   appInfo: null,
   settings: null,
   settingsOpen: false,
@@ -101,7 +118,12 @@ const state = reactive<DashboardState>({
   searchHits: [],
   searching: false,
   logLines: [],
-  busy: null
+  busy: null,
+  lookup: null,
+  computers: [],
+  profile: null,
+  profileTarget: null,
+  profileLoading: false
 })
 
 const selectedDevice = computed(() => state.devices.find((d) => d.id === state.selectedId) ?? null)
@@ -180,6 +202,8 @@ function applyScanEvent(e: ScanEvent): void {
         `■ ${e.run.status.toUpperCase()} · ${e.run.health?.findings.length ?? 0} finding(s) · ${(e.run.durationMs / 1000).toFixed(0)} s${e.run.error ? ` · ${e.run.error}` : ''}`
       )
       void refreshHistory()
+      if (state.profile?.summary.deviceId === e.run.deviceId) void refreshProfile()
+      void loadComputers()
       return
   }
 }
@@ -223,7 +247,13 @@ async function init(): Promise<void> {
         if (state.logLines.length > 300) state.logLines.shift()
       })
     ]
-    await Promise.all([refreshVault(), refreshHistory(), refreshLoops(), refreshWorkLog()])
+    await Promise.all([
+      refreshVault(),
+      refreshHistory(),
+      refreshLoops(),
+      refreshWorkLog(),
+      loadComputers()
+    ])
   } catch (err) {
     fail(err)
   } finally {
@@ -268,6 +298,9 @@ function selectDevice(id: string): void {
   const d = state.devices.find((x) => x.id === id)
   if (d?.lastScan && !runningRun.value)
     state.currentRunId = state.runs.find((r) => r.deviceId === id)?.runId ?? state.currentRunId
+  // a click shows everything on record for the computer, unless it would hide a live scan
+  if (d?.kind === 'enrolled' && !(runningRun.value && state.tab === 'scan'))
+    void openProfile({ deviceId: id })
 }
 
 /** Double-click flow: pick the device, then choose the purpose; nothing runs until confirmed. */
@@ -440,6 +473,77 @@ async function renameDevice(id: string, name: string): Promise<void> {
   }
 }
 
+/* ---------- computer lookup ---------- */
+
+let lookupSeq = 0
+async function runLookup(query: string): Promise<LookupResult | null> {
+  const seq = ++lookupSeq
+  try {
+    const result = await api().lookup.search(query)
+    if (seq !== lookupSeq) return null // a newer keystroke won
+    state.lookup = result
+    return result
+  } catch (err) {
+    fail(err)
+    return null
+  }
+}
+
+async function loadComputers(): Promise<void> {
+  try {
+    state.computers = await api().lookup.list()
+  } catch (err) {
+    fail(err)
+  }
+}
+
+/** Opens the computer view; nothing has to be connected, it reads stored scans and the vault. */
+async function openProfile(target: LookupTarget): Promise<void> {
+  state.profileTarget = target
+  state.profileLoading = true
+  state.tab = 'computer'
+  try {
+    state.profile = await api().lookup.profile(target)
+  } catch (err) {
+    fail(err)
+  } finally {
+    state.profileLoading = false
+  }
+}
+
+async function refreshProfile(): Promise<void> {
+  if (state.profileTarget) await openProfile(state.profileTarget)
+}
+
+function closeProfile(): void {
+  state.profile = null
+  state.profileTarget = null
+  void loadComputers()
+}
+
+async function openNote(file: string): Promise<void> {
+  try {
+    await api().vault.openNote(file)
+  } catch (err) {
+    fail(err)
+  }
+}
+
+/** Shows any stored scan in the Results tab, fetching it if it is older than the recent list. */
+async function openRunById(runId: string): Promise<void> {
+  try {
+    if (!state.runs.some((r) => r.runId === runId)) {
+      const run = await api().scan.get(runId)
+      if (!run) throw new Error(`scan ${runId} is no longer stored`)
+      state.runs.push(run)
+    }
+    showRun(runId)
+    state.tab = 'results'
+  } catch (err) {
+    fail(err)
+  }
+}
+
 async function openVault(): Promise<void> {
   try {
     await api().vault.open()
@@ -476,6 +580,13 @@ export function useDashboard() {
     removeDevice,
     renameDevice,
     openVault,
+    runLookup,
+    loadComputers,
+    openProfile,
+    refreshProfile,
+    closeProfile,
+    openNote,
+    openRunById,
     clearError: () => {
       state.error = null
     }

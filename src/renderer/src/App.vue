@@ -2,6 +2,8 @@
 import { computed, onMounted } from 'vue'
 import { useDashboard, type Tab } from './store'
 import DeviceList from './components/DeviceList.vue'
+import LookupBox from './components/LookupBox.vue'
+import ComputersTab from './components/ComputersTab.vue'
 import PurposeModal from './components/PurposeModal.vue'
 import EnrollModal from './components/EnrollModal.vue'
 import ActiveScan from './components/ActiveScan.vue'
@@ -19,6 +21,7 @@ const dash = useDashboard()
 const { state } = dash
 
 const tabs: Array<{ id: Tab; label: string }> = [
+  { id: 'computer', label: 'Computers' },
   { id: 'scan', label: 'Active scan' },
   { id: 'results', label: 'Results' },
   { id: 'health', label: 'Health' },
@@ -46,6 +49,12 @@ const firewallPill = computed(() => {
     : { text: 'Firewall rule missing', cls: 'text-warn-400 border-warn-400/50' }
 })
 
+// The Computers tab always lands on the list; a profile opens from a click or a lookup.
+function openTab(id: Tab): void {
+  if (id === 'computer' && state.tab === 'computer' && state.profile) dash.closeProfile()
+  state.tab = id
+}
+
 onMounted(() => {
   void dash.init()
 })
@@ -67,6 +76,7 @@ onMounted(() => {
           <p class="eyebrow mt-1">Advanced Regenerative Health · virtual IT workstation</p>
         </div>
       </div>
+      <LookupBox v-if="!state.bridgeMissing" class="mx-6 flex-1" />
       <div class="flex items-center gap-2">
         <span class="badge border" :class="linkPill.cls">{{ linkPill.text }}</span>
         <span v-if="firewallPill" class="badge border" :class="firewallPill.cls">{{
@@ -130,7 +140,7 @@ onMounted(() => {
             :key="t.id"
             class="tab"
             :class="{ 'tab-active': state.tab === t.id }"
-            @click="state.tab = t.id"
+            @click="openTab(t.id)"
           >
             {{ t.label }}
             <span v-if="t.id === 'loops' && state.loops" class="ml-1 text-mist-700">{{
@@ -139,7 +149,8 @@ onMounted(() => {
           </button>
         </nav>
         <div class="min-h-0 flex-1 overflow-y-auto">
-          <ActiveScan v-if="state.tab === 'scan'" />
+          <ComputersTab v-if="state.tab === 'computer'" />
+          <ActiveScan v-else-if="state.tab === 'scan'" />
           <ResultsTree v-else-if="state.tab === 'results'" />
           <HealthPanel v-else-if="state.tab === 'health'" />
           <OpenLoops v-else-if="state.tab === 'loops'" />

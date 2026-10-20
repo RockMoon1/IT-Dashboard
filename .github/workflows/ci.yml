@@ -48,6 +48,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: npm install --no-audit --no-fund
+      - name: npm audit (report only)
+        run: node scripts/audit-summary.mjs
       - name: Build the agent for every target
         run: npm run agent:build
       - run: npm run format:check

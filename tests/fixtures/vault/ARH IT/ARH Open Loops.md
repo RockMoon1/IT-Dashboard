@@ -12,6 +12,7 @@ updated: 2026-10-13
 ## 🟠 This week
 
 - [ ] **Label the closet switch ports.**
+- [ ] **ARH-T01 — order a replacement battery.** → [[Ticket — ARH-T01 — battery — 2026-10-09]]
 - [x] ~~**Reset the guest Wi-Fi password.**~~ ✅ 2026-10-01
 
 ## ⚪ Waiting on vendor

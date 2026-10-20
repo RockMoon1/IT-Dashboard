@@ -104,6 +104,11 @@ class Report {
   metric(key: string, value: string): void {
     if (value && value !== 'undefined' && value !== 'null') this.metrics[key] = value
   }
+  /** Raw numbers kept per scan so the computer view can draw trends (keys: VALUE_KEYS). */
+  values: Record<string, number> = {}
+  value(key: string, v: number | null | undefined): void {
+    if (v != null && Number.isFinite(v)) this.values[key] = Math.round(v * 10) / 10
+  }
 }
 
 export function evaluateHealth(
@@ -139,6 +144,7 @@ export function evaluateHealth(
   return {
     findings: r.findings,
     metrics: r.metrics,
+    values: r.values,
     score: critical ? 'critical' : warning ? 'attention' : 'healthy'
   }
 }
@@ -146,6 +152,7 @@ export function evaluateHealth(
 function checkDisks(r: Report, disks: Json[]): void {
   for (const d of disks) {
     const free = num(d['freePct'])
+    r.value(`disk-free:${str(d['drive'])}`, free)
     if (free != null && free < THRESHOLDS.diskFreePctLow) {
       r.add(
         free < 5 ? 'critical' : 'warning',
@@ -191,9 +198,11 @@ function windows(
       )
     checkDisks(r, asArray(o['disks']))
     const ram = num(o['ramUsedPct'])
+    r.value('ram-used', ram)
     if (ram != null && ram >= THRESHOLDS.ramUsedPctHigh)
       r.add('warning', 'Performance', `RAM usage is ${ram}%`)
     const up = num(o['uptimeHours'])
+    r.value('uptime-days', up != null ? up / 24 : null)
     if (up != null && up >= THRESHOLDS.uptimeDaysLong * 24)
       r.add('info', 'System', `Uptime is ${Math.round(up / 24)} days; a restart is overdue`, true)
   }
@@ -217,6 +226,7 @@ function windows(
     if (d['realTimeProtectionEnabled'] !== true)
       r.add('critical', 'Antivirus', 'Defender real-time protection is off')
     const age = num(d['signatureAgeDays'])
+    r.value('av-signature-age', age)
     if (age != null && age > THRESHOLDS.signatureAgeDaysStale)
       r.add('warning', 'Antivirus', `Defender signatures are ${age} days old`)
   } else if (d['available'] === false)
@@ -251,6 +261,7 @@ function windows(
   if (hot[0]) {
     r.metric('Latest hotfix', `${str(hot[0]['HotFixID'])} on ${str(hot[0]['InstalledOn'])}`)
     const age = daysSince(hot[0]['InstalledOn'], now)
+    r.value('update-age', age)
     if (age != null && age > THRESHOLDS.updateAgeDaysStale)
       r.add(
         'warning',
@@ -295,6 +306,7 @@ function windows(
   const lg = obj(json('sec-logins'))
   if (Object.keys(lg).length) {
     const f24 = num(lg['failedLogins24h'])
+    r.value('failed-logins-24h', f24)
     r.metric(
       'Failed sign-ins (24 h / 7 d)',
       `${str(lg['failedLogins24h'])} / ${str(lg['failedLogins7d'])}`
@@ -393,6 +405,7 @@ function windows(
   const b = obj(json('hw-battery'))
   if (b['present'] === true) {
     const health = num(b['healthPct'])
+    r.value('battery-health', health)
     r.metric(
       'Battery',
       `${health != null ? `${health}% health` : 'health n/a'}, ${str(b['chargePct'])}% charge${b['cycleCount'] != null ? `, ${str(b['cycleCount'])} cycles` : ''}`
@@ -404,6 +417,7 @@ function windows(
   if (errText && !errText.startsWith('No critical/error events')) {
     const count = errText.split(/\r?\n/).filter((l) => /^\d{4}-\d{2}-\d{2}T/.test(l.trim())).length
     r.metric('System log errors (7d)', String(count))
+    r.value('system-errors-7d', count)
     if (count >= THRESHOLDS.systemErrorsMany)
       r.add('warning', 'Events', `${count}+ critical/error events in the System log in 7 days`)
   } else if (errText) r.metric('System log errors (7d)', '0')
@@ -411,6 +425,7 @@ function windows(
   const pr = obj(json('perf-resources'))
   if (Object.keys(pr).length) {
     const cpu = num(pr['cpuPct'])
+    r.value('cpu', cpu)
     if (cpu != null) r.metric('CPU', `${cpu}%`)
     r.metric('RAM', `${str(pr['ramUsedPct'])}% of ${str(pr['ramTotalGB'])} GB`)
     if (pr['committedPct'] != null) r.metric('Committed memory', `${str(pr['committedPct'])}%`)
@@ -419,6 +434,7 @@ function windows(
     if (cpu != null && cpu >= THRESHOLDS.cpuPctHigh)
       r.add('warning', 'Performance', `CPU is at ${cpu}% (3 s average)`)
     const ram = num(pr['ramUsedPct'])
+    r.value('ram-used', ram)
     if (ram != null && ram >= THRESHOLDS.ramUsedPctHigh)
       r.add('warning', 'Performance', `RAM usage is ${ram}%`)
     const committed = num(pr['committedPct'])
@@ -454,6 +470,7 @@ function windows(
   const startup = asArray(json('perf-startup'))
   if (has('perf-startup')) {
     r.metric('Startup items', String(startup.length))
+    r.value('startup-items', startup.length)
     if (startup.length >= THRESHOLDS.startupItemsMany)
       r.add('info', 'Startup', `${startup.length} startup programs`, true)
   }
@@ -598,6 +615,7 @@ function posix(r: Report, text: (id: string) => string, has: (id: string) => boo
     const mount = m[3] ?? ''
     if (mount === '/' || mount === '/System/Volumes/Data' || mount === '/home') {
       r.metric(`Disk ${mount}`, `${100 - pct}% free`)
+      r.value(`disk-free:${mount}`, 100 - pct)
       if (100 - pct < THRESHOLDS.diskFreePctLow)
         r.add(
           100 - pct < 5 ? 'critical' : 'warning',

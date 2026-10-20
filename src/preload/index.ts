@@ -53,7 +53,13 @@ const api: ArhApi = {
     openLoops: () => ipcRenderer.invoke(IPC.vaultOpenLoops),
     workLog: (limit) => ipcRenderer.invoke(IPC.vaultWorkLog, limit),
     search: (query) => ipcRenderer.invoke(IPC.vaultSearch, query),
-    open: () => ipcRenderer.invoke(IPC.vaultOpen)
+    open: () => ipcRenderer.invoke(IPC.vaultOpen),
+    openNote: (file) => ipcRenderer.invoke(IPC.vaultOpenNote, file)
+  },
+  lookup: {
+    search: (query) => ipcRenderer.invoke(IPC.lookupSearch, query),
+    list: () => ipcRenderer.invoke(IPC.lookupList),
+    profile: (target) => ipcRenderer.invoke(IPC.lookupProfile, target)
   }
 }
 

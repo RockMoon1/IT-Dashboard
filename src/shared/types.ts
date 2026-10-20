@@ -148,6 +148,8 @@ export interface HealthFinding {
 export interface HealthReport {
   findings: HealthFinding[]
   metrics: Record<string, string>
+  /** Raw numbers for trends (disk-free:<drive>, ram-used, update-age …). Absent on old runs. */
+  values?: Record<string, number>
   score: HealthScore
 }
 
@@ -341,6 +343,168 @@ export interface SearchHit {
   text: string
   before: string[]
   after: string[]
+}
+
+/* ---------- computer lookup ---------- */
+
+/** One computer as the dashboard knows it from enrollment, scans and Asset Inventory. */
+export interface ComputerSummary {
+  /** Stable id: sn:<serial> or host:<name> (lowercase). */
+  key: string
+  name: string
+  /** Other names seen for it (renames, enrollment label). */
+  aliases: string[]
+  serial?: string
+  model?: string
+  os?: string
+  location?: string
+  room?: string
+  ip?: string
+  mac?: string
+  deviceId?: string
+  connected: boolean
+  lastSeen?: string
+  health?: HealthScore
+  lastScanAt?: string
+  scans: number
+  sources: Array<'enrolled' | 'scans' | 'inventory'>
+  /** Why it matched a lookup, e.g. "serial 5CG1234". */
+  match?: string
+}
+
+export interface LookupResult {
+  query: string
+  computers: ComputerSummary[]
+  /** Notes in the vault that mention the query as a whole word. */
+  vaultNotes: number
+  tookMs: number
+}
+
+export type LookupTarget = { key: string } | { deviceId: string } | { term: string }
+
+export interface MetricPoint {
+  at: string
+  value: number
+  runId: string
+}
+
+export interface MetricSeries {
+  key: string
+  label: string
+  unit: string
+  threshold?: number
+  /** Which direction is healthy, for colouring the latest value. */
+  better: 'higher' | 'lower'
+  points: MetricPoint[]
+}
+
+export interface ComputerFact {
+  label: string
+  value: string
+  at: string
+  purpose: Purpose
+}
+
+export interface ProfileFinding extends HealthFinding {
+  runId: string
+  at: string
+  purpose: Purpose
+}
+
+export interface RecurringFinding {
+  shape: string
+  message: string
+  category: string
+  severity: Severity
+  /** Scans that reported it, out of the scans of the purposes that check it. */
+  seen: number
+  of: number
+  firstAt: string
+  lastAt: string
+  current: boolean
+}
+
+export interface ProfileScan {
+  runId: string
+  at: string
+  purpose: Purpose
+  profile: string
+  version: number
+  status: RunStatus
+  score?: HealthScore
+  findings: number
+  critical: number
+  durationMs: number
+  technician: string
+}
+
+export interface VaultTicket {
+  file: string
+  id?: string
+  title: string
+  date?: string
+  status?: string
+  priority?: string
+  category?: string
+  location?: string
+  closed: boolean
+  openTasks: number
+  doneTasks: number
+}
+
+export interface VaultRow {
+  file: string
+  line: number
+  cells: Record<string, string>
+}
+
+export interface VaultMention {
+  file: string
+  title: string
+  line: number
+  text: string
+}
+
+export interface ProfileLoop {
+  file: string
+  line: number
+  text: string
+  done: boolean
+  priority?: string
+  section?: string
+  /** Written by the dashboard (carries a ^loop- id). */
+  generated: boolean
+}
+
+export interface TimelineEvent {
+  at: string
+  kind: 'scan' | 'ticket' | 'worklog' | 'change' | 'enrolled'
+  title: string
+  detail?: string
+  runId?: string
+  file?: string
+  line?: number
+  score?: HealthScore
+}
+
+export interface ComputerProfile {
+  summary: ComputerSummary
+  /** What the vault was searched for (names and serials, or the typed term). */
+  terms: string[]
+  facts: ComputerFact[]
+  findings: ProfileFinding[]
+  recurring: RecurringFinding[]
+  series: MetricSeries[]
+  scans: ProfileScan[]
+  inventory: VaultRow[]
+  tickets: VaultTicket[]
+  loops: ProfileLoop[]
+  worklog: Array<{ file: string; date: string; heading: string; lines: string[] }>
+  changes: VaultRow[]
+  mentions: VaultMention[]
+  timeline: TimelineEvent[]
+  tookMs: number
+  vaultError?: string
 }
 
 /* ---------- settings ---------- */

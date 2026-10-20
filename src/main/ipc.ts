@@ -2,13 +2,17 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { IPC, type LogLine } from '../shared/api.ts'
 import type {
   AppInfo,
+  ComputerProfile,
+  ComputerSummary,
   DeviceView,
   EnrollmentView,
   LinkStatus,
+  LookupResult,
+  LookupTarget,
   OpenLoopsView,
   ProfileSummary,
   Purpose,
@@ -56,6 +60,16 @@ import { findBlock } from './services/vault/markers.ts'
 import { buildWritePlans, notePaths } from './services/vault/plans.ts'
 import { parseDatedEntries, parseTasks, searchVault } from './services/vault/reader.ts'
 import { VaultWriter } from './services/vault/writer.ts'
+import { VaultIndex } from './services/lookup/vaultindex.ts'
+import {
+  buildComputers,
+  buildProfile,
+  inventoryRows,
+  lookup,
+  noteRoles,
+  rankComputers,
+  summarize
+} from './services/lookup/computers.ts'
 
 const isWindows = process.platform === 'win32'
 const nowIso = (): string => new Date().toISOString()
@@ -90,6 +104,7 @@ export class AppContext {
   private runStore: RunStore
   private runner: ScanRunner
   private writer: VaultWriter
+  private vaultIndex = new VaultIndex()
   private lastLinkError: string | undefined
   private firewallRulePresent: boolean | null = null
   private logLines: LogLine[] = []
@@ -672,6 +687,76 @@ export class AppContext {
     }
   }
 
+  /* ---------- computer lookup ---------- */
+
+  private async lookupData(): Promise<{
+    notes: Awaited<ReturnType<VaultIndex['notes']>>
+    computers: ReturnType<typeof buildComputers>
+  }> {
+    const notes = await this.vaultIndex.notes(this.settings.vaultPath)
+    const roles = noteRoles(notes, this.settings)
+    const inventory = roles.assets ? inventoryRows(roles.assets) : []
+    const merged = new Map<string, ScanRun>()
+    for (const r of this.runStore.list(5000)) merged.set(r.runId, r)
+    for (const r of this.runner.list()) if (r.status !== 'running') merged.set(r.runId, r)
+    return {
+      notes,
+      computers: buildComputers(this.devices.list(), [...merged.values()], inventory)
+    }
+  }
+
+  private isConnected = (id: string): boolean => this.link?.isConnected(id) ?? false
+
+  private async lookupSearch(query: string): Promise<LookupResult> {
+    const started = performance.now()
+    const { notes, computers } = await this.lookupData()
+    const result = lookup(
+      query,
+      computers.map((c) => summarize(c, this.isConnected)),
+      notes
+    )
+    return { ...result, tookMs: Math.round(performance.now() - started) }
+  }
+
+  private async lookupList(): Promise<ComputerSummary[]> {
+    const { computers } = await this.lookupData()
+    return rankComputers(
+      '',
+      computers.map((c) => summarize(c, this.isConnected))
+    )
+  }
+
+  private async lookupProfile(target: LookupTarget): Promise<ComputerProfile> {
+    const started = performance.now()
+    const { notes, computers } = await this.lookupData()
+    const profile = buildProfile({
+      target,
+      computers,
+      notes,
+      settings: this.settings,
+      connected: this.isConnected,
+      vaultError: this.vaultIndex.error
+    })
+    return { ...profile, tookMs: Math.round(performance.now() - started) }
+  }
+
+  /** Opens a vault note in Obsidian; refuses anything outside the vault folder. */
+  private async openNote(file: string): Promise<void> {
+    const root = resolve(this.settings.vaultPath)
+    const abs = resolve(root, String(file))
+    const inside = isWindows
+      ? abs.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`)
+      : abs.startsWith(`${root}${sep}`)
+    if (!inside || !/\.md$/i.test(abs)) throw new Error('not a note inside the vault')
+    if (!existsSync(abs)) throw new Error(`note not found: ${file}`)
+    try {
+      await shell.openExternal(`obsidian://open?path=${encodeURIComponent(abs)}`)
+    } catch {
+      const err = await shell.openPath(abs)
+      if (err) throw new Error(err)
+    }
+  }
+
   /* ---------- settings ---------- */
 
   private async updateSettings(patch: Partial<Settings>): Promise<Settings> {
@@ -775,6 +860,10 @@ export class AppContext {
       (_e, query: string): Promise<SearchHit[]> =>
         searchVault(this.settings.vaultPath, query, { limit: 100 })
     )
+    ipcMain.handle(IPC.vaultOpenNote, (_e, file: string) => this.openNote(file))
+    ipcMain.handle(IPC.lookupSearch, (_e, query: string) => this.lookupSearch(String(query ?? '')))
+    ipcMain.handle(IPC.lookupList, () => this.lookupList())
+    ipcMain.handle(IPC.lookupProfile, (_e, target: LookupTarget) => this.lookupProfile(target))
     ipcMain.handle(IPC.vaultOpen, async () => {
       const result = await shell.openPath(this.settings.vaultPath)
       if (result) throw new Error(result)

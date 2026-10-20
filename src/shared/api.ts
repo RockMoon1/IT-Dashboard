@@ -1,5 +1,9 @@
 import type {
   AppInfo,
+  ComputerProfile,
+  ComputerSummary,
+  LookupResult,
+  LookupTarget,
   DeviceView,
   EnrollmentView,
   LinkStatus,
@@ -47,6 +51,10 @@ export const IPC = {
   vaultWorkLog: 'vault:work-log',
   vaultSearch: 'vault:search',
   vaultOpen: 'vault:open',
+  vaultOpenNote: 'vault:open-note',
+  lookupSearch: 'lookup:search',
+  lookupList: 'lookup:list',
+  lookupProfile: 'lookup:profile',
   log: 'app:log'
 } as const
 
@@ -102,5 +110,12 @@ export interface ArhApi {
     workLog(limit?: number): Promise<WorkLogView>
     search(query: string): Promise<SearchHit[]>
     open(): Promise<void>
+    /** Opens one note (path relative to the vault) in Obsidian. */
+    openNote(file: string): Promise<void>
+  }
+  lookup: {
+    search(query: string): Promise<LookupResult>
+    list(): Promise<ComputerSummary[]>
+    profile(target: LookupTarget): Promise<ComputerProfile>
   }
 }

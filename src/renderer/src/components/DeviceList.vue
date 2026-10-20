@@ -73,7 +73,7 @@ async function commitRename(): Promise<void> {
           <h2 class="eyebrow">
             Enrolled devices <span class="text-mist-700">({{ enrolled.length }})</span>
           </h2>
-          <span class="text-[10px] text-mist-700">double-click to scan</span>
+          <span class="text-[10px] text-mist-700">click: on record · double-click: scan</span>
         </div>
         <p v-if="enrolled.length === 0" class="px-2 text-xs text-mist-500">
           No devices enrolled. Plug in the cable, then use <em>Enroll device</em>.

@@ -82,6 +82,25 @@ npm run dev              # starts the dashboard
 4. Within a few seconds the device appears under **Enrolled devices** with a green dot.
    `arh-agent status` on the device shows its id and the pinned dashboard.
 
+## Look up a computer (nothing needs to be plugged in)
+
+Press **Ctrl K** anywhere (or open the **Computers** tab) and type a name, serial, IP, MAC, room
+or a person's name. A computer's page puts together everything already on record:
+
+- **From scans** (stored on this PC): current findings, problems by how often they come back,
+  trends across scans (disk free, days since an update, failed sign-ins, battery health, RAM…),
+  the last known value of every measurement, and the scan list. Click a point or a row to open
+  that scan.
+- **From the vault** (read only): its Asset Inventory row, tickets that mention it, its lines
+  in ARH Open Loops, Work Log entries, Change Log rows and any other note that names it. Click
+  any of them to open the note in Obsidian.
+- **History**: one timeline of scans, tickets, work log entries and changes, newest first.
+
+Names and serials are matched as whole words. A hostname made only of letters (for example
+`COMPUTER`) is matched with its exact case, so the word "computer" in a sentence does not count.
+Typing a word that is not a computer, such as a person's name, shows every ticket and note that
+mentions it. Clicking a device in the left list opens its page; double-click still starts a scan.
+
 ## Run a scan
 
 Double-click a green device → choose the purpose (a suggestion comes from its last scan) →

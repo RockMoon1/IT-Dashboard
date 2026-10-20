@@ -67,6 +67,28 @@ Polling fallbacks (15 s adapters, 10 s USB) cover a WMI listener that dies; the 
    profile and version, technician, duration, status, exit status, check and finding counts.
 6. Vault: preview diff (default) → apply when live writes are on.
 
+## Computer lookup (offline)
+
+`src/main/services/lookup/`. A computer page is built from what is already on this PC, so the
+computer does not need to be connected:
+
+- `vaultindex.ts` keeps every vault note in memory. Each lookup stats the notes and re-reads only
+  those whose size or modification time changed (at most every 2 s). Read only.
+- `computers.ts` merges enrolled devices, every stored scan and the computer rows of Asset
+  Inventory into one record per machine (by device id, then serial, then name; two serials under
+  one name stay two machines). It then collects tickets, Open Loops lines, Work Log parts,
+  Change Log rows and other mentions by whole-word match on the computer's names and serials,
+  skipping the dashboard's own marker blocks. Vault times written in MT are converted to UTC
+  so the timeline sorts correctly with scan times.
+- Trends use `HealthReport.values`, raw numbers each scan now stores (disk free per drive, days
+  since an update, failed sign-ins, battery health, RAM, CPU and more), drawn against the same
+  thresholds that raise findings.
+- Notes open in Obsidian through `obsidian://open?path=…`; the main process refuses any path
+  outside the vault folder.
+
+A test builds a vault ten times the size of ARH IT (900 extra notes) and requires a computer
+page in under 1.5 s with the index warm.
+
 ## Data collected and not collected
 
 Configuration and health only: OS, hardware, storage, drivers, services, security settings,

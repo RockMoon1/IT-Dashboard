@@ -10,6 +10,10 @@ updated: 2026-10-14
 
 - Status OK.
 
+### 10:20 MT — ARH-T01 battery check
+
+- Battery report run; capacity is low. → [[Ticket — ARH-T01 — battery — 2026-10-09]]
+
 ## 2026-10-13 (Tuesday)
 
 ### 09:10 MT — Front desk printer toner replaced
