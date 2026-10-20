@@ -1,6 +1,7 @@
 // arh-agent is the small, dependency-free program installed on a target computer. It connects
-// outbound to the ARH IT Dashboard over the USB network link and runs only the read-only scan
-// profiles compiled into it. See docs/PROTOCOL.md.
+// outbound to the ARH IT Dashboard over the USB network link and runs only the scan profiles and
+// named actions compiled into it, plus custom commands when this device's policy allows them.
+// See docs/PROTOCOL.md and docs/PHASE3-DESIGN.md.
 package main
 
 import (
@@ -13,11 +14,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
+	"github.com/RockMoon1/IT-Dashboard/actions"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/identity"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/keystore"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/link"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/policy"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/service"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/sysinfo"
 	"github.com/RockMoon1/IT-Dashboard/profiles"
@@ -30,11 +34,17 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `arh-agent %s
 
 Usage:
-  arh-agent install --token ARH-XXXXXXXX-XXXXXXXXXXXXXXXX   install as a system service and enroll (admin / sudo)
+  arh-agent install --token ARH-XXXXXXXX-XXXXXXXXXXXXXXXX [--policy actions|full|read|clinical]
+                                                            install as a system service and enroll (admin / sudo);
+                                                            the policy is written only if the device has none yet
   arh-agent uninstall                                       remove the service, firewall rule and device key (admin / sudo)
   arh-agent run [--data-dir DIR]                            run in the foreground (what the service executes)
-  arh-agent status                                          show identity, enrollment and install paths
+  arh-agent status                                          show identity, enrollment, policy and install paths
   arh-agent profiles                                        list the scan profiles compiled into this build
+  arh-agent actions                                         list the named actions compiled into this build
+  arh-agent policy [--set PRESET] [--allow K,K] [--deny K,K] [--deny-action NAME] [--allow-action NAME]
+                                                            show or change what the dashboard may do here (admin / sudo);
+                                                            K is write, execute, custom, lan or interrupts
   arh-agent host-cert [--cn NAME]                           generate a dashboard TLS identity (used by the dashboard itself)
   arh-agent version
 `, version)
@@ -61,6 +71,10 @@ func main() {
 		err = cmdStatus()
 	case "profiles":
 		err = cmdProfiles()
+	case "actions":
+		err = cmdActions()
+	case "policy":
+		err = cmdPolicy(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -90,12 +104,26 @@ func cmdHostCert(args []string) error {
 func cmdInstall(args []string) error {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	token := fs.String("token", "", "enrollment token shown by the dashboard")
+	preset := fs.String("policy", "actions", "what the dashboard may do here if the device has no policy yet: actions, full, read or clinical")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pol, err := policy.Preset(*preset)
+	if err != nil {
 		return err
 	}
 	l := service.DefaultLayout()
 	if err := service.Install(l, *token); err != nil {
 		return fmt.Errorf("%w (this step needs an administrator / sudo shell)", err)
+	}
+	// A reinstall (the upgrade path) never overwrites a policy set on the device.
+	if _, err := os.Stat(policy.Path(l.DataDir)); os.IsNotExist(err) {
+		if err := policy.Save(l.DataDir, pol); err != nil {
+			return fmt.Errorf("writing the device policy: %w", err)
+		}
+		fmt.Printf("Device policy: %s (change with arh-agent policy)\n", *preset)
+	} else {
+		fmt.Printf("Device policy: kept the existing one (%s)\n", describePolicy(policy.Load(l.DataDir)))
 	}
 	store := keystore.New(l.DataDir)
 	id, err := identity.LoadOrCreate(store, l.DataDir, sysinfo.Hostname())
@@ -177,6 +205,116 @@ func cmdStatus() error {
 		fmt.Printf("enrolled:    no, pending token %s\n", tok)
 	} else {
 		fmt.Printf("enrolled:    no\n")
+	}
+	fmt.Printf("policy:      %s\n", describePolicy(policy.Load(l.DataDir)))
+	return nil
+}
+
+func describePolicy(p policy.Policy) string {
+	if p.Error != "" {
+		return "read only (" + p.Error + ")"
+	}
+	var on []string
+	for _, x := range []struct {
+		name string
+		v    bool
+	}{{"write", p.Write}, {"execute", p.Execute}, {"custom", p.Custom}, {"lan", p.LAN}, {"interrupts", p.Interrupts}} {
+		if x.v {
+			on = append(on, x.name)
+		}
+	}
+	s := "read"
+	if len(on) > 0 {
+		s += ", " + strings.Join(on, ", ")
+	}
+	if len(p.Deny) > 0 {
+		s += "; refuses " + strings.Join(p.Deny, ", ")
+	}
+	return s
+}
+
+func cmdActions() error {
+	all, err := actions.All()
+	if err != nil {
+		return err
+	}
+	for _, a := range all {
+		if a.OS != sysinfo.OSName() {
+			continue
+		}
+		fmt.Printf("%-32s v%d  %-7s %-10s %s\n", a.Name, a.Version, a.Access, a.Impact, a.Title)
+	}
+	return nil
+}
+
+func cmdPolicy(args []string) error {
+	fs := flag.NewFlagSet("policy", flag.ContinueOnError)
+	set := fs.String("set", "", "start from a preset: actions, full, read or clinical")
+	allow := fs.String("allow", "", "comma-separated: write, execute, custom, lan, interrupts")
+	deny := fs.String("deny", "", "comma-separated: write, execute, custom, lan, interrupts")
+	denyAction := fs.String("deny-action", "", "refuse one named action (see arh-agent actions)")
+	allowAction := fs.String("allow-action", "", "stop refusing one named action")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	l := service.DefaultLayout()
+	p := policy.Load(l.DataDir)
+	if *set == "" && *allow == "" && *deny == "" && *denyAction == "" && *allowAction == "" {
+		fmt.Println(describePolicy(p))
+		return nil
+	}
+	if *set != "" {
+		var err error
+		if p, err = policy.Preset(*set); err != nil {
+			return err
+		}
+	} else if p.Error != "" {
+		return fmt.Errorf("the current policy is unusable (%s); start from a preset with --set", p.Error)
+	}
+	apply := func(list string, v bool) error {
+		for _, k := range strings.Split(list, ",") {
+			switch strings.TrimSpace(k) {
+			case "":
+			case "write":
+				p.Write = v
+			case "execute":
+				p.Execute = v
+			case "custom":
+				p.Custom = v
+			case "lan":
+				p.LAN = v
+			case "interrupts":
+				p.Interrupts = v
+			default:
+				return fmt.Errorf("unknown kind %q (write, execute, custom, lan, interrupts)", k)
+			}
+		}
+		return nil
+	}
+	if err := apply(*allow, true); err != nil {
+		return err
+	}
+	if err := apply(*deny, false); err != nil {
+		return err
+	}
+	if *denyAction != "" {
+		p.Deny = append(p.Deny, *denyAction)
+	}
+	if *allowAction != "" {
+		kept := p.Deny[:0]
+		for _, d := range p.Deny {
+			if !strings.EqualFold(d, *allowAction) {
+				kept = append(kept, d)
+			}
+		}
+		p.Deny = kept
+	}
+	if err := policy.Save(l.DataDir, p); err != nil {
+		return fmt.Errorf("%w (this step needs an administrator / sudo shell)", err)
+	}
+	fmt.Println(describePolicy(policy.Load(l.DataDir)))
+	if p.Custom {
+		fmt.Println("Note: with custom commands allowed, anyone holding the dashboard's key and a cable to this computer can run any command here as SYSTEM/root, including one that changes this policy.")
 	}
 	return nil
 }

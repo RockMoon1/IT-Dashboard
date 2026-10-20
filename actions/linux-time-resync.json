@@ -1,0 +1,43 @@
+{
+  "schema": "arh-action/1",
+  "name": "linux-time-resync",
+  "version": 1,
+  "os": "linux",
+  "access": "execute",
+  "category": "Clock",
+  "title": "Resync the clock",
+  "description": "Steps the clock with chrony (chronyc makestep) or restarts systemd-timesyncd, whichever runs here. It does not change the time zone.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 120,
+  "settleSeconds": 5,
+  "params": [],
+  "measure": [
+    "if command -v chronyc >/dev/null 2>&1 && chronyc tracking >/dev/null 2>&1; then",
+    "  arh_info \"Time service\" \"chrony\"",
+    "  arh_item \"Clock offset\" \"$(chronyc tracking | sed -n 's/^System time *: //p')\"",
+    "  arh_plan true \"Step the clock with chrony\"",
+    "elif systemctl is-enabled --quiet systemd-timesyncd 2>/dev/null; then",
+    "  arh_info \"Time service\" \"systemd-timesyncd\"",
+    "  arh_item \"Clock synchronised\" \"$(timedatectl show -p NTPSynchronized --value 2>/dev/null)\"",
+    "  arh_plan true \"Restart systemd-timesyncd\"",
+    "else",
+    "  arh_info \"Time service\" \"none found\"",
+    "  arh_blocker \"Neither chrony nor systemd-timesyncd runs here\"",
+    "  arh_plan false \"Nothing to resync\"",
+    "fi"
+  ],
+  "apply": [
+    "if command -v chronyc >/dev/null 2>&1 && chronyc tracking >/dev/null 2>&1; then",
+    "  chronyc makestep || exit $?",
+    "else",
+    "  systemctl restart systemd-timesyncd || exit $?",
+    "fi"
+  ]
+}

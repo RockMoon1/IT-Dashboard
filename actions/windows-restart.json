@@ -1,0 +1,67 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-restart",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Power",
+  "title": "Restart with warning",
+  "description": "Schedules a restart with a warning to the signed-in user (shutdown /r /t, reason Maintenance: Planned, recorded as event 1074). Open apps are closed without saving when the time comes, so the delay is 2 to 60 minutes (default 10). Can be cancelled until then with \"Cancel the restart\".",
+  "impact": "interrupts",
+  "reversible": true,
+  "undo": "windows-restart-cancel",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Updates: A reboot is pending",
+    "^System: Uptime is \\d+ days"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [
+    {
+      "name": "minutes",
+      "label": "Minutes before the restart (2 to 60)",
+      "pattern": "[0-9]{1,2}",
+      "maxLength": 2,
+      "required": false,
+      "default": "10",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "2",
+          "10",
+          "60"
+        ],
+        "bad": [
+          "",
+          "1.5",
+          "100",
+          "ten"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "$min = [int]$env:ARH_PARAM_MINUTES",
+    "if ($min -lt 2 -or $min -gt 60) { Add-ArhBlocker 'The delay must be 2 to 60 minutes' }",
+    "$os = Get-CimInstance Win32_OperatingSystem",
+    "$user = (Get-CimInstance Win32_ComputerSystem).UserName",
+    "$locked = [bool](Get-Process -Name LogonUI -ErrorAction SilentlyContinue)",
+    "Add-ArhInfo 'Up since' (Format-ArhTime $os.LastBootUpTime)",
+    "Add-ArhInfo 'Signed in' $(if ($user) { $user } else { 'nobody' })",
+    "Add-ArhInfo 'Screen' $(if (-not $user) { 'sign-in screen' } elseif ($locked) { 'locked' } else { 'in use' })",
+    "if ($user -and -not $locked) { Add-ArhWarning \"$user is signed in and the screen is not locked: unsaved work is lost when the restart comes\" }",
+    "Set-ArhPlan $true \"Restart in $min minutes, with a warning on screen\""
+  ],
+  "apply": [
+    "$min = [int]$env:ARH_PARAM_MINUTES",
+    "$msg = \"ARH IT: this computer will restart in $min minutes. Please save your work now.\"",
+    "$out = Invoke-ArhNative 'shutdown.exe' '/r' '/t' ($min * 60) '/d' 'p:4:1' '/c' $msg",
+    "$code = $LASTEXITCODE",
+    "if ($code -eq 0) { Add-ArhNote \"Restart scheduled in $min minutes\" } elseif ($code -eq 1190) { Add-ArhNote 'A shutdown or restart is already scheduled' } else { Add-ArhNote \"shutdown.exe exit $code $out\" }",
+    "exit $code"
+  ]
+}

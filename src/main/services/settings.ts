@@ -2,22 +2,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Settings } from '../../shared/types.ts'
 
-export const DEFAULT_SETTINGS: Settings = {
-  vaultPath: 'C:\\Users\\lpell\\OneDrive\\Documents\\Obsidian Vault\\ARH IT',
-  hubNote: 'ARH IT Hub.md',
-  workLogNote: 'ARH Work Log.md',
-  openLoopsNote: 'ARH Open Loops.md',
-  assetNote: 'Assets/Asset Inventory.md',
-  vaultLive: false,
-  schemaApproved: false,
-  // the vault uses no due dates (inspection 2026-10-15: 0 of 709 tasks carry one)
-  dueStyle: 'none',
-  technician: '',
-  beaconAllAdapters: false,
-  usbPollMs: 10_000,
-  adapterPollMs: 15_000,
-  linkPort: 47912
-}
+import { DEFAULT_SETTINGS, SETTINGS_VERSION } from '../../shared/settings-defaults.ts'
+
+export { DEFAULT_SETTINGS, SETTINGS_VERSION }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -30,6 +17,15 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
   for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof Settings>) {
     if (!(key in patch)) continue
     const value = patch[key]
+    if (key === 'disabledActions') {
+      if (Array.isArray(value))
+        out.disabledActions = [
+          ...new Set(
+            value.filter((v): v is string => typeof v === 'string' && /^[a-z0-9-]{1,80}$/.test(v))
+          )
+        ].slice(0, 500)
+      continue
+    }
     if (key === 'dueStyle') {
       if (value === 'tasks-emoji' || value === 'dataview' || value === 'plain' || value === 'none')
         out.dueStyle = value
@@ -49,12 +45,33 @@ export function mergeSettings(base: Settings, patch: unknown): Settings {
   return out
 }
 
-export async function loadSettings(file: string): Promise<Settings> {
-  try {
-    return mergeSettings(DEFAULT_SETTINGS, JSON.parse(await readFile(file, 'utf8')))
-  } catch {
-    return { ...DEFAULT_SETTINGS }
+/**
+ * One-time changes for settings saved by an older version.
+ * v1 -> v2: Lisandro approved the vault mapping on 2026-10-20, so the "schema approved" and
+ * "live writes" switches are turned on once; he can switch them off again in Settings.
+ */
+export function migrateSettings(stored: unknown, merged: Settings): Settings {
+  const version =
+    typeof stored === 'object' && stored !== null && 'settingsVersion' in stored
+      ? Number((stored as { settingsVersion: unknown }).settingsVersion) || 1
+      : 1
+  const out = { ...merged }
+  if (version < 2) {
+    out.schemaApproved = true
+    out.vaultLive = true
   }
+  out.settingsVersion = SETTINGS_VERSION
+  return out
+}
+
+export async function loadSettings(file: string): Promise<Settings> {
+  let stored: unknown
+  try {
+    stored = JSON.parse(await readFile(file, 'utf8'))
+  } catch {
+    return { ...DEFAULT_SETTINGS, disabledActions: [] }
+  }
+  return migrateSettings(stored, mergeSettings(DEFAULT_SETTINGS, stored))
 }
 
 export async function saveSettings(file: string, settings: Settings): Promise<void> {

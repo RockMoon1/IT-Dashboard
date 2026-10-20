@@ -1,0 +1,35 @@
+{
+  "schema": "arh-action/1",
+  "name": "linux-dns-flush",
+  "version": 1,
+  "os": "linux",
+  "access": "execute",
+  "category": "Network",
+  "title": "Flush the DNS cache",
+  "description": "Clears the systemd-resolved cache (resolvectl flush-caches). Machines without systemd-resolved keep no local cache, so there is nothing to flush.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "if command -v resolvectl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then",
+    "  arh_info \"DNS cache\" \"systemd-resolved\"",
+    "  arh_plan true \"Clear the systemd-resolved cache\"",
+    "else",
+    "  arh_info \"DNS cache\" \"none\"",
+    "  arh_blocker \"No local DNS cache service runs here\"",
+    "  arh_plan false \"Nothing to flush\"",
+    "fi"
+  ],
+  "apply": [
+    "resolvectl flush-caches || exit $?",
+    "arh_note \"DNS cache cleared\""
+  ]
+}

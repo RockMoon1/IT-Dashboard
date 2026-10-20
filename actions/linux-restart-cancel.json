@@ -1,0 +1,28 @@
+{
+  "schema": "arh-action/1",
+  "name": "linux-restart-cancel",
+  "version": 1,
+  "os": "linux",
+  "access": "execute",
+  "category": "Power",
+  "title": "Cancel the restart",
+  "description": "Cancels a scheduled restart (shutdown -c).",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": true,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 30,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "arh_plan true \"Cancel a scheduled restart, if there is one\""
+  ],
+  "apply": [
+    "shutdown -c || exit $?",
+    "arh_note \"Restart cancelled (if one was scheduled)\""
+  ]
+}

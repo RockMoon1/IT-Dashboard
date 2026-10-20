@@ -4,6 +4,7 @@ package sysinfo
 import (
 	"os"
 	"strings"
+	"time"
 )
 
 func Hostname() string {
@@ -18,3 +19,13 @@ func Hostname() string {
 func Serial() string { return strings.TrimSpace(serial()) }
 
 func OSName() string { return osName }
+
+// BootTime is when the system last started, UTC RFC 3339, or "" when unknown. The dashboard
+// compares it with a scheduled restart to record whether the restart happened.
+func BootTime() string {
+	t := bootTime()
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}

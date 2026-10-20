@@ -1,26 +1,13 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import type { Settings } from '@shared/types'
+import { DEFAULT_SETTINGS } from '@shared/settings-defaults'
 import { useDashboard } from '../store'
 
 const dash = useDashboard()
 const { state } = dash
 
-const fallback: Settings = {
-  vaultPath: '',
-  hubNote: 'ARH IT Hub.md',
-  workLogNote: 'ARH Work Log.md',
-  openLoopsNote: 'ARH Open Loops.md',
-  assetNote: 'Assets/Asset Inventory.md',
-  vaultLive: false,
-  schemaApproved: false,
-  dueStyle: 'none',
-  technician: '',
-  beaconAllAdapters: false,
-  usbPollMs: 10000,
-  adapterPollMs: 15000,
-  linkPort: 47912
-}
+const fallback: Settings = { ...DEFAULT_SETTINGS, disabledActions: [] }
 const form = reactive<Settings>({ ...(state.settings ?? fallback) })
 const saving = ref(false)
 

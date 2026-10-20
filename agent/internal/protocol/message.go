@@ -8,6 +8,9 @@ import (
 	"errors"
 	"io"
 	"sync"
+
+	"github.com/RockMoon1/IT-Dashboard/actions"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/policy"
 )
 
 // MaxLine bounds one JSON message on the wire.
@@ -47,12 +50,55 @@ type Message struct {
 	Truncated  bool   `json:"truncated,omitempty"`
 	OK         *bool  `json:"ok,omitempty"`
 	Error      string `json:"error,omitempty"`
+
+	// Protocol 2: named actions and custom commands (docs/PHASE3-DESIGN.md).
+	Protocol            int               `json:"protocol,omitempty"`
+	Link                string            `json:"link,omitempty"` // "cable" or "lan", as the agent sees the session
+	BootTime            string            `json:"bootTime,omitempty"`
+	Actions             []ActionRef       `json:"actions,omitempty"`
+	Policy              *policy.Policy    `json:"policy,omitempty"`
+	Running             string            `json:"running,omitempty"`
+	PendingRestartUntil string            `json:"pendingRestartUntil,omitempty"`
+	Action              string            `json:"action,omitempty"`
+	SHA256              string            `json:"sha256,omitempty"`
+	Params              map[string]string `json:"params,omitempty"`
+	Mode                string            `json:"mode,omitempty"` // "preview" or "apply"; required
+	Technician          string            `json:"technician,omitempty"`
+	Shell               string            `json:"shell,omitempty"`
+	Script              string            `json:"script,omitempty"`
+	TimeoutSeconds      int               `json:"timeoutSeconds,omitempty"`
+	Result              *actions.Result   `json:"result,omitempty"`
+	ErrorCode           string            `json:"errorCode,omitempty"`
 }
+
+// Version is the protocol this agent speaks. Agents and dashboards at 1 stay read only.
+const Version = 2
 
 type ProfileRef struct {
 	Name    string `json:"name"`
 	Version int    `json:"version"`
 }
+
+type ActionRef struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+// Error codes on run-end and abort-refused.
+const (
+	CodeBusy           = "busy"
+	CodePolicyDenied   = policy.CodeDenied
+	CodeLANSession     = policy.CodeLAN
+	CodeUnknownAction  = "unknown-action"
+	CodeVersion        = "version-mismatch"
+	CodeBadParam       = "bad-param"
+	CodeBadMode        = "bad-mode"
+	CodeDuplicateRun   = "duplicate-run"
+	CodeRestartPending = "restart-pending"
+	CodeNotAbortable   = "not-abortable"
+	CodeInternal       = "internal"
+)
 
 // Codec reads and writes one Message per line. Writes are serialised so several goroutines can
 // stream output concurrently.

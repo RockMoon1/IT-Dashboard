@@ -1,0 +1,96 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-wake-timers-set",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Power",
+  "title": "Set wake timers",
+  "description": "Sets \"Allow wake timers\" on the active power plan, plugged in and on battery (powercfg RTCWAKE). The default, important only, stops ordinary scheduled tasks waking a laptop in a bag while keeping the wakes Windows Update and maintenance need; off moves that maintenance into working hours.",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "windows-wake-timers-set",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [
+    {
+      "name": "plugged",
+      "label": "Plugged in",
+      "pattern": "off|on|important",
+      "maxLength": 9,
+      "required": false,
+      "default": "important",
+      "choices": [
+        "important",
+        "off",
+        "on"
+      ],
+      "examples": {
+        "ok": [
+          "off",
+          "on",
+          "important"
+        ],
+        "bad": [
+          "none",
+          "Important"
+        ]
+      }
+    },
+    {
+      "name": "battery",
+      "label": "On battery",
+      "pattern": "off|on|important",
+      "maxLength": 9,
+      "required": false,
+      "default": "important",
+      "choices": [
+        "important",
+        "off",
+        "on"
+      ],
+      "examples": {
+        "ok": [
+          "off",
+          "on",
+          "important"
+        ],
+        "bad": [
+          "none",
+          "Important"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "$names = @{ 0 = 'off'; 1 = 'on'; 2 = 'important' }",
+    "$q = Invoke-ArhNative 'powercfg.exe' '/q' 'SCHEME_CURRENT' 'SUB_SLEEP' 'RTCWAKE'",
+    "$hex = [regex]::Matches($q, '0x([0-9a-fA-F]{8})')",
+    "",
+    "if ($hex.Count -lt 2) { Add-ArhBlocker 'This power plan has no wake timer setting'; Set-ArhPlan $false 'Nothing to change'; exit 0 }",
+    "$ac = [Convert]::ToInt32($hex[$hex.Count - 2].Groups[1].Value, 16)",
+    "$dc = [Convert]::ToInt32($hex[$hex.Count - 1].Groups[1].Value, 16)",
+    "function N($v) { if ($names.ContainsKey($v)) { $names[$v] } else { \"value $v\" } }",
+    "if ($q -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { Add-ArhInfo 'Power plan' $Matches[1] }",
+    "Add-ArhItem 'Wake timers plugged in' (N $ac)",
+    "Add-ArhItem 'Wake timers on battery' (N $dc)",
+    "if ($names.ContainsKey($ac)) { Set-ArhRestore 'plugged' $names[$ac] }",
+    "if ($names.ContainsKey($dc)) { Set-ArhRestore 'battery' $names[$dc] }",
+    "$wa = $env:ARH_PARAM_PLUGGED; $wd = $env:ARH_PARAM_BATTERY",
+    "if ((N $ac) -eq $wa -and (N $dc) -eq $wd) { Set-ArhPlan $false 'Already set' } else { Set-ArhPlan $true \"Set wake timers to $wa plugged in and $wd on battery\" }"
+  ],
+  "apply": [
+    "$codes = @{ off = 0; on = 1; important = 2 }",
+    "$null = Invoke-ArhNative 'powercfg.exe' '/setacvalueindex' 'SCHEME_CURRENT' 'SUB_SLEEP' 'RTCWAKE' $codes[$env:ARH_PARAM_PLUGGED]",
+    "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+    "$null = Invoke-ArhNative 'powercfg.exe' '/setdcvalueindex' 'SCHEME_CURRENT' 'SUB_SLEEP' 'RTCWAKE' $codes[$env:ARH_PARAM_BATTERY]",
+    "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+    "$null = Invoke-ArhNative 'powercfg.exe' '/setactive' 'SCHEME_CURRENT'",
+    "exit $LASTEXITCODE"
+  ]
+}

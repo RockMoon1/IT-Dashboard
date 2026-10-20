@@ -1,0 +1,57 @@
+{
+  "schema": "arh-action/1",
+  "name": "linux-restart",
+  "version": 1,
+  "os": "linux",
+  "access": "execute",
+  "category": "Power",
+  "title": "Restart with warning",
+  "description": "Schedules a restart (shutdown -r +minutes, 2 to 60, default 10) with a message to signed-in terminals. Can be cancelled with \"Cancel the restart\".",
+  "impact": "interrupts",
+  "reversible": true,
+  "undo": "linux-restart-cancel",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [
+    {
+      "name": "minutes",
+      "label": "Minutes before the restart (2 to 60)",
+      "pattern": "[0-9]{1,2}",
+      "maxLength": 2,
+      "required": false,
+      "default": "10",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "2",
+          "10",
+          "60"
+        ],
+        "bad": [
+          "",
+          "1.5",
+          "100",
+          "ten"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "min=\"$ARH_PARAM_MINUTES\"",
+    "if [ \"$min\" -lt 2 ] || [ \"$min\" -gt 60 ]; then arh_blocker \"The delay must be 2 to 60 minutes\"; fi",
+    "users=$(who 2>/dev/null | awk '{print $1}' | sort -u | tr '\\n' ' ')",
+    "arh_info \"Signed in\" \"${users:-nobody}\"",
+    "if [ -n \"$users\" ]; then arh_warn \"Signed in now: $users\"; fi",
+    "arh_info \"Up\" \"$(uptime -p 2>/dev/null || uptime)\"",
+    "arh_plan true \"Restart in $min minutes\""
+  ],
+  "apply": [
+    "shutdown -r \"+$ARH_PARAM_MINUTES\" \"ARH IT: this computer will restart in $ARH_PARAM_MINUTES minutes.\" || exit $?",
+    "arh_note \"Restart scheduled in $ARH_PARAM_MINUTES minutes\""
+  ]
+}

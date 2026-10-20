@@ -1,0 +1,52 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-firewall-on",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Firewall",
+  "title": "Turn on firewall profiles that are off",
+  "description": "Turns on the Windows Firewall profiles (Domain, Private, Public) that are off, unless Group Policy controls them, and reads the effective state (ActiveStore) back. Turning a profile on can block inbound traffic that worked only because the firewall was off (printer or scanner sharing, imaging or lab interfaces); the preview lists inbound connections in use now.",
+  "impact": "interrupts",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "Set-NetFirewallProfile -Profile <the profiles listed as turned on> -Enabled False",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Firewall: Firewall profile \".+\" is disabled"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 3,
+  "params": [],
+  "measure": [
+    "$gpo = @{}",
+    "foreach ($g in @(Get-NetFirewallProfile -PolicyStore RSOP -ErrorAction SilentlyContinue)) { if (\"$($g.Enabled)\" -ne 'NotConfigured') { $gpo[$g.Name] = \"$($g.Enabled)\" } }",
+    "$active = @(Get-NetFirewallProfile -PolicyStore ActiveStore)",
+    "",
+    "foreach ($p in $active) { Add-ArhItem \"Firewall $($p.Name)\" $(if (\"$($p.Enabled)\" -eq 'True') { 'on' } else { 'off' }) }",
+    "foreach ($n in $gpo.Keys) { Add-ArhInfo \"Group Policy sets $n\" $gpo[$n] }",
+    "foreach ($f in @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction SilentlyContinue)) { Add-ArhInfo 'Other firewall' $f.displayName }",
+    "$listen = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalAddress -notin @('127.0.0.1', '::1') } | ForEach-Object { $_.LocalPort } | Sort-Object -Unique)",
+    "$inbound = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object { $listen -contains $_.LocalPort -and $_.RemoteAddress -notin @('127.0.0.1', '::1') })",
+    "$ports = @($inbound | ForEach-Object { $_.LocalPort } | Sort-Object -Unique)",
+    "Add-ArhInfo 'Inbound connections now' $(if ($ports.Count) { \"$($inbound.Count) on port(s) \" + ($ports -join ', ') } else { 'none' })",
+    "if ($ports.Count) { Add-ArhWarning ('Inbound connections are in use on port(s) ' + ($ports -join ', ') + '; a profile turned on may block them unless a rule allows them') }",
+    "$off = @($active | Where-Object { \"$($_.Enabled)\" -ne 'True' } | ForEach-Object { $_.Name })",
+    "$todo = @($off | Where-Object { -not $gpo.ContainsKey($_) })",
+    "foreach ($n in @($off | Where-Object { $gpo.ContainsKey($_) })) { Add-ArhBlocker \"Group Policy keeps the $n profile off\" }",
+    "if ($todo.Count) { Set-ArhPlan $true ('Turn on: ' + ($todo -join ', ')) } else { Set-ArhPlan $false $(if ($off.Count) { 'Only profiles Group Policy controls are off' } else { 'All profiles are on' }) }"
+  ],
+  "apply": [
+    "$gpo = @{}",
+    "foreach ($g in @(Get-NetFirewallProfile -PolicyStore RSOP -ErrorAction SilentlyContinue)) { if (\"$($g.Enabled)\" -ne 'NotConfigured') { $gpo[$g.Name] = \"$($g.Enabled)\" } }",
+    "$active = @(Get-NetFirewallProfile -PolicyStore ActiveStore)",
+    "",
+    "$todo = @($active | Where-Object { \"$($_.Enabled)\" -ne 'True' -and -not $gpo.ContainsKey($_.Name) } | ForEach-Object { $_.Name })",
+    "if ($todo.Count) {",
+    "  Set-NetFirewallProfile -Profile $todo -Enabled True",
+    "  Add-ArhNote ('Turned on: ' + ($todo -join ', '))",
+    "}"
+  ]
+}

@@ -18,6 +18,13 @@ const MaxOutput = 1 << 20
 // waitDelay bounds how long Wait waits for the child's pipes after the process is gone.
 const waitDelay = 2 * time.Second
 
+// hooks are the platform's steps around one process: afterStart runs once it has started (put
+// it in a Job Object, feed it the script), done after it has ended or failed to start.
+type hooks struct {
+	afterStart func()
+	done       func()
+}
+
 type Result struct {
 	ExitCode  int
 	TimedOut  bool
@@ -71,7 +78,7 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 	runCtx, cancel := context.WithTimeout(ctx, check.Timeout())
 	defer cancel()
 
-	cmd, err := command(runCtx, check)
+	cmd, h, err := command(runCtx, check)
 	if err != nil {
 		return Result{ExitCode: -1, Duration: time.Since(started), Err: err}
 	}
@@ -82,9 +89,13 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = waitDelay
-	configureKill(cmd)
 
-	runErr := cmd.Run()
+	runErr := cmd.Start()
+	if runErr == nil {
+		h.afterStart()
+		runErr = cmd.Wait()
+	}
+	h.done()
 	stdout.flush()
 	stderr.flush()
 

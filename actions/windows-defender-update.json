@@ -1,0 +1,43 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-defender-update",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Antivirus",
+  "title": "Update Defender signatures",
+  "description": "Downloads the latest Microsoft Defender signatures (Update-MpSignature), falling back to Microsoft Update when the usual source fails. Reports the signature version and age before and after.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Antivirus: Defender signatures are \\d+ days old"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 900,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "$s = Get-MpComputerStatus -ErrorAction SilentlyContinue",
+    "if (-not $s) { Add-ArhBlocker 'Microsoft Defender is not available on this computer'; Set-ArhPlan $false 'Nothing to do'; exit 0 }",
+    "",
+    "Add-ArhItem 'Signature version' $s.AntivirusSignatureVersion",
+    "Add-ArhItem 'Signature age (days)' $s.AntivirusSignatureAge",
+    "Add-ArhInfo 'Signatures updated' (Format-ArhTime $s.AntivirusSignatureLastUpdated)",
+    "Add-ArhInfo 'Defender mode' $s.AMRunningMode",
+    "Set-ArhPlan $true 'Download the latest Defender signatures'"
+  ],
+  "apply": [
+    "try {",
+    "  Update-MpSignature",
+    "  Add-ArhNote 'Updated from the configured source'",
+    "} catch {",
+    "  Add-ArhNote ('The configured source failed: ' + $_.Exception.Message)",
+    "  Update-MpSignature -UpdateSource MicrosoftUpdateServer",
+    "  Add-ArhNote 'Updated from Microsoft Update'",
+    "}"
+  ]
+}

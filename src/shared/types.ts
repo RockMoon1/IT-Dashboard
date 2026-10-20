@@ -561,6 +561,27 @@ export interface Settings {
   usbPollMs: number
   adapterPollMs: number
   linkPort: number
+  /** Bumped when stored settings need a one-time migration (see settings.ts). */
+  settingsVersion: number
+  /* Access and control (Phase 3). Full access by default; each switch narrows it. */
+  /** Read notes for lookups and the note viewer. */
+  vaultRead: boolean
+  /** Write the dashboard's sections into the vault after every scan or action. */
+  vaultAutoWrite: boolean
+  /** Run scan profiles (read). */
+  deviceScan: boolean
+  /** Run actions that change a setting on a device (write). */
+  deviceWrite: boolean
+  /** Run tasks on a device (execute). */
+  deviceExecute: boolean
+  /** Run commands the technician types. */
+  customCommands: boolean
+  /** Ask for confirmation before every write, task or command. */
+  confirmChanges: boolean
+  /** Offer a dry run (measure, change nothing) before a write. */
+  previewFirst: boolean
+  /** Actions switched off one by one, by name. */
+  disabledActions: string[]
 }
 
 export interface AppInfo {

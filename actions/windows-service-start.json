@@ -1,0 +1,62 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-service-start",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Services",
+  "title": "Start a stopped automatic service",
+  "description": "Starts one Windows service whose start type is Automatic but is not running (Start-Service), and waits up to 30 seconds for it. Manual and disabled services are refused: starting those is a security decision, not a repair. It does not change the start type.",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "Stop-Service -Name <the service>",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Services: \\d+ automatic service\\(s\\) not running"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 90,
+  "settleSeconds": 3,
+  "params": [
+    {
+      "name": "name",
+      "label": "Service name (not the display name)",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9_.-]{0,79}",
+      "maxLength": 80,
+      "required": true,
+      "default": "",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "Spooler",
+          "wuauserv",
+          "W32Time",
+          "BITS"
+        ],
+        "bad": [
+          "",
+          "Print Spooler",
+          "a;b",
+          "a$b"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "$name = $env:ARH_PARAM_NAME",
+    "$svc = Get-Service -Name $name -ErrorAction SilentlyContinue",
+    "if (-not $svc) { Add-ArhBlocker \"No service named $name\"; Set-ArhPlan $false 'Nothing to start'; exit 0 }",
+    "Add-ArhInfo 'Service' \"$($svc.Name) ($($svc.DisplayName))\"",
+    "Add-ArhInfo 'Start type' \"$($svc.StartType)\"",
+    "Add-ArhItem \"Service $($svc.Name)\" \"$($svc.Status)\"",
+    "if (\"$($svc.StartType)\" -ne 'Automatic') { Add-ArhBlocker \"Only automatic services are started here; $($svc.Name) is $($svc.StartType)\" }",
+    "if (\"$($svc.Status)\" -eq 'Running') { Set-ArhPlan $false 'Already running' } else { Set-ArhPlan $true \"Start $($svc.Name)\" }"
+  ],
+  "apply": [
+    "$svc = Get-Service -Name $env:ARH_PARAM_NAME",
+    "Start-Service -InputObject $svc",
+    "$svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))"
+  ]
+}

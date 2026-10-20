@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { writeFile } from 'node:fs/promises'
 import {
   DEFAULT_SETTINGS,
   loadSettings,
@@ -17,6 +18,7 @@ test('mergeSettings accepts known keys, clamps intervals, ignores junk and keeps
     adapterPollMs: 'soon',
     unknown: 1,
     dueStyle: 'dataview',
+    schemaApproved: false,
     vaultLive: true
   })
   assert.equal(merged.vaultPath, 'D:\\Vault')
@@ -48,4 +50,39 @@ test('settings round-trip through disk and fall back to defaults when missing', 
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('settings saved before the 2026-10-20 approval are migrated once; later choices stick', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'arh-settings-'))
+  try {
+    const file = join(dir, 'settings.json')
+    // what the app saved before: no version, schema not approved, live writes off
+    await writeFile(
+      file,
+      JSON.stringify({ technician: 'Lisandro', schemaApproved: false, vaultLive: false }),
+      'utf8'
+    )
+    const migrated = await loadSettings(file)
+    assert.equal(migrated.schemaApproved, true)
+    assert.equal(migrated.vaultLive, true)
+    assert.equal(migrated.settingsVersion, 2)
+    assert.equal(migrated.technician, 'Lisandro')
+    assert.equal(migrated.deviceWrite, true, 'new access switches default to full access')
+    // once saved at version 2, switching live writes off again is respected
+    await saveSettings(file, { ...migrated, vaultLive: false })
+    assert.equal((await loadSettings(file)).vaultLive, false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('access switches and the per-action list accept only sane values', () => {
+  const s = mergeSettings(DEFAULT_SETTINGS, {
+    deviceExecute: false,
+    customCommands: 'no',
+    disabledActions: ['restart-computer', 'restart-computer', 'Bad Name', 7, 'dns-flush']
+  })
+  assert.equal(s.deviceExecute, false)
+  assert.equal(s.customCommands, true, 'wrong type ignored')
+  assert.deepEqual(s.disabledActions, ['restart-computer', 'dns-flush'])
 })

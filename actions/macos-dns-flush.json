@@ -1,0 +1,29 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-dns-flush",
+  "version": 1,
+  "os": "macos",
+  "access": "execute",
+  "category": "Network",
+  "title": "Flush the DNS cache",
+  "description": "Clears the macOS DNS cache (dscacheutil -flushcache and a restart signal to mDNSResponder).",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "arh_plan true \"Clear the DNS cache\""
+  ],
+  "apply": [
+    "dscacheutil -flushcache || exit $?",
+    "killall -HUP mDNSResponder || exit $?",
+    "arh_note \"DNS cache cleared\""
+  ]
+}

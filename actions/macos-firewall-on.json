@@ -1,0 +1,35 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-firewall-on",
+  "version": 1,
+  "os": "macos",
+  "access": "write",
+  "category": "Firewall",
+  "title": "Turn on the application firewall",
+  "description": "Turns on the macOS application firewall (socketfilterfw --setglobalstate on) and reads it back. It can block incoming connections to apps that are not signed; refuses when a configuration profile manages the firewall.",
+  "impact": "interrupts",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "/usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Firewall: macOS application firewall is (disabled|off)"
+  ],
+  "shell": "sh",
+  "timeoutSeconds": 60,
+  "settleSeconds": 2,
+  "params": [],
+  "measure": [
+    "fw=/usr/libexec/ApplicationFirewall/socketfilterfw",
+    "st=$(\"$fw\" --getglobalstate 2>&1)",
+    "case \"$st\" in *enabled*|*\"State = 1\"*|*\"State = 2\"*) on=yes;; *) on=no;; esac",
+    "if [ \"$on\" = yes ]; then arh_item \"Application firewall\" on; else arh_item \"Application firewall\" off; fi",
+    "arh_info \"Reported\" \"$st\"",
+    "if [ -e \"/Library/Managed Preferences/com.apple.security.firewall.plist\" ]; then arh_blocker \"A configuration profile manages the firewall\"; fi",
+    "if [ \"$on\" = yes ]; then arh_plan false \"Already on\"; else arh_plan true \"Turn the application firewall on\"; fi"
+  ],
+  "apply": [
+    "/usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on || exit $?"
+  ]
+}

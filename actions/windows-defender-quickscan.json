@@ -1,0 +1,41 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-defender-quickscan",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Antivirus",
+  "title": "Run a Defender quick scan",
+  "description": "Runs a Microsoft Defender quick scan (Start-MpScan -ScanType QuickScan). It takes a few minutes and the computer is slower meanwhile; the scan itself runs in the Defender service, so it cannot be stopped from here once started. Threats found are listed by name (never by file path).",
+  "impact": "slows",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "powershell",
+  "timeoutSeconds": 3600,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "$s = Get-MpComputerStatus -ErrorAction SilentlyContinue",
+    "if (-not $s) { Add-ArhBlocker 'Microsoft Defender is not available on this computer'; Set-ArhPlan $false 'Nothing to do'; exit 0 }",
+    "",
+    "Add-ArhItem 'Last quick scan' (Format-ArhTime $s.QuickScanEndTime)",
+    "$recent = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object { $_.InitialDetectionTime -gt (Get-Date).AddDays(-30) })",
+    "Add-ArhItem 'Detections in the last 30 days' $recent.Count",
+    "Add-ArhInfo 'Defender mode' $s.AMRunningMode",
+    "Set-ArhPlan $true 'Run a quick scan (a few minutes; the computer is slower meanwhile)'"
+  ],
+  "apply": [
+    "$started = Get-Date",
+    "Start-MpScan -ScanType QuickScan",
+    "$found = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object { $_.InitialDetectionTime -ge $started })",
+    "Add-ArhNote \"$($found.Count) detection(s) during the scan\"",
+    "foreach ($d in ($found | Select-Object -First 10)) {",
+    "  $t = Get-MpThreat -ThreatID $d.ThreatID -ErrorAction SilentlyContinue",
+    "  if ($t) { Add-ArhWarning ('Threat found: ' + $t.ThreatName) } else { Add-ArhWarning \"Threat found: id $($d.ThreatID)\" }",
+    "}"
+  ]
+}

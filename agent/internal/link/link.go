@@ -1,6 +1,7 @@
 // Package link is the agent side of the dashboard connection: it listens for host beacons,
 // opens one outbound mutually-authenticated TLS session, performs enrollment on first contact,
-// and executes scan profiles the host names.
+// executes scan profiles the host names and, under the device's policy and only over the cable,
+// named actions and custom commands (actions.go).
 package link
 
 import (
@@ -19,10 +20,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RockMoon1/IT-Dashboard/actions"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/audit"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/executor"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/identity"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/policy"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/protocol"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/service"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/sysinfo"
 	"github.com/RockMoon1/IT-Dashboard/profiles"
 )
 
@@ -62,6 +67,8 @@ type Config struct {
 	Serial   string
 	OS       string
 	Logger   *log.Logger
+
+	trustAnyLink bool // tests only: treat a loopback session as the cable
 }
 
 type Agent struct {
@@ -69,16 +76,43 @@ type Agent struct {
 	mu        sync.Mutex
 	connected bool
 	lastEnd   time.Time
-	runMu     sync.Mutex
-	runCancel context.CancelFunc
-	runID     string
+
+	// The single run slot, shared by scans, actions and custom commands.
+	runMu        sync.Mutex
+	runCancel    context.CancelFunc
+	runID        string
+	runKind      string // "scan", "action" or "exec"
+	runPhase     string // for actions: measure, apply, measure-after
+	runAbortable bool
+	restartAt    time.Time // a restart the dashboard scheduled
+
+	sessMu sync.Mutex
+	codec  *protocol.Codec // the session connected now, if any
+
+	rootMu  sync.Mutex
+	rootCtx context.Context
+
+	journal *runJournal
+	audit   *audit.Log
+	catalog func(osName string) []actions.Action // actions.ForOS; tests supply their own
 }
 
 func New(cfg Config) *Agent {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
-	return &Agent{cfg: cfg}
+	return &Agent{cfg: cfg, journal: openJournal(cfg.DataDir), audit: audit.Open(cfg.DataDir), catalog: actions.ForOS}
+}
+
+// root is the agent's lifetime context: actions and custom commands hang off it, not off the
+// session, so pulling the cable does not stop a change half way.
+func (a *Agent) root() context.Context {
+	a.rootMu.Lock()
+	defer a.rootMu.Unlock()
+	if a.rootCtx == nil {
+		return context.Background()
+	}
+	return a.rootCtx
 }
 
 func (a *Agent) hostRecordPath() string { return filepath.Join(a.cfg.DataDir, hostRecordFile) }
@@ -113,6 +147,9 @@ type datagram struct {
 // wildcard socket; IPv6 multicast arrives on one socket per interface, rescanned every 10 s so a
 // USB adapter that appears after the agent started is picked up.
 func (a *Agent) Run(ctx context.Context) error {
+	a.rootMu.Lock()
+	a.rootCtx = ctx
+	a.rootMu.Unlock()
 	in := make(chan datagram, 16)
 	v4, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: BeaconPort})
 	if err != nil {
@@ -307,14 +344,18 @@ func (a *Agent) session(ctx context.Context, ip net.IP, zone string, port int, b
 	}
 	defer conn.Close()
 	codec := protocol.NewCodec(conn)
+	link := sessionLink(conn.LocalAddr(), conn.RemoteAddr())
+	if a.cfg.trustAnyLink {
+		link = "cable"
+	}
 
 	if m.token != nil {
-		if err := a.enroll(conn, codec, *m.token, seenFP); err != nil {
+		if err := a.enroll(conn, codec, *m.token, seenFP, link); err != nil {
 			return fmt.Errorf("enrollment: %w", err)
 		}
 		a.cfg.Logger.Printf("enrolled with dashboard %s at %s", seenFP[:16], addr)
 	} else {
-		if err := codec.Write(a.hello()); err != nil {
+		if err := codec.Write(a.hello(link)); err != nil {
 			return err
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -331,23 +372,43 @@ func (a *Agent) session(ctx context.Context, ip net.IP, zone string, port int, b
 			return fmt.Errorf("unexpected reply %q", resp.Type)
 		}
 	}
-	return a.loop(ctx, conn, codec)
+	a.attach(codec)
+	defer a.detach(codec)
+	// results the dashboard has not acknowledged yet (a cable pulled during an action)
+	for _, r := range a.journal.outbox() {
+		r := r
+		_ = codec.Write(protocol.Message{Type: "result", RunID: r.RunID, Result: &r})
+	}
+	return a.loop(ctx, conn, codec, link)
 }
 
-func (a *Agent) hello() protocol.Message {
+func (a *Agent) hello(link string) protocol.Message {
 	var refs []protocol.ProfileRef
 	for _, p := range profiles.ForOS(a.cfg.OS) {
 		refs = append(refs, protocol.ProfileRef{Name: p.Name, Version: p.Version})
 	}
-	return protocol.Message{Type: "hello", Hostname: a.cfg.Hostname, Serial: a.cfg.Serial, OS: a.cfg.OS, AgentVersion: a.cfg.Version, Profiles: refs}
+	var acts []protocol.ActionRef
+	for _, x := range a.catalog(a.cfg.OS) {
+		acts = append(acts, protocol.ActionRef{Name: x.Name, Version: x.Version, SHA256: x.SHA256()})
+	}
+	pol := policy.Load(a.cfg.DataDir)
+	msg := protocol.Message{Type: "hello", Hostname: a.cfg.Hostname, Serial: a.cfg.Serial, OS: a.cfg.OS, AgentVersion: a.cfg.Version, Profiles: refs,
+		Protocol: protocol.Version, Link: link, BootTime: sysinfo.BootTime(), Actions: acts, Policy: &pol}
+	a.runMu.Lock()
+	msg.Running = a.runID
+	a.runMu.Unlock()
+	if at, pending := a.restartPending(); pending {
+		msg.PendingRestartUntil = at.UTC().Format(time.RFC3339)
+	}
+	return msg
 }
 
-func (a *Agent) enroll(conn *tls.Conn, codec *protocol.Codec, tok protocol.Token, hostFP string) error {
+func (a *Agent) enroll(conn *tls.Conn, codec *protocol.Codec, tok protocol.Token, hostFP, link string) error {
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
 		return err
 	}
-	msg := a.hello()
+	msg := a.hello(link)
 	msg.Type = "enroll"
 	msg.Token = tok.String()
 	msg.Nonce = base64.StdEncoding.EncodeToString(nonce)
@@ -389,12 +450,13 @@ func (a *Agent) enroll(conn *tls.Conn, codec *protocol.Codec, tok protocol.Token
 	return service.ClearPendingToken(a.cfg.DataDir)
 }
 
-func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec) error {
+func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec, link string) error {
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
 		t := time.NewTicker(pingEvery)
 		defer t.Stop()
+		lastPolicy := policy.Load(a.cfg.DataDir).Fingerprint()
 		for {
 			select {
 			case <-stop:
@@ -406,10 +468,15 @@ func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec)
 				if err := codec.Write(protocol.Message{Type: "ping"}); err != nil {
 					return
 				}
+				// a policy changed on the device while connected is reported at once
+				if pol := policy.Load(a.cfg.DataDir); pol.Fingerprint() != lastPolicy {
+					lastPolicy = pol.Fingerprint()
+					_ = codec.Write(protocol.Message{Type: "policy", Policy: &pol})
+				}
 			}
 		}
 	}()
-	defer a.abortRun()
+	defer a.sessionEnded()
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		m, err := codec.Read()
@@ -425,19 +492,17 @@ func (a *Agent) loop(ctx context.Context, conn *tls.Conn, codec *protocol.Codec)
 		case "pong", "welcome":
 		case "run":
 			a.startRun(ctx, codec, m)
+		case "action":
+			a.startAction(codec, link, m)
+		case "exec":
+			a.startExec(codec, link, m)
+		case "ack":
+			_ = a.journal.ack(m.RunID)
 		case "abort":
-			a.abortRun()
+			a.abort(codec, m.RunID)
 		case "bye":
 			return nil
 		}
-	}
-}
-
-func (a *Agent) abortRun() {
-	a.runMu.Lock()
-	defer a.runMu.Unlock()
-	if a.runCancel != nil {
-		a.runCancel()
 	}
 }
 
@@ -445,7 +510,7 @@ func (a *Agent) startRun(ctx context.Context, codec *protocol.Codec, m protocol.
 	a.runMu.Lock()
 	if a.runCancel != nil {
 		a.runMu.Unlock()
-		_ = codec.Write(protocol.Message{Type: "run-end", RunID: m.RunID, OK: protocol.BoolPtr(false), Error: "busy: another run is in progress"})
+		_ = codec.Write(protocol.Message{Type: "run-end", RunID: m.RunID, OK: protocol.BoolPtr(false), ErrorCode: protocol.CodeBusy, Error: "busy: another run is in progress"})
 		return
 	}
 	p, err := profiles.Get(m.Profile, m.Version)
@@ -460,6 +525,7 @@ func (a *Agent) startRun(ctx context.Context, codec *protocol.Codec, m protocol.
 	runCtx, cancel := context.WithCancel(ctx)
 	a.runCancel = cancel
 	a.runID = m.RunID
+	a.runKind = "scan"
 	a.runMu.Unlock()
 
 	go func() {
@@ -468,6 +534,7 @@ func (a *Agent) startRun(ctx context.Context, codec *protocol.Codec, m protocol.
 			a.runMu.Lock()
 			a.runCancel = nil
 			a.runID = ""
+			a.runKind = ""
 			a.runMu.Unlock()
 		}()
 		a.execute(runCtx, codec, m.RunID, p)

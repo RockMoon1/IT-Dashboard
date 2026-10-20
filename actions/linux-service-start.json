@@ -1,0 +1,59 @@
+{
+  "schema": "arh-action/1",
+  "name": "linux-service-start",
+  "version": 1,
+  "os": "linux",
+  "access": "write",
+  "category": "Services",
+  "title": "Start a stopped enabled service",
+  "description": "Starts one systemd service that is enabled at boot but not running (systemctl start). Units that are not enabled, and anything that is not a .service, are refused.",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "systemctl stop -- <the service>",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Services: \\d+ systemd unit\\(s\\) failed"
+  ],
+  "shell": "sh",
+  "timeoutSeconds": 90,
+  "settleSeconds": 3,
+  "params": [
+    {
+      "name": "name",
+      "label": "systemd service, e.g. cups.service",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9_.@-]{0,72}\\.service",
+      "maxLength": 80,
+      "required": true,
+      "default": "",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "cups.service",
+          "ssh.service",
+          "getty@tty1.service"
+        ],
+        "bad": [
+          "",
+          "poweroff.target",
+          "tmp.mount",
+          "cups",
+          "a b.service"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "unit=\"$ARH_PARAM_NAME\"",
+    "state=$(systemctl is-active -- \"$unit\" 2>/dev/null)",
+    "enabled=$(systemctl is-enabled -- \"$unit\" 2>/dev/null)",
+    "arh_item \"Service $unit\" \"${state:-unknown}\"",
+    "arh_info \"Enabled at boot\" \"${enabled:-unknown}\"",
+    "if [ \"$enabled\" != enabled ]; then arh_blocker \"Only services enabled at boot are started here; $unit is ${enabled:-unknown}\"; fi",
+    "if [ \"$state\" = active ]; then arh_plan false \"Already running\"; else arh_plan true \"Start $unit\"; fi"
+  ],
+  "apply": [
+    "systemctl start -- \"$ARH_PARAM_NAME\" || exit $?"
+  ]
+}

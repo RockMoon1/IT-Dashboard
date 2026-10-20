@@ -1,0 +1,38 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-update-search",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Updates",
+  "title": "Check for Windows updates",
+  "description": "Searches for updates that are not installed, with the Windows Update Agent (search only: it downloads and installs nothing). Lists their titles. Uses WSUS when the computer is set to.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Updates: No Windows update installed for \\d+ days"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 900,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "$wu = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate' -ErrorAction SilentlyContinue",
+    "Add-ArhInfo 'Update source' $(if ($wu -and $wu.WUServer) { \"WSUS $($wu.WUServer)\" } else { 'Windows Update' })",
+    "$last = $null",
+    "try { $last = (New-Object -ComObject Microsoft.Update.AutoUpdate).Results.LastSearchSuccessDate } catch { }",
+    "Add-ArhInfo 'Last automatic check' (Format-ArhTime $last)",
+    "Set-ArhPlan $true 'Search for updates (installs nothing)'"
+  ],
+  "apply": [
+    "$searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()",
+    "$r = $searcher.Search(\"IsInstalled=0 and IsHidden=0 and Type='Software'\")",
+    "Add-ArhNote \"$($r.Updates.Count) update(s) available\"",
+    "$i = 0",
+    "foreach ($u in $r.Updates) { if ($i -ge 25) { break }; Add-ArhNote $u.Title; $i++ }"
+  ]
+}

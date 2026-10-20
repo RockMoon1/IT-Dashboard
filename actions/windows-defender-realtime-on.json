@@ -1,0 +1,42 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-defender-realtime-on",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Antivirus",
+  "title": "Turn on Defender real-time protection",
+  "description": "Turns Defender real-time protection on (Set-MpPreference -DisableRealtimeMonitoring $false) and reads the effective state back after 10 seconds. It refuses when Group Policy turns it off or another antivirus is in charge (Defender in passive mode).",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "Set-MpPreference -DisableRealtimeMonitoring $true (turns protection off; not recommended)",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Antivirus: Defender real-time protection is off"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 10,
+  "params": [],
+  "measure": [
+    "$s = Get-MpComputerStatus -ErrorAction SilentlyContinue",
+    "if (-not $s) { Add-ArhBlocker 'Microsoft Defender is not available on this computer'; Set-ArhPlan $false 'Nothing to do'; exit 0 }",
+    "",
+    "Add-ArhItem 'Real-time protection' $(if ($s.RealTimeProtectionEnabled) { 'on' } else { 'off' })",
+    "Add-ArhInfo 'Defender mode' $s.AMRunningMode",
+    "Add-ArhInfo 'Tamper protection' $(if ($s.IsTamperProtected) { 'on' } else { 'off' })",
+    "$pol = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection' -ErrorAction SilentlyContinue",
+    "if ($pol -and $pol.DisableRealtimeMonitoring -eq 1) { Add-ArhBlocker 'Group Policy turns real-time protection off' }",
+    "$mode = [string]$s.AMRunningMode",
+    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in $mode: another antivirus is in charge\" }",
+    "foreach ($p in @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue)) {",
+    "  if ($p.displayName -notmatch 'Defender') { Add-ArhInfo 'Other antivirus' $p.displayName }",
+    "}",
+    "if ($s.RealTimeProtectionEnabled) { Set-ArhPlan $false 'Already on' } else { Set-ArhPlan $true 'Turn real-time protection on' }"
+  ],
+  "apply": [
+    "Set-MpPreference -DisableRealtimeMonitoring $false"
+  ]
+}

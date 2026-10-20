@@ -1,0 +1,31 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-restart-cancel",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Power",
+  "title": "Cancel the restart",
+  "description": "Cancels a restart that is counting down (shutdown /a). It cannot cancel a restart Windows Update itself has scheduled.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": true,
+  "fixes": [],
+  "shell": "powershell",
+  "timeoutSeconds": 30,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "Set-ArhPlan $true 'Cancel a restart that is counting down, if there is one'"
+  ],
+  "apply": [
+    "$out = Invoke-ArhNative 'shutdown.exe' '/a'",
+    "$code = $LASTEXITCODE",
+    "if ($code -eq 1116) { Add-ArhNote 'No restart was counting down'; exit 0 }",
+    "if ($code -eq 0) { Add-ArhNote 'Restart cancelled' } else { Add-ArhNote \"shutdown.exe /a exit $code $out\" }",
+    "exit $code"
+  ]
+}

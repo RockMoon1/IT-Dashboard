@@ -1,0 +1,59 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-restart",
+  "version": 1,
+  "os": "macos",
+  "access": "execute",
+  "category": "Power",
+  "title": "Restart with warning",
+  "description": "Schedules a restart (shutdown -r +minutes, 2 to 60, default 10). macOS shows no warning on screen to a signed-in user, so tell them first; open apps are closed when the time comes. Can be cancelled with \"Cancel the restart\".",
+  "impact": "interrupts",
+  "reversible": true,
+  "undo": "macos-restart-cancel",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [
+    {
+      "name": "minutes",
+      "label": "Minutes before the restart (2 to 60)",
+      "pattern": "[0-9]{1,2}",
+      "maxLength": 2,
+      "required": false,
+      "default": "10",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "2",
+          "10",
+          "60"
+        ],
+        "bad": [
+          "",
+          "1.5",
+          "100",
+          "ten"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "min=\"$ARH_PARAM_MINUTES\"",
+    "if [ \"$min\" -lt 2 ] || [ \"$min\" -gt 60 ]; then arh_blocker \"The delay must be 2 to 60 minutes\"; fi",
+    "user=$(stat -f %Su /dev/console 2>/dev/null)",
+    "if [ -n \"$user\" ] && [ \"$user\" != root ]; then arh_info \"Signed in\" \"$user\"; arh_warning_user=1; else arh_info \"Signed in\" \"nobody\"; fi",
+    "if [ -n \"${arh_warning_user:-}\" ]; then arh_warn \"$user is signed in and macOS shows them no warning: unsaved work is lost when the restart comes\"; fi",
+    "arh_info \"Up since\" \"$(sysctl -n kern.boottime 2>/dev/null | sed 's/.*} //')\"",
+    "arh_plan true \"Restart in $min minutes\""
+  ],
+  "apply": [
+    "shutdown -r \"+$ARH_PARAM_MINUTES\" \"ARH IT: this Mac will restart in $ARH_PARAM_MINUTES minutes.\" </dev/null >/dev/null 2>&1",
+    "code=$?",
+    "if [ $code -eq 0 ]; then arh_note \"Restart scheduled in $ARH_PARAM_MINUTES minutes\"; else arh_note \"shutdown exit $code\"; fi",
+    "exit $code"
+  ]
+}

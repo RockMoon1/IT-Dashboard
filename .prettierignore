@@ -3,6 +3,8 @@ out
 dist
 package-lock.json
 profiles
+# action files are hashed byte for byte (actions/versions.lock); never reformat them
+actions
 agent
 tests/fixtures
 scripts/*.ps1

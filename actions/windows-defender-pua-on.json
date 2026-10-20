@@ -1,0 +1,40 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-defender-pua-on",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Protection",
+  "title": "Block potentially unwanted apps (Defender PUA)",
+  "description": "Turns on Defender blocking of potentially unwanted apps (Set-MpPreference -PUAProtection Enabled): adware, bundlers and browser hijackers that pass a normal scan. Refuses when Group Policy sets it.",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "",
+  "manualUndo": "Set-MpPreference -PUAProtection to the value before (Disabled or AuditMode)",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Protection: Defender potentially-unwanted-app blocking is off"
+  ],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 3,
+  "params": [],
+  "measure": [
+    "$s = Get-MpComputerStatus -ErrorAction SilentlyContinue",
+    "if (-not $s) { Add-ArhBlocker 'Microsoft Defender is not available on this computer'; Set-ArhPlan $false 'Nothing to do'; exit 0 }",
+    "",
+    "$names = @{ 0 = 'off'; 1 = 'block'; 2 = 'audit only' }",
+    "$p = Get-MpPreference",
+    "$cur = [int]$p.PUAProtection",
+    "Add-ArhItem 'Potentially unwanted app blocking' $(if ($names.ContainsKey($cur)) { $names[$cur] } else { \"value $cur\" })",
+    "$pol = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender' -ErrorAction SilentlyContinue",
+    "if ($pol -and $null -ne $pol.PUAProtection) { Add-ArhBlocker 'Group Policy sets this' }",
+    "$mode = [string]$s.AMRunningMode",
+    "if ($mode -and $mode -ne 'Normal') { Add-ArhBlocker \"Defender is in $mode: another antivirus is in charge\" }",
+    "if ($cur -eq 1) { Set-ArhPlan $false 'Already blocking' } else { Set-ArhPlan $true 'Turn blocking on' }"
+  ],
+  "apply": [
+    "Set-MpPreference -PUAProtection Enabled"
+  ]
+}

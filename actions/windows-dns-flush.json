@@ -1,0 +1,28 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-dns-flush",
+  "version": 1,
+  "os": "windows",
+  "access": "execute",
+  "category": "Network",
+  "title": "Flush the DNS cache",
+  "description": "Clears the DNS client cache (Clear-DnsClientCache), for redirects or stale names after a DNS change.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "Add-ArhItem 'Cached DNS entries' @(Get-DnsClientCache -ErrorAction SilentlyContinue).Count",
+    "Set-ArhPlan $true 'Clear the DNS cache'"
+  ],
+  "apply": [
+    "Clear-DnsClientCache"
+  ]
+}

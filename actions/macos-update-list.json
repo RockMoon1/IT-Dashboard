@@ -1,0 +1,36 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-update-list",
+  "version": 1,
+  "os": "macos",
+  "access": "execute",
+  "category": "Updates",
+  "title": "List macOS updates",
+  "description": "Lists available macOS software updates (softwareupdate -l). It installs nothing.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [
+    "^Updates: \\d+ macOS update\\(s\\) available"
+  ],
+  "shell": "sh",
+  "timeoutSeconds": 900,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "last=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate LastSuccessfulDate 2>/dev/null)",
+    "arh_info \"Last successful check\" \"${last:-unknown}\"",
+    "arh_plan true \"List available updates (installs nothing)\""
+  ],
+  "apply": [
+    "out=$(softwareupdate -l 2>&1)",
+    "code=$?",
+    "n=$(printf '%s\\n' \"$out\" | grep -c '^\\* Label:')",
+    "arh_note \"$n update(s) available\"",
+    "printf '%s\\n' \"$out\" | sed -n 's/^\\* Label: //p' | head -n 25 | while IFS= read -r l; do arh_note \"$l\"; done",
+    "exit $code"
+  ]
+}

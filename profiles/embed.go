@@ -32,6 +32,11 @@ type Check struct {
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 	Optional       bool     `json:"optional"`
 	Access         string   `json:"access"`
+	// The fields below are set by the agent for actions and custom commands, never from JSON.
+	Env        []string `json:"-"` // extra environment (action parameters, phase, result file)
+	CleanEnv   bool     `json:"-"` // drop inherited ARH_* variables (and PSModulePath on Windows)
+	FixedPath  bool     `json:"-"` // system PATH and a fixed working folder only
+	LongScript bool     `json:"-"` // Windows: script on stdin to a fixed bootstrap, not the command line
 }
 
 type Profile struct {

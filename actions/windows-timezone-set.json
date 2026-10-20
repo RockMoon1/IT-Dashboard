@@ -1,0 +1,59 @@
+{
+  "schema": "arh-action/1",
+  "name": "windows-timezone-set",
+  "version": 1,
+  "os": "windows",
+  "access": "write",
+  "category": "Clock",
+  "title": "Set the time zone",
+  "description": "Sets the Windows time zone (Set-TimeZone). The default is Mountain Standard Time (Colorado sites); give another Windows zone id for a remote user. The previous zone is kept so it can be undone.",
+  "impact": "quiet",
+  "reversible": true,
+  "undo": "windows-timezone-set",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "powershell",
+  "timeoutSeconds": 60,
+  "settleSeconds": 0,
+  "params": [
+    {
+      "name": "zone",
+      "label": "Windows time zone id",
+      "pattern": "[A-Za-z0-9][A-Za-z0-9 ()+.,-]{0,63}",
+      "maxLength": 64,
+      "required": false,
+      "default": "Mountain Standard Time",
+      "choices": [],
+      "examples": {
+        "ok": [
+          "Mountain Standard Time",
+          "Eastern Standard Time",
+          "US Mountain Standard Time",
+          "UTC",
+          "W. Europe Standard Time",
+          "UTC+12"
+        ],
+        "bad": [
+          "",
+          "Mountain;Standard",
+          "Zone\"x"
+        ]
+      }
+    }
+  ],
+  "measure": [
+    "$id = $env:ARH_PARAM_ZONE",
+    "$cur = Get-TimeZone",
+    "Add-ArhItem 'Time zone' $cur.Id",
+    "Set-ArhRestore 'zone' $cur.Id",
+    "$auto = Get-Service tzautoupdate -ErrorAction SilentlyContinue",
+    "if ($auto -and \"$($auto.StartType)\" -ne 'Disabled') { Add-ArhWarning 'Set time zone automatically is on: Windows may change the zone back' }",
+    "if (-not (Get-TimeZone -ListAvailable | Where-Object { $_.Id -eq $id })) { Add-ArhBlocker \"Unknown Windows time zone id: $id\" }",
+    "if ($cur.Id -eq $id) { Set-ArhPlan $false \"Already $id\" } else { Set-ArhPlan $true \"Change the time zone from $($cur.Id) to $id\" }"
+  ],
+  "apply": [
+    "Set-TimeZone -Id $env:ARH_PARAM_ZONE"
+  ]
+}

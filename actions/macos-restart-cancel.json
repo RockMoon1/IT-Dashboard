@@ -1,0 +1,28 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-restart-cancel",
+  "version": 1,
+  "os": "macos",
+  "access": "execute",
+  "category": "Power",
+  "title": "Cancel the restart",
+  "description": "Cancels a scheduled restart by stopping the waiting shutdown process.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": true,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 30,
+  "settleSeconds": 0,
+  "params": [],
+  "measure": [
+    "if pgrep -x shutdown >/dev/null 2>&1; then arh_item \"Restart waiting\" yes; arh_plan true \"Cancel the waiting restart\"; else arh_item \"Restart waiting\" no; arh_plan false \"No restart is waiting\"; fi"
+  ],
+  "apply": [
+    "killall shutdown || exit $?",
+    "arh_note \"Restart cancelled\""
+  ]
+}

@@ -1,9 +1,10 @@
 # Vault schema: what the inspection found and what the dashboard proposes to write
 
-> **Status: proposal, waiting for your approval. Nothing has been written to the vault.**
-> Source: `scripts/Inspect-Vault.ps1` report generated 2026-10-15 09:01 (read-only).
-> The app keeps every write a dry run until **Vault schema approved** and then **Live writes**
-> are ticked in Settings, in that order.
+> **Status: approved by Lisandro on 2026-10-20** ("go for it; don't change the data, the format
+> is up to you, the data must be correct"). Source: `scripts/Inspect-Vault.ps1` report generated
+> 2026-10-15 09:01 (read-only). The dashboard writes only its own sections between its markers;
+> existing text is never changed. Every switch (approval, live writes, writing after each scan
+> or action) stays in Settings and can be turned off.
 
 ## 1. Evidence from the report
 
@@ -143,32 +144,29 @@ empty marker lines there **before the first live write**; the writer fills them 
 | Open Loops      | end of the note (default) or below `## 🟠 This week` | `<!-- DASH:HEALTH-LOOPS:START -->` and `<!-- DASH:HEALTH-LOOPS:END -->`   |
 | Hub             | under `## Live work`                                 | `<!-- DASH:DEVICE-HEALTH:START -->` and `<!-- DASH:DEVICE-HEALTH:END -->` |
 
-## 3. Questions to settle with the approval
+## 3. Decisions (2026-10-20)
 
-1. **Hub safety rule.** Does `## 🚨 Read this first — vault safety rule for ARH` or
-   `## Standing rules` limit tool-written content in the hub? If yes or unsure, leave **Hub note**
-   empty in Settings; nothing else depends on the hub block.
-2. **Account names in findings.** A few per-user findings name the Windows account they concern
-   (for example "Office is configured to enable all macros for jdoe", or an Outlook data file
-   name, which is usually the mailbox address). No patient data, documents or mail content is
-   collected. Does `## 🔴 What never goes in the vault` in the IT Note-Taking Standard allow
-   staff account names? If not, they can be replaced with "a user profile" in vault text only.
-3. **Plugins.** Only matters if you want due dates on generated tasks (default: none, matching
-   the vault). Re-run the updated `Inspect-Vault.ps1`: it now walks up to the parent folder's
-   `.obsidian` and reports the Tasks plugin and its global filter.
+1. **Hub:** the compact device-health block goes into the hub (`ARH IT Hub.md`).
+2. **Account names:** included. Findings that name a Windows account or mailbox file keep the
+   name in vault text ("everything must go in"). No patient data, documents or mail content is
+   collected by scans.
+3. **Due dates:** none on generated tasks, matching the vault (0 of 709 tasks carry one).
+4. **When the vault is written:** after every scan or action, automatically (Settings:
+   "Write to the vault after every scan or action"). The preview and **Apply** remain for a
+   manual write at any time.
+5. **Data accuracy:** values in the vault come only from measurements (scan output, an action's
+   measured before and after), never from what was intended. Times are Mountain Time.
 
-## 4. How to approve
+## 4. Turning it off again
 
-1. Settings: check the four note names (defaults: `Assets/Asset Inventory.md`,
-   `ARH Open Loops.md`, `ARH Work Log.md`, `ARH IT Hub.md` or empty), your technician name.
-2. Optional: paste marker pairs where you want the blocks (table above).
-3. **Preview vault write** and read each diff. Every line should start with `+`.
-4. Tick **Vault schema approved**, then **Live writes**, then **Apply**.
+Settings: untick **Live writes** (nothing is written), or **Write to the vault after every scan
+or action** (writes happen only when you press Apply on a preview), or **Vault schema approved**
+(everything back to dry run).
 
 ## 5. Safety rules the writer enforces (tested)
 
 - Never creates, renames or deletes a file in the vault.
-- Dry run is the default; the preview is the exact unified diff per note.
+- The preview is the exact unified diff per note, available before any write.
 - Live writes require "schema approved" first (enforced in the settings loader, not only in the UI).
 - Before the first live write to a note, a copy goes to `%APPDATA%\ARH IT Dashboard\vault-backups`.
 - Writes are atomic: temp file in `%APPDATA%\ARH IT Dashboard\vault-tmp`, then replace, with retries

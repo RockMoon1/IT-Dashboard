@@ -24,7 +24,7 @@
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit --composite false",
     "typecheck:web": "vue-tsc -p tsconfig.web.json --noEmit --composite false",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"tests/**/*.test.ts\"",
-    "test:go": "go test ./agent/... ./profiles/...",
+    "test:go": "go test ./agent/... ./profiles/... ./actions/...",
     "inspect-vault": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Inspect-Vault.ps1",
     "verify-wmi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-Wmi.ps1",
     "format": "prettier --write .",

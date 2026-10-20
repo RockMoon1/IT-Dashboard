@@ -1,0 +1,30 @@
+{
+  "schema": "arh-action/1",
+  "name": "macos-time-resync",
+  "version": 1,
+  "os": "macos",
+  "access": "execute",
+  "category": "Clock",
+  "title": "Resync the clock",
+  "description": "Sets the clock from the Apple time server (sntp -sS time.apple.com). Before and after are the measured offset. It does not change the time zone.",
+  "impact": "quiet",
+  "reversible": false,
+  "undo": "",
+  "manualUndo": "",
+  "abortable": false,
+  "concurrent": false,
+  "fixes": [],
+  "shell": "sh",
+  "timeoutSeconds": 120,
+  "settleSeconds": 1,
+  "params": [],
+  "measure": [
+    "off=$(sntp time.apple.com 2>/dev/null | awk '/^[+-][0-9]/ { print $1; exit }')",
+    "arh_item \"Clock offset\" \"${off:-not measurable (time.apple.com did not answer)} s\"",
+    "arh_info \"Time zone\" \"$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')\"",
+    "arh_plan true \"Resync with time.apple.com\""
+  ],
+  "apply": [
+    "sntp -sS time.apple.com"
+  ]
+}
