@@ -59,6 +59,9 @@ jobs:
         env:
           ARH_LIVE_APPLY: '1'
         run: go test ./agent/internal/link -run TestShippedActionsApplyHere -v -count=1 -timeout 30m
+      - name: Busiest processes after the live action tests (Windows)
+        if: always() && runner.os == 'Windows'
+        run: Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 Name, Id, CPU, StartTime | Format-Table -AutoSize
 
   host:
     name: dashboard (windows)
