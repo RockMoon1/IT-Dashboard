@@ -1,8 +1,7 @@
 package executor
 
 import (
-	"context"
-	"io"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,11 +12,13 @@ import (
 	"github.com/RockMoon1/IT-Dashboard/profiles"
 )
 
-// TestLaunchCostAroundTimeZoneChange times how the agent starts PowerShell before a time zone
-// change, after it and after putting the zone back, each twice. On hosted runners every action
-// process took 11 to 20 seconds after a change, and kept doing so after the zone was restored,
-// while launches with the inherited PSModulePath stayed at 0.2 s. Opt-in (ARH_LIVE_APPLY=1): it
-// really changes the time zone and restores it.
+// TestLaunchCostAroundTimeZoneChange times how PowerShell starts with the agent's environment
+// before a time zone change, after it and after putting the zone back. On hosted runners every
+// agent process took 11 to 20 seconds after a change (and with an empty module analysis cache of
+// its own, every time), while launches with the runner's own PSModulePath stayed at 0.2 s. This
+// version checks whether a cache file of the agent's own recovers once one long-lived process has
+// written it, and whether importing a module by path skips the slow command lookup.
+// Opt-in (ARH_LIVE_APPLY=1): it really changes the time zone and restores it.
 func TestLaunchCostAroundTimeZoneChange(t *testing.T) {
 	if os.Getenv("ARH_LIVE_APPLY") != "1" {
 		t.Skip("set ARH_LIVE_APPLY=1 on a throwaway Windows machine: this changes the time zone")
@@ -28,9 +29,6 @@ func TestLaunchCostAroundTimeZoneChange(t *testing.T) {
 			t.Logf("%q: %v %s", script, err, out)
 		}
 		return strings.TrimSpace(string(out))
-	}
-	for _, name := range []string{"PSModulePath", "PSModuleAnalysisCachePath", "LOCALAPPDATA"} {
-		t.Logf("%s=%q", name, os.Getenv(name))
 	}
 	orig := ps("(Get-TimeZone).Id")
 	if orig == "" {
@@ -43,78 +41,51 @@ func TestLaunchCostAroundTimeZoneChange(t *testing.T) {
 	}
 
 	ownCache := filepath.Join(t.TempDir(), "ModuleAnalysisCache")
-	machinePath := filepath.Join(os.Getenv("ProgramFiles"), "WindowsPowerShell", "Modules") + ";" +
-		filepath.Join(systemRoot(), "System32", "WindowsPowerShell", "v1.0", "Modules")
-	// set replaces (or with an empty value removes) one variable in the final environment.
-	set := func(name, value string) func([]string) []string {
-		return func(env []string) []string {
-			out := env[:0:0]
-			for _, kv := range env {
-				if k, _, _ := strings.Cut(kv, "="); !strings.EqualFold(k, name) {
-					out = append(out, kv)
-				}
-			}
-			if value != "" {
-				out = append(out, name+"="+value)
-			}
-			return out
+	agentEnv := childEnv(os.Environ(), profiles.Check{CleanEnv: true, FixedPath: true})
+	withCache := append(append([]string(nil), agentEnv...), "PSModuleAnalysisCachePath="+ownCache)
+	cache := func() string {
+		fi, err := os.Stat(ownCache)
+		if err != nil {
+			return "no cache file"
 		}
+		return fmt.Sprintf("cache %d bytes, written %s ago", fi.Size(), time.Since(fi.ModTime()).Round(time.Second))
 	}
-	const lookup = "$null = Get-Service -Name Spooler -ErrorAction SilentlyContinue"
-	action := func(script string) profiles.Check {
-		return profiles.Check{ID: "probe", Shell: "powershell", Command: []string{script}, Format: "text", TimeoutSeconds: 120,
-			Access: "read", CleanEnv: true, FixedPath: true, LongScript: true}
-	}
-	plain := profiles.Check{ID: "probe", Shell: "powershell", Command: []string{lookup}, Format: "text", TimeoutSeconds: 120, Access: "read"}
-	variants := []struct {
-		name  string
-		check profiles.Check
-		env   func([]string) []string
-	}{
-		{"plain", plain, nil},
-		{"action", action(lookup), nil},
-		{"action-exit0", action("exit 0"), nil},
-		{"modpath-unset", action(lookup), set("PSModulePath", "")},
-		{"modpath-machine", action(lookup), set("PSModulePath", machinePath)},
-		{"own-cache", action(lookup), set("PSModuleAnalysisCachePath", ownCache)},
-	}
-	probe := func(stage string) {
-		for _, v := range variants {
-			cmd, h, err := command(context.Background(), v.check)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if v.env != nil {
-				if cmd.Env == nil {
-					cmd.Env = os.Environ()
-				}
-				cmd.Env = v.env(cmd.Env)
-			}
-			cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-			start := time.Now()
-			if err = cmd.Start(); err == nil {
-				h.afterStart()
-				err = cmd.Wait()
-			}
-			h.done()
-			t.Logf("%-16s %-16s %6d ms err %v", stage, v.name, time.Since(start).Milliseconds(), err)
-		}
+	run := func(stage, name string, env []string, script string) {
+		cmd := exec.Command(powerShellPath(), "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+		cmd.Env = env
+		cmd.Dir = filepath.Join(systemRoot(), "System32")
 		start := time.Now()
-		ps(lookup)
-		t.Logf("%-16s %-16s %6d ms", stage, "-Command", time.Since(start).Milliseconds())
+		out, err := cmd.CombinedOutput()
+		msg := ""
+		if err != nil {
+			msg = fmt.Sprintf(" err %v %.200s", err, out)
+		}
+		t.Logf("%-22s %-18s %6d ms  %s%s", stage, name, time.Since(start).Milliseconds(), cache(), msg)
+	}
+	const lookup = "$null = Get-Service -Name Spooler"
+	const imported = `Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1"; $null = Get-Service -Name Spooler`
+	const warm = "$null = Get-Module -ListAvailable; Start-Sleep -Seconds 15"
+	probe := func(stage string) {
+		run(stage, "agent-env", agentEnv, lookup)
+		run(stage, "agent-env+import", agentEnv, imported)
+		run(stage, "own-cache", withCache, lookup)
+		run(stage, "own-cache again", withCache, lookup)
 	}
 	setZone := func(id string) {
-		if r := Run(context.Background(), action("Set-TimeZone -Id '"+id+"'"), func(string, []byte) {}); r.ExitCode != 0 {
-			t.Fatalf("Set-TimeZone %q: exit %d", id, r.ExitCode)
-		}
+		start := time.Now()
+		ps("Set-TimeZone -Id '" + id + "'")
+		t.Logf("time zone now %q (%s)", ps("(Get-TimeZone).Id"), time.Since(start).Round(time.Millisecond))
 	}
 
 	probe("before")
-	probe("before again")
+	run("before", "warm own cache", withCache, warm)
+	probe("before, warmed")
 	setZone(other)
 	probe("changed")
-	probe("changed again")
+	run("changed", "warm own cache", withCache, warm)
+	probe("changed, warmed")
 	setZone(orig)
 	probe("restored")
-	probe("restored again")
+	run("restored", "warm own cache", withCache, warm)
+	probe("restored, warmed")
 }
