@@ -2,12 +2,15 @@ package link
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,16 +107,49 @@ func runLive(t *testing.T, a *Agent, name string, params map[string]string) acti
 		}
 	}
 	id := name + "-" + time.Now().Format("150405.000")
+	clock := &phaseClock{}
+	codec := protocol.NewCodec(clock)
+	a.attach(codec)
+	started := time.Now()
 	a.runAction(context.Background(), act, full, protocol.Message{RunID: id, Mode: "apply", Technician: "ci", Reason: "live test"}, "cable")
+	a.detach(codec)
 	r, ok := a.journal.find(id)
 	if !ok {
 		t.Fatalf("%s left no result", name)
 	}
+	t.Logf("%s: %s in all; phases %s", name, time.Since(started).Round(time.Millisecond), clock.String())
 	t.Logf("%s: applied=%v skipped=%q before=%v after=%v", name, r.Applied, r.Skipped, items(r.Before), items(r.After))
 	if r.Apply != nil {
 		t.Logf("%s: apply exit %d notes %v changes %v warnings %v", name, r.Apply.ExitCode, r.Apply.Notes, r.Apply.Changes, r.Apply.Warnings)
 	}
 	return r
+}
+
+// phaseClock stands in for the dashboard and keeps how long each phase's process ran, from the
+// agent's own check-end messages, so a slow run in CI shows which phase took the time.
+type phaseClock struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *phaseClock) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (c *phaseClock) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m protocol.Message
+		if json.Unmarshal([]byte(line), &m) == nil && m.Type == "check-end" {
+			c.lines = append(c.lines, fmt.Sprintf("%s %dms", m.CheckID, m.DurationMs))
+		}
+	}
+	return len(b), nil
+}
+
+func (c *phaseClock) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.lines, ", ")
 }
 
 func items(m *actions.Measurement) []actions.Item {
