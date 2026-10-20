@@ -101,13 +101,15 @@ const RENDERER_SCRIPT = String.raw`(async () => {
     measureAndApply: catalog.every((a) => a.measure.length > 0 && a.apply.length > 0)
   }
   ;[...document.querySelectorAll('header button')].find((b) => b.textContent.trim() === 'Settings')?.click()
-  await until('Access and control in Settings', () => text().includes('Access and control'))
+  // section titles are upper-cased by CSS, and innerText returns them that way
+  const hasAccess = () => text().toLowerCase().includes('access and control')
+  await until('Access and control in Settings', hasAccess)
   out.actions.settingsSwitches = await until('one switch per action', () => {
     const n = document.querySelectorAll('details label input[type="checkbox"]').length
     return n >= catalog.length && n
   })
   ;[...document.querySelectorAll('form button')].find((b) => b.textContent.trim() === 'Cancel')?.click()
-  await until('Settings to close', () => !text().includes('Access and control'))
+  await until('Settings to close', () => !hasAccess())
 
   // "Computers" twice: the first click returns to the open computer page, the second to the list
   const tabs = ['Active scan', 'Results', 'Health', 'Open loops', 'Work log', 'Search', 'Link', 'Computers', 'Computers']
