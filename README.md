@@ -104,13 +104,24 @@ or a person's name. A computer's page puts together everything already on record
   that scan.
 - **From the vault** (read only): its Asset Inventory row, tickets that mention it, its lines
   in ARH Open Loops, Work Log entries, Change Log rows and any other note that names it. Click
-  any of them to open the note in Obsidian.
+  any of them and the note opens **inside the dashboard**, scrolled to and marking the line
+  you clicked.
 - **History**: one timeline of scans, tickets, work log entries and changes, newest first.
 
 Names and serials are matched as whole words. A hostname made only of letters (for example
 `COMPUTER`) is matched with its exact case, so the word "computer" in a sentence does not count.
 Typing a word that is not a computer, such as a person's name, shows every ticket and note that
 mentions it. Clicking a device in the left list opens its page; double-click still starts a scan.
+
+## Reading notes inside the dashboard
+
+Every note click (computer pages, Open loops, Work log, Search) opens the note in the
+dashboard's own reader: properties, headings, task boxes, callouts, tables and code as in
+Obsidian's reading view. `[[links]]` open the linked note in the same reader, with **←/→**
+(or Alt+←/→) to go back and forward, and **Linked from** lists the notes that point to it.
+**Open in Obsidian ↗** is there when you want the Obsidian app itself; nothing else opens it.
+The reader never changes a note, and it never loads anything from the internet: web links open
+in your browser only when you click them, and images in notes are shown as a label.
 
 ## Run a scan
 

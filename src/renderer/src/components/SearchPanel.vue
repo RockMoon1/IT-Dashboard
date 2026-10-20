@@ -23,7 +23,13 @@ const { state } = dash
       }}
     </p>
     <ul class="space-y-2">
-      <li v-for="h in state.searchHits" :key="`${h.file}:${h.line}`" class="card p-3 text-xs">
+      <li
+        v-for="h in state.searchHits"
+        :key="`${h.file}:${h.line}`"
+        class="card cursor-pointer p-3 text-xs hover:bg-ink-800"
+        title="Open the note at this line"
+        @click="dash.viewNote(h.file, h.line)"
+      >
         <p class="text-gold-300">
           {{ h.file }} <span class="text-mist-700">· line {{ h.line }}</span>
         </p>

@@ -4,6 +4,7 @@ import type {
   ComputerSummary,
   LookupResult,
   LookupTarget,
+  NoteView,
   DeviceView,
   EnrollmentView,
   LinkStatus,
@@ -52,6 +53,7 @@ export const IPC = {
   vaultSearch: 'vault:search',
   vaultOpen: 'vault:open',
   vaultOpenNote: 'vault:open-note',
+  vaultReadNote: 'vault:read-note',
   lookupSearch: 'lookup:search',
   lookupList: 'lookup:list',
   lookupProfile: 'lookup:profile',
@@ -112,6 +114,8 @@ export interface ArhApi {
     open(): Promise<void>
     /** Opens one note (path relative to the vault) in Obsidian. */
     openNote(file: string): Promise<void>
+    /** Reads one note for the dashboard's own viewer (read only). */
+    readNote(file: string): Promise<NoteView>
   }
   lookup: {
     search(query: string): Promise<LookupResult>

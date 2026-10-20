@@ -47,7 +47,13 @@ function sevClass(s: Severity): string {
           </ul>
         </div>
         <div class="flex gap-2">
-          <button class="btn-ghost" @click="dash.openVault()">Open vault</button>
+          <button
+            class="btn-ghost"
+            title="Opens the vault folder in File Explorer"
+            @click="dash.openVault()"
+          >
+            Open vault folder ↗
+          </button>
           <button
             class="btn-gold"
             :disabled="!run || run.status === 'running'"

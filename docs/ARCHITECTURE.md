@@ -89,6 +89,17 @@ computer does not need to be connected:
 A test builds a vault ten times the size of ARH IT (900 extra notes) and requires a computer
 page in under 1.5 s with the index warm.
 
+## Note reader (inside the dashboard)
+
+`src/shared/markdown.ts` turns a note into a tree (frontmatter, headings, lists and task boxes,
+callouts, tables, code, wikilinks, tags), never HTML; `MdBlocks.vue` and `MdInline.vue` draw it
+with text nodes only, so note content cannot inject markup or script. Comments, the dashboard's
+own markers and `^block-ids` are hidden as in Obsidian's reading view, and every block keeps its
+source line so a click can jump to and mark that line. The main process (`lookup/notes.ts`)
+reads only notes the vault index knows, resolves each `[[link]]` the way Obsidian does (exact
+path, else file name; same folder first, then the shortest path) and lists backlinks.
+Opening Obsidian itself is a separate, explicit action.
+
 ## Data collected and not collected
 
 Configuration and health only: OS, hardware, storage, drivers, services, security settings,

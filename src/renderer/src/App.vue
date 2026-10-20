@@ -15,6 +15,7 @@ import SearchPanel from './components/SearchPanel.vue'
 import LinkPanel from './components/LinkPanel.vue'
 import PreviewModal from './components/PreviewModal.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import NoteDrawer from './components/NoteDrawer.vue'
 import StatusBar from './components/StatusBar.vue'
 
 const dash = useDashboard()
@@ -166,5 +167,6 @@ onMounted(() => {
     <EnrollModal v-if="state.enrollOpen" />
     <PreviewModal v-if="state.previewOpen" />
     <SettingsPanel v-if="state.settingsOpen" />
+    <NoteDrawer v-if="state.noteHistory.length" />
   </div>
 </template>

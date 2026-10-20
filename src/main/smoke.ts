@@ -60,6 +60,38 @@ const RENDERER_SCRIPT = String.raw`(async () => {
     note: text().includes('Loaner notes')
   }
 
+  // Notes open inside the dashboard, not in Obsidian
+  const viewer = () => document.querySelector('[aria-label="Note viewer"]')
+  const viewerText = () => viewer()?.innerText ?? ''
+  const viewerTitle = () => viewer()?.querySelector('header p.text-sm')?.textContent?.trim() ?? ''
+  const viewerButton = (label) =>
+    [...(viewer()?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim() === label)
+  const row = (needle) => [...document.querySelectorAll('li')].find((li) => li.textContent.includes(needle))
+  const closeViewer = async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until('the viewer to close', () => !viewer())
+  }
+  row('battery will not hold a charge')?.click()
+  await until('the ticket in the note viewer', () => viewerText().includes('Synthetic ticket for the lookup tests'))
+  out.viewer = {
+    properties: !!viewer()?.querySelector('dl') && viewerText().includes('TKT-2026-901'),
+    taskBoxes: viewerText().includes('☐') && viewerText().includes('☑'),
+    obsidianIsOnlyAButton: !!viewerButton('Open in Obsidian ↗')
+  }
+  await closeViewer()
+  row('order a replacement battery')?.click()
+  await until('Open Loops with the clicked line marked', () =>
+    viewer()?.querySelector('.md-hit')?.textContent?.includes('order a replacement battery')
+  )
+  out.viewer.lineMarked = true
+  viewerButton('ARH Work Log')?.click()
+  await until('the Work Log after following [[ARH Work Log]]', () => viewerTitle() === 'ARH Work Log')
+  out.viewer.wikilink = true
+  viewer()?.querySelector('button[title^="Back"]')?.click()
+  await until('Back to Open Loops', () => viewerTitle() === 'ARH Open Loops')
+  out.viewer.back = true
+  await closeViewer()
+
   // "Computers" twice: the first click returns to the open computer page, the second to the list
   const tabs = ['Active scan', 'Results', 'Health', 'Open loops', 'Work log', 'Search', 'Link', 'Computers', 'Computers']
   out.tabs = {}
@@ -123,6 +155,16 @@ export function runSmoke(win: BrowserWindow): void {
         if (report['banner']) problems.push(`error banner shown: ${String(report['banner'])}`)
         for (const [k, v] of Object.entries(profile ?? {}))
           if (!v) problems.push(`computer page is missing its ${k}`)
+        const viewer = report['viewer'] as Record<string, boolean> | undefined
+        for (const k of [
+          'properties',
+          'taskBoxes',
+          'obsidianIsOnlyAButton',
+          'lineMarked',
+          'wikilink',
+          'back'
+        ])
+          if (!viewer?.[k]) problems.push(`note viewer check failed: ${k}`)
         for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))
           if (v !== 'ok') problems.push(`tab ${k}: ${v}`)
         finish(report)

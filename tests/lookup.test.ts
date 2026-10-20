@@ -312,6 +312,12 @@ test('profile: everything the vault and the scans hold for one computer, offline
       ],
       'only the part of the day about this computer'
     )
+    // the line the note viewer jumps to: the "### 10:20 MT" entry in the Work Log
+    const wlNote = notes.find((n) => n.name === 'ARH Work Log')!
+    assert.equal(
+      wlNote.lines[(p.worklog[0]?.line ?? 0) - 1],
+      '### 10:20 MT — ARH-T01 battery check'
+    )
     assert.deepEqual(
       p.changes.map((c) => c.cells['What changed']),
       ['Disabled wake timers']

@@ -84,7 +84,9 @@ function openRun(runId: string): void {
       <div
         v-for="e in state.workLog?.entries ?? []"
         :key="`${e.file}:${e.heading}`"
-        class="mt-3 card p-3"
+        class="mt-3 card cursor-pointer p-3 hover:bg-ink-800"
+        title="Open the Work Log at this day"
+        @click="dash.viewNote(e.file, undefined, e.heading)"
       >
         <p class="display text-lg text-gold-300">{{ e.heading }}</p>
         <pre class="mt-1 whitespace-pre-wrap break-words font-sans text-xs text-mist-300">{{

@@ -54,7 +54,7 @@ const KIND: Record<TimelineEvent['kind'], string> = {
 
 function openEvent(e: TimelineEvent): void {
   if (e.runId) void dash.openRunById(e.runId)
-  else if (e.file) void dash.openNote(e.file)
+  else if (e.file) void dash.viewNote(e.file, e.line)
 }
 
 function scanNow(): void {
@@ -327,7 +327,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
               v-for="row in p.inventory"
               :key="`${row.file}:${row.line}`"
               class="card mb-2 cursor-pointer p-3 text-xs hover:bg-ink-800"
-              @click="dash.openNote(row.file)"
+              @click="dash.viewNote(row.file, row.line)"
             >
               <dl class="grid grid-cols-2 gap-x-3 gap-y-1">
                 <template v-for="(v, k) in row.cells" :key="k">
@@ -351,7 +351,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
                 :key="t.file"
                 class="cursor-pointer rounded-[3px] border border-white/5 bg-ink-900 px-3 py-2 hover:bg-ink-800"
                 :class="{ 'opacity-60': t.closed }"
-                @click="dash.openNote(t.file)"
+                @click="dash.viewNote(t.file)"
               >
                 <p class="text-sm text-mist-100">{{ t.title }}</p>
                 <p class="mt-0.5 text-[11px] text-mist-500">
@@ -384,7 +384,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
                 :key="`${l.file}:${l.line}`"
                 class="flex cursor-pointer gap-2 rounded-[3px] px-2 py-1.5 text-sm hover:bg-ink-800"
                 :class="{ 'opacity-50 line-through': l.done }"
-                @click="dash.openNote(l.file)"
+                @click="dash.viewNote(l.file, l.line)"
               >
                 <span class="w-5 shrink-0 text-center">{{
                   l.priority ?? (l.done ? '✓' : '·')
@@ -406,7 +406,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
               v-for="(w, i) in p.worklog"
               :key="`${w.date}:${i}`"
               class="card mb-2 cursor-pointer p-3 hover:bg-ink-800"
-              @click="dash.openNote(w.file)"
+              @click="dash.viewNote(w.file, w.line)"
             >
               <p class="text-[11px] text-gold-300">{{ w.heading }}</p>
               <p v-for="(l, j) in w.lines" :key="j" class="text-xs text-mist-300">
@@ -422,7 +422,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
               v-for="c in p.changes"
               :key="`${c.file}:${c.line}`"
               class="card mb-2 cursor-pointer p-3 text-xs hover:bg-ink-800"
-              @click="dash.openNote(c.file)"
+              @click="dash.viewNote(c.file, c.line)"
             >
               <p class="text-mist-100">
                 {{ c.cells['What changed'] ?? Object.values(c.cells).join(' · ') }}
@@ -444,7 +444,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
               v-for="g in mentionGroups"
               :key="g.file"
               class="card mb-2 cursor-pointer p-3 hover:bg-ink-800"
-              @click="dash.openNote(g.file)"
+              @click="dash.viewNote(g.file, g.lines[0]?.line)"
             >
               <p class="text-[11px] text-gold-300">{{ g.title }}</p>
               <p

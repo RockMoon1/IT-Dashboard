@@ -65,7 +65,9 @@ const hasDue = computed(() => (loops.value?.tasks ?? []).some((t) => t.due))
       <li
         v-for="t in sorted"
         :key="`${t.file}:${t.line}`"
-        class="flex items-center gap-3 rounded-[3px] border border-white/5 bg-ink-900 px-3 py-2 text-sm"
+        class="flex items-center gap-3 rounded-[3px] border border-white/5 bg-ink-900 px-3 py-2 text-sm cursor-pointer hover:bg-ink-800"
+        title="Show this line in the note"
+        @click="dash.viewNote(t.file, t.line)"
       >
         <span class="w-5 text-center">{{ t.priority ?? '·' }}</span>
         <span class="flex-1">

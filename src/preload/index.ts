@@ -54,7 +54,8 @@ const api: ArhApi = {
     workLog: (limit) => ipcRenderer.invoke(IPC.vaultWorkLog, limit),
     search: (query) => ipcRenderer.invoke(IPC.vaultSearch, query),
     open: () => ipcRenderer.invoke(IPC.vaultOpen),
-    openNote: (file) => ipcRenderer.invoke(IPC.vaultOpenNote, file)
+    openNote: (file) => ipcRenderer.invoke(IPC.vaultOpenNote, file),
+    readNote: (file) => ipcRenderer.invoke(IPC.vaultReadNote, file)
   },
   lookup: {
     search: (query) => ipcRenderer.invoke(IPC.lookupSearch, query),

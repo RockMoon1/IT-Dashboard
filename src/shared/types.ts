@@ -514,12 +514,32 @@ export interface ComputerProfile {
   inventory: VaultRow[]
   tickets: VaultTicket[]
   loops: ProfileLoop[]
-  worklog: Array<{ file: string; date: string; heading: string; lines: string[] }>
+  worklog: Array<{ file: string; date: string; heading: string; lines: string[]; line?: number }>
   changes: VaultRow[]
   mentions: VaultMention[]
   timeline: TimelineEvent[]
   tookMs: number
   vaultError?: string
+}
+
+/* ---------- note viewer ---------- */
+
+export interface NoteLinkTarget {
+  file: string
+  title: string
+}
+
+/** A note as the dashboard shows it: parsed, with its links resolved and who links to it. */
+export interface NoteView {
+  file: string
+  title: string
+  folder: string
+  mtimeMs: number
+  frontmatter: Array<[string, string]>
+  blocks: import('./markdown.ts').Block[]
+  /** Each [[target]] in the note and the note it opens (null: no such note in the vault). */
+  links: Record<string, NoteLinkTarget | null>
+  backlinks: Array<{ file: string; title: string; line: number; text: string }>
 }
 
 /* ---------- settings ---------- */

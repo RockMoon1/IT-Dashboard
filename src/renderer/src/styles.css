@@ -126,4 +126,11 @@
     background: linear-gradient(to right, #c9a548, transparent);
     height: 1px;
   }
+  /* the line a click in the dashboard came from, marked in the note viewer */
+  .md-hit {
+    outline: 1px solid rgba(201, 165, 72, 0.6);
+    outline-offset: 3px;
+    border-radius: 3px;
+    background: rgba(201, 165, 72, 0.07);
+  }
 }

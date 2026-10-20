@@ -6,6 +6,7 @@ import type {
   ComputerSummary,
   LookupResult,
   LookupTarget,
+  NoteView,
   DeviceView,
   EnrollmentView,
   LinkStatus,
@@ -82,6 +83,19 @@ interface DashboardState {
   profileLoading: boolean
   /** A past scan opened in Results/Health while another scan is running; null = currentRun. */
   viewRunId: string | null
+  /** The note viewer: where it has been (back/forward) and what it shows now. */
+  noteHistory: NoteTarget[]
+  noteIndex: number
+  note: NoteView | null
+  noteLoading: boolean
+  noteError: string | null
+}
+
+/** A note to show, and optionally the line or heading to jump to. */
+export interface NoteTarget {
+  file: string
+  line?: number
+  heading?: string
 }
 
 const MAX_CONSOLE = 5000
@@ -126,7 +140,12 @@ const state = reactive<DashboardState>({
   profile: null,
   profileTarget: null,
   profileLoading: false,
-  viewRunId: null
+  viewRunId: null,
+  noteHistory: [],
+  noteIndex: -1,
+  note: null,
+  noteLoading: false,
+  noteError: null
 })
 
 const selectedDevice = computed(() => state.devices.find((d) => d.id === state.selectedId) ?? null)
@@ -551,6 +570,61 @@ function closeProfile(): void {
   void loadComputers()
 }
 
+/* ---------- note viewer: notes open inside the dashboard ---------- */
+
+let noteSeq = 0
+const noteTarget = computed(() => state.noteHistory[state.noteIndex] ?? null)
+
+async function loadNote(): Promise<void> {
+  const target = noteTarget.value
+  if (!target) return
+  const seq = ++noteSeq
+  state.noteLoading = true
+  state.noteError = null
+  try {
+    const view = await api().vault.readNote(target.file)
+    if (seq === noteSeq) state.note = view
+  } catch (err) {
+    if (seq === noteSeq) {
+      state.note = null
+      state.noteError = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    if (seq === noteSeq) state.noteLoading = false
+  }
+}
+
+/** Shows a note in the dashboard's viewer, jumping to a line or heading when given. */
+async function viewNote(file: string, line?: number, heading?: string): Promise<void> {
+  const next: NoteTarget = { file, line, heading }
+  // following a link drops the forward history, like a browser
+  state.noteHistory = [...state.noteHistory.slice(0, state.noteIndex + 1), next]
+  state.noteIndex = state.noteHistory.length - 1
+  await loadNote()
+}
+
+async function noteBack(): Promise<void> {
+  if (state.noteIndex <= 0) return
+  state.noteIndex--
+  await loadNote()
+}
+
+async function noteForward(): Promise<void> {
+  if (state.noteIndex >= state.noteHistory.length - 1) return
+  state.noteIndex++
+  await loadNote()
+}
+
+function closeNote(): void {
+  noteSeq++
+  state.noteHistory = []
+  state.noteIndex = -1
+  state.note = null
+  state.noteLoading = false
+  state.noteError = null
+}
+
+/** Opens the note in Obsidian itself: only when the technician asks for it. */
 async function openNote(file: string): Promise<void> {
   try {
     await api().vault.openNote(file)
@@ -622,6 +696,11 @@ export function useDashboard() {
     refreshProfile,
     closeProfile,
     openNote,
+    viewNote,
+    noteBack,
+    noteForward,
+    closeNote,
+    noteTarget,
     openRunById,
     clearError: () => {
       state.error = null

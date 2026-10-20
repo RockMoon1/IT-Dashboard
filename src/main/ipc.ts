@@ -13,6 +13,7 @@ import type {
   LinkStatus,
   LookupResult,
   LookupTarget,
+  NoteView,
   OpenLoopsView,
   ProfileSummary,
   Purpose,
@@ -60,7 +61,8 @@ import { findBlock } from './services/vault/markers.ts'
 import { buildWritePlans, notePaths } from './services/vault/plans.ts'
 import { parseDatedEntries, parseTasks, searchVault } from './services/vault/reader.ts'
 import { VaultWriter } from './services/vault/writer.ts'
-import { VaultIndex } from './services/lookup/vaultindex.ts'
+import { VaultIndex, type IndexedNote } from './services/lookup/vaultindex.ts'
+import { noteView } from './services/lookup/notes.ts'
 import {
   buildComputers,
   buildProfile,
@@ -741,10 +743,10 @@ export class AppContext {
   }
 
   /**
-   * Opens a vault note in Obsidian. Only a Markdown file the vault index knows is opened: inside
-   * the vault folder, a regular file (the index skips symlinks and junctions), no null bytes.
+   * A note the renderer named, checked: a Markdown file the vault index knows, inside the vault
+   * folder, a regular file (the index skips symlinks and junctions), no null bytes.
    */
-  private async openNote(file: string): Promise<void> {
+  private async knownNote(file: string): Promise<{ note: IndexedNote; notes: IndexedNote[] }> {
     const name = String(file)
     if (name.includes('\0')) throw new Error('not a note inside the vault')
     const root = resolve(this.settings.vaultPath)
@@ -754,8 +756,21 @@ export class AppContext {
       : abs.startsWith(`${root}${sep}`)
     if (!inside || !/\.md$/i.test(abs)) throw new Error('not a note inside the vault')
     const notes = await this.vaultIndex.notes(this.settings.vaultPath)
-    const known = notes.some((n) => resolve(n.abs) === abs)
-    if (!known || !existsSync(abs)) throw new Error(`note not found: ${name}`)
+    const note = notes.find((n) => resolve(n.abs) === abs)
+    if (!note || !existsSync(abs)) throw new Error(`note not found: ${name}`)
+    return { note, notes }
+  }
+
+  /** The dashboard's own reader: the note parsed, its links resolved, and what links to it. */
+  private async readNote(file: string): Promise<NoteView> {
+    const { note, notes } = await this.knownNote(file)
+    return noteView(note, notes)
+  }
+
+  /** Opens a vault note in Obsidian: only on request, from the viewer's "Open in Obsidian". */
+  private async openNote(file: string): Promise<void> {
+    const { note } = await this.knownNote(file)
+    const abs = resolve(note.abs)
     try {
       await shell.openExternal(`obsidian://open?path=${encodeURIComponent(abs)}`)
     } catch {
@@ -868,6 +883,7 @@ export class AppContext {
         searchVault(this.settings.vaultPath, query, { limit: 100 })
     )
     ipcMain.handle(IPC.vaultOpenNote, (_e, file: string) => this.openNote(file))
+    ipcMain.handle(IPC.vaultReadNote, (_e, file: string) => this.readNote(file))
     ipcMain.handle(IPC.lookupSearch, (_e, query: string) => this.lookupSearch(String(query ?? '')))
     ipcMain.handle(IPC.lookupList, () => this.lookupList())
     ipcMain.handle(IPC.lookupProfile, (_e, target: LookupTarget) => this.lookupProfile(target))

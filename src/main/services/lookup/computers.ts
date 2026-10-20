@@ -654,24 +654,37 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
         .sort((a, b) => Number(a.done) - Number(b.done))
     : []
   const tz = DEFAULT_CONTENT_OPTIONS.timeZone
-  const worklogParts = roles.workLog
-    ? parseDatedEntries(roles.workLog.text, roles.workLog.rel).flatMap((e) => {
+  // where in the Work Log a part starts, so the note viewer can jump to it
+  const wl = roles.workLog
+  const lineOf = (heading: string, first: string | undefined): number | undefined => {
+    if (!wl) return undefined
+    const day = wl.lines.findIndex(
+      (l) => /^#{1,6}\s+/.test(l) && l.replace(/^#{1,6}\s+/, '').trim() === heading.trim()
+    )
+    if (day === -1) return undefined
+    const at = first === undefined ? -1 : wl.lines.findIndex((l, k) => k > day && l === first)
+    return (at === -1 ? day : at) + 1
+  }
+  const worklogParts = wl
+    ? parseDatedEntries(wl.text, wl.rel).flatMap((e) => {
         const parts = match.test(e.heading) ? [{ lines: e.lines }] : matchingParts(e.lines, match)
         return parts.map((p) => ({
-          file: roles.workLog!.rel,
+          file: wl.rel,
           date: e.date,
           heading: e.heading,
           title: ('heading' in p && p.heading) || e.heading,
           at: 'time' in p && p.time ? zonedToIso(e.date, p.time.padStart(5, '0'), tz) : e.date,
-          lines: p.lines.slice(0, 15)
+          lines: p.lines.slice(0, 15),
+          line: match.test(e.heading) ? lineOf(e.heading, undefined) : lineOf(e.heading, p.lines[0])
         }))
       })
     : []
-  const worklog = worklogParts.map(({ file, date, heading, lines }) => ({
+  const worklog = worklogParts.map(({ file, date, heading, lines, line }) => ({
     file,
     date,
     heading,
-    lines
+    lines,
+    line
   }))
   const changes = roles.changeLog
     ? tableRows(roles.changeLog)
@@ -712,7 +725,13 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
         })
       ),
     ...worklogParts.map(
-      (w): TimelineEvent => ({ at: w.at, kind: 'worklog', title: w.title, file: w.file })
+      (w): TimelineEvent => ({
+        at: w.at,
+        kind: 'worklog',
+        title: w.title,
+        file: w.file,
+        line: w.line
+      })
     ),
     ...changes.flatMap((c): TimelineEvent[] => {
       const first = Object.values(c.cells)[0] ?? ''
