@@ -224,9 +224,20 @@ func TestShippedActionsApplyHere(t *testing.T) {
 			if value(r.After, "Service Spooler") != "Running" {
 				t.Fatalf("after %v", r.After.Items)
 			}
+			// RemoteRegistry is Automatic (trigger start) on Windows Server runners and Disabled on
+			// desktops, so make it Manual for the refusal and put it back afterwards.
+			was := sh(t, "(Get-Service RemoteRegistry).StartType")
+			if was != "Automatic" && was != "Manual" && was != "Disabled" {
+				t.Skipf("RemoteRegistry start type here: %q", was)
+			}
+			t.Cleanup(func() { sh(t, "Set-Service RemoteRegistry -StartupType "+was) })
+			sh(t, "Stop-Service RemoteRegistry -Force -ErrorAction SilentlyContinue; Set-Service RemoteRegistry -StartupType Manual")
 			refused := runLive(t, a, "windows-service-start", map[string]string{"name": "RemoteRegistry"})
 			if refused.Applied {
 				t.Fatal("started a service that is not automatic")
+			}
+			if refused.Before == nil || !strings.Contains(strings.Join(refused.Before.Blockers, "\n"), "Only automatic services") {
+				t.Fatalf("no refusal reason: %+v", refused.Before)
 			}
 		})
 		t.Run("time-resync", func(t *testing.T) { runLive(t, a, "windows-time-resync", nil) }) // reports; the VM's time source may refuse
