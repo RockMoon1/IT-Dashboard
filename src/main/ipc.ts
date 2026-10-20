@@ -753,7 +753,8 @@ export class AppContext {
       ? abs.toLowerCase().startsWith(`${root.toLowerCase()}${sep}`)
       : abs.startsWith(`${root}${sep}`)
     if (!inside || !/\.md$/i.test(abs)) throw new Error('not a note inside the vault')
-    const known = (await this.vaultIndex.notes(this.settings.vaultPath)).some((n) => n.abs === abs)
+    const notes = await this.vaultIndex.notes(this.settings.vaultPath)
+    const known = notes.some((n) => resolve(n.abs) === abs)
     if (!known || !existsSync(abs)) throw new Error(`note not found: ${name}`)
     try {
       await shell.openExternal(`obsidian://open?path=${encodeURIComponent(abs)}`)

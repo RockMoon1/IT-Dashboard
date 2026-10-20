@@ -388,14 +388,29 @@ export interface MetricPoint {
   runId: string
 }
 
+/** How a value compares with its threshold when health.ts raises the finding. */
+export type SeriesAlert = 'below' | 'above' | 'at-or-above'
+
 export interface MetricSeries {
   key: string
   label: string
   unit: string
   threshold?: number
+  /** The exact comparison health.ts uses for this value (disk `<`, update age `>`, RAM `>=`). */
+  alert: SeriesAlert
   /** Which direction is healthy, for colouring the latest value. */
   better: 'higher' | 'lower'
   points: MetricPoint[]
+}
+
+/** True when a value is past its threshold by the same rule the health check applies. */
+export function seriesBreach(
+  s: Pick<MetricSeries, 'threshold' | 'alert'>,
+  value: number | undefined
+): boolean {
+  const t = s.threshold
+  if (t == null || value == null) return false
+  return s.alert === 'below' ? value < t : s.alert === 'above' ? value > t : value >= t
 }
 
 export interface ComputerFact {

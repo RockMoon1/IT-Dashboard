@@ -12,10 +12,12 @@ import {
   metricSeries,
   noteRoles,
   rankComputers,
+  seriesDef,
   summarize,
   termRegex,
   zonedToIso
 } from '../src/main/services/lookup/computers.ts'
+import { seriesBreach } from '../src/shared/types.ts'
 import {
   currentRuns,
   mergeLoops,
@@ -598,5 +600,140 @@ test('vault index: changing the vault folder mid-refresh never returns the old v
   } finally {
     await a.done()
     await b.done()
+  }
+})
+
+test('a serial-less PC whose agent was reinstalled: its old runs still belong to it', () => {
+  // the reinstall re-enrolls by hostname under a new id; stored runs keep the old id
+  const now: EnrolledDevice = { ...device, id: 'fp-new', serial: '', hostname: 'FRONTDESK' }
+  const runs = [
+    { ...sec('r_1', '2026-10-01T15:00:00.000Z', 'FRONTDESK', '', true), deviceId: 'fp-old' },
+    { ...sec('r_2', '2026-10-10T15:00:00.000Z', 'FRONTDESK', '', false), deviceId: 'fp-new' }
+  ]
+  assert.deepEqual(
+    currentRuns(runs, [now]).map((r) => r.runId),
+    ['r_2'],
+    'the clean scan after the reinstall is current'
+  )
+  assert.equal(mergeLoops(null, runs, DEFAULT_CONTENT_OPTIONS, new Date(), [now]).added, 0)
+  // two serial-less devices that share a hostname are still kept apart by their ids
+  const twin: EnrolledDevice = { ...now, id: 'fp-twin' }
+  const both = [
+    { ...sec('a', '2026-10-01T15:00:00.000Z', 'FRONTDESK', '', true), deviceId: 'fp-new' },
+    { ...sec('b', '2026-10-02T15:00:00.000Z', 'FRONTDESK', '', false), deviceId: 'fp-twin' }
+  ]
+  assert.deepEqual(
+    currentRuns(both, [now, twin])
+      .map((r) => r.runId)
+      .sort(),
+    ['a', 'b']
+  )
+})
+
+test('trend "past the limit" uses exactly the comparison each health check uses', () => {
+  const day = 86_400_000
+  const now = new Date('2026-10-20T12:00:00.000Z')
+  const out = (id: string, value: unknown, format: 'json' | 'text' = 'json') => ({
+    id,
+    title: id,
+    category: 'x',
+    format,
+    optional: false,
+    exitCode: 0,
+    stdout: format === 'json' ? JSON.stringify(value) : String(value),
+    stderr: '',
+    timedOut: false,
+    truncated: false
+  })
+  const cases: Array<{
+    key: string
+    category: string
+    make: (v: number) => ReturnType<typeof out>
+  }> = [
+    {
+      key: 'disk-free:C:',
+      category: 'Storage',
+      make: (v) => out('sys-overview', { disks: [{ drive: 'C:', freePct: v }] })
+    },
+    {
+      key: 'ram-used',
+      category: 'Performance',
+      make: (v) => out('sys-overview', { ramUsedPct: v })
+    },
+    {
+      key: 'uptime-days',
+      category: 'System',
+      make: (v) => out('sys-overview', { uptimeHours: v * 24 })
+    },
+    {
+      key: 'update-age',
+      category: 'Updates',
+      make: (v) =>
+        out('sec-updates', {
+          hotfixes: [
+            { HotFixID: 'KB1', InstalledOn: new Date(now.getTime() - v * day).toISOString() }
+          ]
+        })
+    },
+    {
+      key: 'av-signature-age',
+      category: 'Antivirus',
+      make: (v) =>
+        out('sec-defender', {
+          available: true,
+          antivirusEnabled: true,
+          realTimeProtectionEnabled: true,
+          signatureAgeDays: v
+        })
+    },
+    {
+      key: 'failed-logins-24h',
+      category: 'Accounts',
+      make: (v) => out('sec-logins', { failedLogins24h: v, failedLogins7d: v })
+    },
+    {
+      key: 'battery-health',
+      category: 'Power',
+      make: (v) => out('hw-battery', { present: true, healthPct: v, chargePct: 50 })
+    },
+    { key: 'cpu', category: 'Performance', make: (v) => out('perf-resources', { cpuPct: v }) },
+    {
+      key: 'system-errors-7d',
+      category: 'Events',
+      make: (v) =>
+        out(
+          'hw-system-errors',
+          Array.from({ length: v }, () => '2026-10-19T10:00:00 Error x').join('\n'),
+          'text'
+        )
+    },
+    {
+      key: 'startup-items',
+      category: 'Startup',
+      make: (v) =>
+        out(
+          'perf-startup',
+          Array.from({ length: v }, (_, i) => ({ n: i }))
+        )
+    }
+  ]
+  for (const c of cases) {
+    const def = seriesDef(c.key)!
+    for (const v of [def.threshold! - 1, def.threshold!, def.threshold! + 1]) {
+      const report = evaluateHealth(
+        { os: 'windows', purpose: 'system-diagnostics' },
+        [c.make(v)],
+        now
+      )
+      assert.equal(report.values?.[c.key], v, `${c.key} value at ${v}`)
+      const flagged = report.findings.some(
+        (f) => f.category === c.category && f.category !== 'Scan'
+      )
+      assert.equal(
+        seriesBreach({ threshold: def.threshold, alert: def.alert }, v),
+        flagged,
+        `${c.key} = ${v}: the trend card and the health check must agree`
+      )
+    }
   }
 })

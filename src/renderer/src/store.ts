@@ -135,8 +135,9 @@ const runningRun = computed(() => state.runs.find((r) => r.status === 'running')
 /** What Results and Health show: a past scan picked during a live one, else the current run. */
 const viewedRun = computed(
   () =>
-    (state.viewRunId ? state.runs.find((r) => r.runId === state.viewRunId) : undefined) ??
-    currentRun.value
+    (state.viewRunId && runningRun.value
+      ? state.runs.find((r) => r.runId === state.viewRunId)
+      : undefined) ?? currentRun.value
 )
 
 function api(): Window['arh'] {
@@ -207,8 +208,12 @@ function applyScanEvent(e: ScanEvent): void {
     }
     case 'run-end':
       upsertRun(e.run)
-      // Preview and Health follow the scan that just finished
-      state.currentRunId = e.run.runId
+      // Preview and Health follow the scan that just finished, unless another one is still live
+      // (two devices can be scanned at once; the live one keeps the Active scan view)
+      if (!runningRun.value) {
+        state.currentRunId = e.run.runId
+        state.viewRunId = null
+      }
       pushConsole(
         'status',
         `■ ${e.run.status.toUpperCase()} · ${e.run.health?.findings.length ?? 0} finding(s) · ${(e.run.durationMs / 1000).toFixed(0)} s${e.run.error ? ` · ${e.run.error}` : ''}`

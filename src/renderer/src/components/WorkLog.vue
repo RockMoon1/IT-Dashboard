@@ -9,11 +9,10 @@ function label(p: string): string {
   return purposeLabel(p as Purpose)
 }
 
-// Kept out of the template: Prettier strips the ';' between inline statements, which the Vue
-// compiler then parses as a single expression.
+// Through openRunById: it loads scans older than the recent list and, during a live scan,
+// shows the past one beside it instead of taking over the console.
 function openRun(runId: string): void {
-  dash.showRun(runId)
-  state.tab = 'results'
+  void dash.openRunById(runId)
 }
 </script>
 

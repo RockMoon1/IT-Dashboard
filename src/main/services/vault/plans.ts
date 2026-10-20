@@ -99,7 +99,7 @@ export async function buildWritePlans(input: PlanInput): Promise<WritePlan[]> {
   const assetsBlock = safeBlock(assetsText, BLOCK_KEYS.devices)
   const loopsBlock = safeBlock(loopsText, BLOCK_KEYS.loops)
   const logBlock = safeBlock(logText, BLOCK_KEYS.log)
-  const loops = mergeLoops(loopsBlock, finished, opts, input.now)
+  const loops = mergeLoops(loopsBlock, finished, opts, input.now, input.devices)
 
   const plans: WritePlan[] = [
     {

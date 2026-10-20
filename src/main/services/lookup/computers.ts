@@ -11,6 +11,7 @@ import type {
   ProfileScan,
   RecurringFinding,
   ScanRun,
+  SeriesAlert,
   Settings,
   Severity,
   TimelineEvent,
@@ -374,6 +375,8 @@ interface SeriesDef {
   label: string
   unit: string
   threshold?: number
+  /** Mirrors the comparison in health.ts for this value. */
+  alert: SeriesAlert
   better: 'higher' | 'lower'
 }
 
@@ -383,6 +386,7 @@ export function seriesDef(key: string): SeriesDef | null {
       label: `Disk ${key.slice('disk-free:'.length)} free`,
       unit: '%',
       threshold: THRESHOLDS.diskFreePctLow,
+      alert: 'below',
       better: 'higher'
     }
   const defs: Record<string, SeriesDef> = {
@@ -390,49 +394,63 @@ export function seriesDef(key: string): SeriesDef | null {
       label: 'Days since a Windows update',
       unit: 'd',
       threshold: THRESHOLDS.updateAgeDaysStale,
+      alert: 'above',
       better: 'lower'
     },
     'failed-logins-24h': {
       label: 'Failed sign-ins in 24 h',
       unit: '',
       threshold: THRESHOLDS.failedLogins24hSpike,
+      alert: 'at-or-above',
       better: 'lower'
     },
     'battery-health': {
       label: 'Battery health',
       unit: '%',
       threshold: THRESHOLDS.batteryHealthPctLow,
+      alert: 'below',
       better: 'higher'
     },
     'ram-used': {
       label: 'RAM used',
       unit: '%',
       threshold: THRESHOLDS.ramUsedPctHigh,
+      alert: 'at-or-above',
       better: 'lower'
     },
-    cpu: { label: 'CPU', unit: '%', threshold: THRESHOLDS.cpuPctHigh, better: 'lower' },
+    cpu: {
+      label: 'CPU',
+      unit: '%',
+      threshold: THRESHOLDS.cpuPctHigh,
+      alert: 'at-or-above',
+      better: 'lower'
+    },
     'av-signature-age': {
       label: 'AV signature age',
       unit: 'd',
       threshold: THRESHOLDS.signatureAgeDaysStale,
+      alert: 'above',
       better: 'lower'
     },
     'uptime-days': {
       label: 'Uptime',
       unit: 'd',
       threshold: THRESHOLDS.uptimeDaysLong,
+      alert: 'at-or-above',
       better: 'lower'
     },
     'system-errors-7d': {
       label: 'System log errors (7 d)',
       unit: '',
       threshold: THRESHOLDS.systemErrorsMany,
+      alert: 'at-or-above',
       better: 'lower'
     },
     'startup-items': {
       label: 'Startup programs',
       unit: '',
       threshold: THRESHOLDS.startupItemsMany,
+      alert: 'at-or-above',
       better: 'lower'
     }
   }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { MetricSeries } from '@shared/types'
+import { seriesBreach, type MetricSeries } from '@shared/types'
 import { when } from '../format'
 
 /*
@@ -76,13 +76,8 @@ const deltaGood = computed(() =>
     ? null
     : delta.value > 0 === (props.series.better === 'higher')
 )
-const breach = computed(() => {
-  const t = props.series.threshold
-  const v = latest.value?.value
-  if (t == null || v == null) return false
-  // same comparisons as health.ts: low-is-bad values alert below the limit, the rest at or above
-  return props.series.better === 'higher' ? v < t : v >= t
-})
+// the same comparison the health check uses for this value (shared with the main process)
+const breach = computed(() => seriesBreach(props.series, latest.value?.value))
 const threshold = computed(() => props.series.threshold)
 const tooltipLeft = computed(() =>
   hover.value == null ? '0px' : `${Math.min(Math.max(x(hover.value) - 70, 0), width.value - 150)}px`

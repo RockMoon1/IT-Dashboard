@@ -378,14 +378,24 @@ export function loopLine(
   return `- [ ] ${severityMark(f.severity)} **${cell(run.hostname)} — ${cell(sentence(f.message))}** ${cell(f.category)} · ${purposeLabel(run.purpose)} scan ${stamp(runTime(run), opts)} · ${runRef(run.runId)}.${again}${dueSuffix(opts.dueStyle, zoned(due, opts.timeZone).date)} ^loop-${id}`
 }
 
+type DeviceRef = Pick<EnrolledDevice, 'id' | 'serial' | 'hostname'>
+
 /**
- * Which machine a run belongs to: its serial, else the enrolled device id (stable across a
- * rename of a PC whose firmware reports no serial), else the hostname.
+ * Which machine a run belongs to. Its serial when it has one. Otherwise the enrolled device it
+ * came from: by device id (stable when a serial-less PC is renamed), else the serial-less device
+ * now enrolled under its hostname (an agent reinstall gets a new id; old runs keep the old one).
+ * Only runs matching no enrolled device fall back to their own device id or hostname.
  */
-export function runIdentity(r: ScanRun): string {
-  if (r.serial.trim()) return `sn:${r.serial.trim().toLowerCase()}`
+export function runIdentity(r: ScanRun, devices: DeviceRef[] = []): string {
+  const sn = (s: string): string => `sn:${s.trim().toLowerCase()}`
+  if (r.serial.trim()) return sn(r.serial)
+  const byId = devices.find((d) => d.id === r.deviceId)
+  if (byId) return byId.serial.trim() ? sn(byId.serial) : `dev:${byId.id}`
+  const host = r.hostname.trim().toLowerCase()
+  const byName = devices.find((d) => !d.serial.trim() && d.hostname.trim().toLowerCase() === host)
+  if (byName) return `dev:${byName.id}`
   if (r.deviceId) return `dev:${r.deviceId}`
-  return `host:${r.hostname.trim().toLowerCase()}`
+  return `host:${host}`
 }
 
 function latestBy(runs: ScanRun[], key: (r: ScanRun) => string): ScanRun[] {
@@ -398,8 +408,8 @@ function latestBy(runs: ScanRun[], key: (r: ScanRun) => string): ScanRun[] {
 }
 
 /** The latest finished run of each profile on each machine: the current state of what it checks. */
-export function currentRuns(runs: ScanRun[]): ScanRun[] {
-  return latestBy(runs, (r) => `${runIdentity(r)}|${r.profile}`)
+export function currentRuns(runs: ScanRun[], devices: DeviceRef[] = []): ScanRun[] {
+  return latestBy(runs, (r) => `${runIdentity(r, devices)}|${r.profile}`)
 }
 
 /** For runs already known to be one machine's: the latest of each profile, whatever its name was. */
@@ -422,11 +432,12 @@ export function mergeLoops(
   existingBody: string | null,
   runs: ScanRun[],
   opts: ContentOptions,
-  today: Date = new Date()
+  today: Date = new Date(),
+  devices: DeviceRef[] = []
 ): { body: string; added: number } {
   const lines = bodyLines(existingBody, HEADINGS.loops)
   let added = 0
-  for (const run of currentRuns(runs)) {
+  for (const run of currentRuns(runs, devices)) {
     for (const f of run.health?.findings ?? []) {
       if (!f.loop || f.severity === 'info') continue
       const key = loopKey(run.serial, run.hostname, f)

@@ -43,8 +43,12 @@ const RENDERER_SCRIPT = String.raw`(async () => {
   input.focus()
   input.value = 'ARH-T01'
   input.dispatchEvent(new Event('input', { bubbles: true }))
-  await until('a lookup result row', () => text().includes('Everything in the vault about'))
-  await sleep(600)
+  // a real computer row in the dropdown, not just the "Everything in the vault" row
+  await until('a computer row in the lookup list', () =>
+    [...document.querySelectorAll('div.z-50 button')].some(
+      (b) => b.textContent.includes('ARH-T01') && !b.textContent.includes('Everything in the vault')
+    )
+  )
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   await until('the computer page', () => [...document.querySelectorAll('h2')].some((h) => h.textContent.trim() === 'ARH-T01'))
   await until('the ticket on the page', () => text().includes('TKT-2026-901'))
@@ -64,7 +68,12 @@ const RENDERER_SCRIPT = String.raw`(async () => {
     if (!b) { out.tabs[label] = 'missing'; continue }
     b.click()
     await sleep(400)
-    out.tabs[label] = document.querySelector('main') ? 'ok' : 'blank'
+    const pane = document.querySelector('main section > div.overflow-y-auto')
+    out.tabs[label] = !b.classList.contains('tab-active')
+      ? 'not selected'
+      : (pane?.innerText.trim().length ?? 0) > 0
+        ? 'ok'
+        : 'blank'
   }
   out.list = await until('the computers list', () => text().includes('Computers on record') && 'ok')
   out.banner = document.querySelector('.bg-bad-400\\/10')?.textContent?.trim() ?? null
@@ -111,6 +120,7 @@ export function runSmoke(win: BrowserWindow): void {
         if (!report['bridge']) problems.push('preload bridge missing')
         if (!report['enterBeforeResults'])
           problems.push('Enter before the lookup answered opened a notes-only page')
+        if (report['banner']) problems.push(`error banner shown: ${String(report['banner'])}`)
         for (const [k, v] of Object.entries(profile ?? {}))
           if (!v) problems.push(`computer page is missing its ${k}`)
         for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))
