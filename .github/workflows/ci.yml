@@ -88,6 +88,28 @@ jobs:
             if (-not (Test-Path (Join-Path $res $f))) { throw "missing $f in the package" }
           }
           Get-ChildItem dist -Filter *.exe | Format-Table Name, Length
+      # Launch the packaged app and drive its window: lookup box, a computer page, every tab.
+      # It reads a COPY of the synthetic vault fixture and exits non-zero on a crash,
+      # a renderer console error or anything missing from the page (src/main/smoke.ts).
+      - name: Launch test of the packaged app
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'arh-smoke'
+          $vault = Join-Path $dir 'vault'
+          New-Item -ItemType Directory -Force -Path $vault | Out-Null
+          Copy-Item -Recurse 'tests/fixtures/vault/ARH IT' $vault
+          $settings = @{ vaultPath = (Join-Path $vault 'ARH IT'); technician = 'CI' } | ConvertTo-Json
+          Set-Content -Path (Join-Path $dir 'settings.json') -Value $settings -Encoding utf8
+          $env:ARH_SMOKE = '1'
+          $env:ARH_SMOKE_DIR = $dir
+          $exe = Get-ChildItem 'dist/win-unpacked' -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall*' } | Select-Object -First 1
+          $log = Join-Path $dir 'smoke.log'
+          $p = Start-Process -FilePath $exe.FullName -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError (Join-Path $dir 'smoke.err')
+          if (-not $p.WaitForExit(150000)) { $p.Kill(); throw 'the app did not finish the launch test in 150 s' }
+          Get-Content $log
+          if ($p.ExitCode -ne 0) { Get-Content (Join-Path $dir 'smoke.err') -Tail 40; throw "launch test failed (exit $($p.ExitCode))" }
+          $dirty = git status --porcelain -- tests/fixtures
+          if ($dirty) { throw "the launch test modified the fixture: $dirty" }
       - uses: actions/upload-artifact@v4
         with:
           name: ARH-IT-Dashboard-setup

@@ -1,0 +1,112 @@
+import { app, type BrowserWindow } from 'electron'
+
+/**
+ * Launch test, used by CI on the packaged app (ARH_SMOKE=1). It drives the real window the way
+ * a technician would: wait for the dashboard, call the lookup through the preload bridge, type a
+ * computer name into the header box, press Enter, check the computer page, then open every tab.
+ * It only reads; the vault it points at is a copy of the test fixture. Exits 0 when everything
+ * rendered without a crash or console error, 1 otherwise, and prints a JSON report.
+ */
+
+const RENDERER_SCRIPT = String.raw`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const until = async (what, fn, ms = 20000) => {
+    const t0 = Date.now()
+    while (Date.now() - t0 < ms) {
+      const v = fn()
+      if (v) return v
+      await sleep(100)
+    }
+    throw new Error('timed out waiting for ' + what)
+  }
+  const text = () => document.body.innerText
+  const out = {}
+  await until('the dashboard title', () => document.querySelector('h1')?.textContent?.includes('ARH IT Dashboard'))
+  out.bridge = typeof window.arh === 'object' && typeof window.arh.lookup?.search === 'function'
+
+  const lk = await window.arh.lookup.search('ARH-T01')
+  out.lookup = { computers: lk.computers.map((c) => c.name), vaultNotes: lk.vaultNotes, ms: lk.tookMs }
+
+  const input = await until('the lookup box', () => document.querySelector('input[aria-label="Look up a computer"]'))
+  input.focus()
+  input.value = 'ARH-T01'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await until('a lookup result row', () => text().includes('Everything in the vault about'))
+  await sleep(600)
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until('the computer page', () => [...document.querySelectorAll('h2')].some((h) => h.textContent.trim() === 'ARH-T01'))
+  await until('the ticket on the page', () => text().includes('TKT-2026-901'))
+  out.profile = {
+    ticket: text().includes('TKT-2026-901'),
+    workLog: text().includes('ARH-T01 battery check'),
+    loop: text().includes('order a replacement battery'),
+    change: text().includes('Disabled wake timers'),
+    note: text().includes('Loaner notes')
+  }
+
+  // "Computers" twice: the first click returns to the open computer page, the second to the list
+  const tabs = ['Active scan', 'Results', 'Health', 'Open loops', 'Work log', 'Search', 'Link', 'Computers', 'Computers']
+  out.tabs = {}
+  for (const label of tabs) {
+    const b = [...document.querySelectorAll('nav button')].find((x) => x.textContent.trim().startsWith(label))
+    if (!b) { out.tabs[label] = 'missing'; continue }
+    b.click()
+    await sleep(400)
+    out.tabs[label] = document.querySelector('main') ? 'ok' : 'blank'
+  }
+  out.list = await until('the computers list', () => text().includes('Computers on record') && 'ok')
+  out.banner = document.querySelector('.bg-bad-400\\/10')?.textContent?.trim() ?? null
+  return JSON.stringify(out)
+})()`
+
+export function runSmoke(win: BrowserWindow): void {
+  const problems: string[] = []
+  const consoleErrors: string[] = []
+  const finish = (report: unknown): void => {
+    const ok = problems.length === 0 && consoleErrors.length === 0
+    process.stdout.write(
+      `ARH_SMOKE ${JSON.stringify({ ok, report, problems, consoleErrors }, null, 2)}\n`
+    )
+    app.exit(ok ? 0 : 1)
+  }
+  const timer = setTimeout(() => {
+    problems.push('timed out after 90 s')
+    finish(null)
+  }, 90_000)
+
+  // The listener signature changed across Electron versions; read both shapes.
+  win.webContents.on('console-message', (...args: unknown[]) => {
+    const first = args[0] as { level?: unknown; message?: unknown } | undefined
+    const level = first && typeof first === 'object' && 'level' in first ? first.level : args[1]
+    const message =
+      first && typeof first === 'object' && 'message' in first ? first.message : args[2]
+    if (level === 'error' || level === 3) consoleErrors.push(String(message))
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    problems.push(`renderer gone: ${details.reason}`)
+    finish(null)
+  })
+  win.webContents.on('preload-error', (_e, path, error) => {
+    problems.push(`preload error in ${path}: ${error.message}`)
+  })
+  win.webContents.once('did-finish-load', () => {
+    win.webContents
+      .executeJavaScript(RENDERER_SCRIPT, true)
+      .then((json: string) => {
+        clearTimeout(timer)
+        const report = JSON.parse(json) as Record<string, unknown>
+        const profile = report['profile'] as Record<string, boolean> | undefined
+        if (!report['bridge']) problems.push('preload bridge missing')
+        for (const [k, v] of Object.entries(profile ?? {}))
+          if (!v) problems.push(`computer page is missing its ${k}`)
+        for (const [k, v] of Object.entries((report['tabs'] as Record<string, string>) ?? {}))
+          if (v !== 'ok') problems.push(`tab ${k}: ${v}`)
+        finish(report)
+      })
+      .catch((err: unknown) => {
+        clearTimeout(timer)
+        problems.push(`renderer script failed: ${err instanceof Error ? err.message : String(err)}`)
+        finish(null)
+      })
+  })
+}
