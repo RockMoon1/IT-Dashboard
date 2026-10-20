@@ -46,12 +46,24 @@ jobs:
           go test -c -o link.test ./agent/internal/link
           sudo ARH_LIVE_ACTIONS=1 ./link.test -test.run TestShippedActionsMeasureHere -test.v -test.timeout 10m
           sudo ARH_LIVE_APPLY=1 ./link.test -test.run TestShippedActionsApplyHere -test.v -test.timeout 10m
+      # the cable rule over real TCP connections between network namespaces (Wi-Fi, VPN, LAN with
+      # no gateway, the cable itself)
+      - name: Cable or network, across network namespaces (Linux, as root)
+        if: runner.os == 'Linux'
+        run: |
+          go test -c -o link.test ./agent/internal/link
+          sudo ARH_LIVE_NETNS=1 ./link.test -test.run TestCableRuleInNetworkNamespaces -test.v -test.timeout 5m
       # (go test, not the compiled binary: PowerShell splits "-test.v" at the dot)
       - name: Measure the shipped actions (Windows, elevated runner)
         if: runner.os == 'Windows'
         env:
           ARH_LIVE_ACTIONS: '1'
         run: go test ./agent/internal/link -run TestShippedActionsMeasureHere -v -count=1 -timeout 10m
+      - name: A data folder or policy a standard user made is not trusted (Windows, elevated runner)
+        if: runner.os == 'Windows'
+        env:
+          ARH_LIVE_APPLY: '1'
+        run: go test ./agent/internal/service -run TestFolderAStandardUserMadeIsNotAdopted -v -count=1
       - name: Time PowerShell launches around a time zone change (Windows, elevated runner)
         if: runner.os == 'Windows'
         env:

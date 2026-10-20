@@ -252,8 +252,8 @@ func cmdPolicy(args []string) error {
 	set := fs.String("set", "", "start from a preset: actions, full, read or clinical")
 	allow := fs.String("allow", "", "comma-separated: write, execute, custom, lan, interrupts")
 	deny := fs.String("deny", "", "comma-separated: write, execute, custom, lan, interrupts")
-	denyAction := fs.String("deny-action", "", "refuse one named action (see arh-agent actions)")
-	allowAction := fs.String("allow-action", "", "stop refusing one named action")
+	denyAction := fs.String("deny-action", "", "refuse named actions, comma-separated (see arh-agent actions)")
+	allowAction := fs.String("allow-action", "", "stop refusing named actions, comma-separated")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -297,18 +297,56 @@ func cmdPolicy(args []string) error {
 	if err := apply(*deny, false); err != nil {
 		return err
 	}
-	if *denyAction != "" {
-		p.Deny = append(p.Deny, *denyAction)
+	// action names, one or a comma-separated list, each checked against this agent's actions so
+	// a typo is an error rather than a refusal that refuses nothing
+	names := func(list string) ([]string, error) {
+		var out []string
+		for _, n := range strings.Split(list, ",") {
+			n = strings.TrimSpace(n)
+			if n == "" {
+				continue
+			}
+			known := false
+			for _, a := range actions.ForOS(sysinfo.OSName()) {
+				if strings.EqualFold(a.Name, n) {
+					n, known = a.Name, true
+				}
+			}
+			if !known {
+				return nil, fmt.Errorf("no action %q on this agent (arh-agent actions lists them)", n)
+			}
+			out = append(out, n)
+		}
+		return out, nil
 	}
-	if *allowAction != "" {
-		kept := p.Deny[:0]
-		for _, d := range p.Deny {
-			if !strings.EqualFold(d, *allowAction) {
-				kept = append(kept, d)
+	denyNames, err := names(*denyAction)
+	if err != nil {
+		return err
+	}
+	allowNames, err := names(*allowAction)
+	if err != nil {
+		return err
+	}
+	has := func(list []string, n string) bool {
+		for _, d := range list {
+			if strings.EqualFold(d, n) {
+				return true
 			}
 		}
-		p.Deny = kept
+		return false
 	}
+	for _, n := range denyNames {
+		if !has(p.Deny, n) {
+			p.Deny = append(p.Deny, n)
+		}
+	}
+	kept := p.Deny[:0]
+	for _, d := range p.Deny {
+		if !has(allowNames, d) {
+			kept = append(kept, d)
+		}
+	}
+	p.Deny = kept
 	if err := policy.Save(l.DataDir, p); err != nil {
 		return fmt.Errorf("%w (this step needs an administrator / sudo shell)", err)
 	}

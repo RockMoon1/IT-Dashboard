@@ -5,8 +5,11 @@ import (
 )
 
 // sessionLink says whether a session runs over the USB cable or the clinic network. A cable
-// session is one whose peer address is link-local and whose local end is not on the interface
-// that carries the default route; anything else is "lan", where only scans and previews run.
+// session is one whose peer address is link-local, on an interface that holds only link-local
+// addresses (a cable between two computers has no DHCP server and no router) and that does not
+// carry the default route; anything else is "lan", where only scans and previews run. An adapter
+// that also has a routable address is a network, even when it is not the default route: a second
+// adapter such as Wi-Fi, the LAN under a full-tunnel VPN, or a LAN with no gateway.
 func sessionLink(local, remote net.Addr) string {
 	r, ok1 := remote.(*net.TCPAddr)
 	l, ok2 := local.(*net.TCPAddr)
@@ -17,12 +20,37 @@ func sessionLink(local, remote net.Addr) string {
 	if iface == "" {
 		return "lan"
 	}
+	ifi, err := net.InterfaceByName(iface)
+	if err != nil {
+		return "lan"
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil || !onlyLinkLocal(addrs) {
+		return "lan"
+	}
 	for _, name := range defaultRouteInterfaces() {
 		if name == iface {
 			return "lan"
 		}
 	}
 	return "cable"
+}
+
+// onlyLinkLocal reports whether every address is link-local (169.254/16, fe80::/10). An
+// interface with no address at all is not a cable either.
+func onlyLinkLocal(addrs []net.Addr) bool {
+	seen := false
+	for _, x := range addrs {
+		ipn, ok := x.(*net.IPNet)
+		if !ok {
+			return false
+		}
+		if !ipn.IP.IsLinkLocalUnicast() {
+			return false
+		}
+		seen = true
+	}
+	return seen
 }
 
 // interfaceOf names the interface that holds the local address (the zone for IPv6 link-local).

@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/fsowner"
 )
 
 const (
@@ -33,6 +35,17 @@ func DefaultLayout() Layout { return defaultLayout() }
 func Install(l Layout, token string) error {
 	if strings.TrimSpace(token) == "" {
 		return errors.New("an enrollment token is required (--token ARH-…)")
+	}
+	// The data folder holds the device key, the pinned dashboard and the policy. One that someone
+	// else created beforehand (C:\ProgramData lets any user create folders) is never adopted.
+	if _, err := os.Lstat(l.DataDir); err == nil {
+		ok, owner, err := fsowner.Trusted(l.DataDir)
+		if err != nil {
+			return fmt.Errorf("checking who owns %s: %w", l.DataDir, err)
+		}
+		if !ok {
+			return fmt.Errorf("the data folder %s already exists and belongs to %s, not to SYSTEM or an administrator; another user may have made it to take over the agent. Delete it as an administrator and install again", l.DataDir, owner)
+		}
 	}
 	if err := os.MkdirAll(l.DataDir, 0o700); err != nil {
 		return fmt.Errorf("creating data dir %s: %w", l.DataDir, err)

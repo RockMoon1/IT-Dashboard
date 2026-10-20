@@ -360,6 +360,10 @@ func (a *Agent) newResultFile() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	// a link or junction here would send SYSTEM's writes somewhere else
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() || fi.Mode()&os.ModeType != os.ModeDir {
+		return "", fmt.Errorf("%s is not a plain folder", dir)
+	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err

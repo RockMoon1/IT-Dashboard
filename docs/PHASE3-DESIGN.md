@@ -41,9 +41,13 @@ Settings turns any kind, or any single action, off. A device can refuse more on 
    dashboard key holder types as SYSTEM, so it can no longer trust its own policy file: the design
    says so in Settings and in the confirm dialog.
 3. **Changes only over the cable.** `action` and `exec` are accepted only when the TCP peer is
-   link-local (169.254.0.0/16, fe80::/10) and the local end of the connection is not on the
-   interface that carries the default route. Any other session is read only (`lan: true` in
-   policy allows it). `hello` reports `link: "cable" | "lan"`; the dashboard greys out changes on a
+   link-local (169.254.0.0/16, fe80::/10), the local end of the connection is on an adapter that
+   holds only link-local addresses (a cable between two computers has no DHCP server or router),
+   and that adapter does not carry the default route. An adapter with any routable address is a
+   network even when it is not the default route: a second adapter such as Wi-Fi, the LAN under a
+   full-tunnel VPN, a LAN with a static address and no gateway. `TestCableRuleInNetworkNamespaces`
+   checks each of these over real TCP connections between network namespaces in CI. Any other
+   session is read only (`lan: true` in policy allows it). `hello` reports `link: "cable" | "lan"`; the dashboard greys out changes on a
    LAN session. A stolen dashboard key therefore still needs someone at the machine with a cable.
 4. **Measure, apply, measure.** Requests carry a required `mode: "preview" | "apply"`; a missing
    or unknown mode is refused, so no default can turn into a real change. Each action has

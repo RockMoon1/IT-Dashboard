@@ -86,8 +86,16 @@ func firewallRemove(l Layout) error {
 	return err
 }
 
-// restrictDataDir leaves only SYSTEM and Administrators (well-known SIDs) with access.
+// restrictDataDir gives the folder and everything in it to SYSTEM and leaves only SYSTEM and
+// Administrators (well-known SIDs) with access; what is inside inherits that and nothing else.
 func restrictDataDir(l Layout) error {
-	_, err := run("icacls.exe", l.DataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F")
-	return err
+	if _, err := run("icacls.exe", l.DataDir, "/setowner", "*S-1-5-18", "/T", "/C", "/Q"); err != nil {
+		return err
+	}
+	if _, err := run("icacls.exe", l.DataDir, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"); err != nil {
+		return err
+	}
+	// explicit entries on files inside go; an empty folder has nothing to reset
+	_, _ = run("icacls.exe", filepath.Join(l.DataDir, "*"), "/reset", "/T", "/C", "/Q")
+	return nil
 }

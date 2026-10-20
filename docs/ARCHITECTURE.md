@@ -141,6 +141,13 @@ and first lines of System/Security events, not message bodies of application log
 - Changes are bound to the cable, not to a hardware key: someone with both the dashboard's key
   and a cable to a computer could run the named actions there. A TPM-backed approval key the
   agent pins is the next step (PHASE3-DESIGN.md, "Not in this phase").
+- A LAN adapter whose DHCP failed (so it holds only a self-assigned 169.254 address) looks like
+  a cable to the agent: someone holding the dashboard's key on the same network segment could
+  then make changes on that computer until its DHCP works again. Every other network adapter
+  (with any routable address, default route or not) is treated as the network.
+- On Windows, install refuses a data folder that already exists and does not belong to SYSTEM or
+  an administrator (`C:\ProgramData` lets any user create folders), takes the folder for SYSTEM,
+  and trusts `policy.json` only when SYSTEM or an administrator owns it.
 - A restart is recorded as scheduled; whether it happened is not yet confirmed from the next
   `bootTime`.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
