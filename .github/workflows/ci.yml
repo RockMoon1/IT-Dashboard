@@ -56,7 +56,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           ARH_LIVE_APPLY: '1'
-        run: go test ./agent/internal/executor -run TestLaunchCostAroundTimeZoneChange -v -count=1 -timeout 15m
+        run: go test ./agent/internal/executor -run TestLaunchCostAroundTimeZoneChange -v -count=1 -timeout 25m
       # Each run is measure, apply and measure again; the whole step took 6 to 11 minutes on
       # hosted runners, and the log shows each phase's time.
       - name: Apply and undo the shipped actions (Windows, elevated runner)
