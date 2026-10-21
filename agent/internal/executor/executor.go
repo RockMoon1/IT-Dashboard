@@ -42,8 +42,9 @@ type Result struct {
 	Err       error
 }
 
-// Output receives chunks as they arrive. Chunks never split a UTF-8 sequence. It may be called
-// from two goroutines (stdout and stderr) concurrently.
+// Output receives chunks as they arrive. Chunks never split a UTF-8 sequence, whatever its
+// length and wherever a read of the pipe ended in it; bytes that are not UTF-8 are passed on as
+// they are. It may be called from two goroutines (stdout and stderr) concurrently.
 type Output func(stream string, chunk []byte)
 
 // stream is one of the child's outputs. It is read as fast as the child writes it and forwarded
@@ -134,8 +135,8 @@ func (s *stream) add(p []byte, last bool) {
 	defer s.mu.Unlock()
 	s.partial = append(s.partial, p...)
 	cut := len(s.partial)
-	for !last && cut > 0 && cut > len(s.partial)-utf8.UTFMax && !utf8.FullRune(s.partial[cut-1:]) {
-		cut--
+	if !last {
+		cut -= incompleteTail(s.partial)
 	}
 	if cut > 0 {
 		if atomic.AddInt64(s.total, int64(cut)) <= MaxOutput {
@@ -147,6 +148,22 @@ func (s *stream) add(p []byte, last bool) {
 	}
 	s.ended = last
 	s.more.Signal()
+}
+
+// incompleteTail gives how many bytes at the end of b (0 to UTFMax-1) start a UTF-8 sequence
+// that more bytes can still complete: from its lead byte, the last one that is not a
+// continuation byte, to the end. A trailing continuation byte is not checked alone, since it
+// would pass for a whole (invalid) rune.
+func incompleteTail(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i > len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if utf8.FullRune(b[i:]) {
+				return 0
+			}
+			return len(b) - i
+		}
+	}
+	return 0 // no lead byte close enough to the end: whole, or not UTF-8
 }
 
 // forward hands what was queued to Output, at most maxChunk bytes at a time, until the reading

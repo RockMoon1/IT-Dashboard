@@ -247,3 +247,46 @@ func TestRunForwardsBoundedWholeRuneChunks(t *testing.T) {
 		}
 	}
 }
+
+// A character whose bytes reach the pipe in two writes (so two reads) is forwarded whole, for
+// 2-, 3- and 4-byte sequences cut after any of their bytes: no chunk handed to Output is invalid
+// UTF-8, which the agent would otherwise send on as U+FFFD.
+func TestRunNeverForwardsAPartOfACharacter(t *testing.T) {
+	var mu sync.Mutex
+	var chunks [][]byte
+	out := func(stream string, chunk []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		chunks = append(chunks, append([]byte(nil), chunk...))
+	}
+	var lines []string
+	var want strings.Builder
+	for _, r := range []string{"é", "’", "😀"} {
+		for k := 1; k < len(r); k++ {
+			lines = append(lines, "printf 'ab"+octal(r[:k])+"'", "sleep 0.1", "printf '"+octal(r[k:])+"\\n'", "sleep 0.1")
+			want.WriteString("ab" + r + "\n")
+		}
+	}
+	res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: 20, Command: lines}, out)
+	mu.Lock()
+	defer mu.Unlock()
+	var all strings.Builder
+	for i, c := range chunks {
+		if !utf8.Valid(c) {
+			t.Errorf("chunk %d of %d is not valid UTF-8: %q", i, len(chunks), c)
+		}
+		all.Write(c)
+	}
+	if res.ExitCode != 0 || res.Truncated || all.String() != want.String() {
+		t.Fatalf("%+v: stdout %q, want %q", res, all.String(), want.String())
+	}
+}
+
+// octal spells b for printf, one \ooo escape per byte.
+func octal(b string) string {
+	var s strings.Builder
+	for i := 0; i < len(b); i++ {
+		s.WriteString("\\" + strconv.FormatInt(int64(b[i]), 8))
+	}
+	return s.String()
+}

@@ -130,6 +130,9 @@ Rules enforced by the agent, not the host:
   profile (default 90 s); the whole run is aborted on `abort` or if the socket closes.
 - Output is read as fast as the check writes it, whatever the speed of the link: a slow link
   delays `check-end` but drops nothing under the cap.
+- A `check-output` chunk never ends inside a UTF-8 character, whatever its length: a character
+  that reaches the agent in two reads is sent whole in the later chunk. Bytes that are not UTF-8
+  are sent as they come, and so arrive as U+FFFD.
 - A check (or action script, or custom command) whose shell exits while a process it started in
   the background still holds its output (`nohup … &` without redirecting it) keeps the shell's
   exit status, whatever it is. Its output is read for 2 s more and then cut, with
