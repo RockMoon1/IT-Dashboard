@@ -622,7 +622,7 @@ func (a *Agent) execute(ctx context.Context, codec *protocol.Codec, runID string
 				runErr = "check " + c.ID + " failed"
 			}
 		}
-		if ctx.Err() != nil {
+		if res.Stopped { // a stop once the check had ended stops only the checks after it
 			ok = false
 			runErr = "aborted"
 			break

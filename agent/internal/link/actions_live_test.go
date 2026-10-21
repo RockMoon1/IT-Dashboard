@@ -51,7 +51,7 @@ func TestShippedActionsMeasureHere(t *testing.T) {
 					params[p.Name] = p.Examples.OK[0]
 				}
 			}
-			m := a.phase(context.Background(), act, params, actions.PhaseMeasure, "live-"+act.Name, actions.MeasureTimeout)
+			m, _ := a.phase(context.Background(), act, params, actions.PhaseMeasure, "live-"+act.Name, actions.MeasureTimeout)
 			t.Logf("items %v info %v plan %v %q blockers %v warnings %v", m.Items, m.Info, deref(m.Change), m.Plan, m.Blockers, m.Warnings)
 			if m.ExitCode != 0 || m.TimedOut {
 				t.Errorf("measure exit %d timedOut=%v", m.ExitCode, m.TimedOut)
@@ -175,7 +175,7 @@ func measureLive(t *testing.T, a *Agent, name string, params map[string]string) 
 	clock := &phaseClock{}
 	codec := protocol.NewCodec(clock)
 	a.attach(codec)
-	m := a.phase(context.Background(), act, full, actions.PhaseMeasure, name+"-"+time.Now().Format("150405.000"), actions.MeasureTimeout)
+	m, _ := a.phase(context.Background(), act, full, actions.PhaseMeasure, name+"-"+time.Now().Format("150405.000"), actions.MeasureTimeout)
 	a.detach(codec)
 	t.Logf("%s measure: items %v info %v plan %v %q blockers %v warnings %v", name, m.Items, m.Info, deref(m.Change), m.Plan, m.Blockers, m.Warnings)
 	return m, clock.Stderr()

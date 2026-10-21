@@ -37,6 +37,7 @@ type Result struct {
 	Started   bool // the process started; false means nothing ran (refused, or ctx was done first)
 	ExitCode  int
 	TimedOut  bool
+	Stopped   bool // ctx was cancelled before the shell ended, so it was killed (or never started)
 	Truncated bool
 	Duration  time.Duration
 	Err       error
@@ -275,6 +276,7 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 	if errors.Is(runDone, context.DeadlineExceeded) {
 		res.TimedOut = true
 	}
+	res.Stopped = errors.Is(ctxDone, context.Canceled)
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
@@ -284,7 +286,7 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 			res.Err = runErr
 		}
 	}
-	if (res.TimedOut || errors.Is(ctxDone, context.Canceled)) && res.ExitCode == 0 {
+	if (res.TimedOut || res.Stopped) && res.ExitCode == 0 {
 		res.ExitCode = -1
 	}
 	return res

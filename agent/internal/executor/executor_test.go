@@ -79,7 +79,7 @@ func TestRunReportsWhetherItStarted(t *testing.T) {
 	}
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
-	if res := Run(stopped, check, out); res.Started || res.ExitCode != -1 || res.Err == nil {
+	if res := Run(stopped, check, out); res.Started || !res.Stopped || res.ExitCode != -1 || res.Err == nil {
 		t.Fatalf("cancelled run: %+v", res)
 	}
 	check.Shell = "powershell"
@@ -172,6 +172,25 @@ func TestRunBackgroundChildKeepsTheExitStatus(t *testing.T) {
 			if !alive {
 				t.Fatalf("exit %d, timeout %d: the background process was killed", code, timeout)
 			}
+		}
+	}
+}
+
+// A cancel (an abort) while the shell runs kills it and says so; one once the shell has exited
+// on its own, while a process it left in the background holds its output, stops nothing.
+func TestRunStoppedOnlyWhileTheShellRuns(t *testing.T) {
+	for _, tc := range []struct {
+		script  []string
+		stopped bool
+		code    int
+	}{{[]string{"sleep 30"}, true, -1}, {[]string{"sleep 5 &", "exit 0"}, false, 0}} {
+		ctx, stop := context.WithCancel(context.Background())
+		time.AfterFunc(500*time.Millisecond, stop)
+		out, _, _ := collect()
+		res := Run(ctx, profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: 10, Command: tc.script}, out)
+		stop()
+		if res.Stopped != tc.stopped || res.ExitCode != tc.code || res.TimedOut || res.Duration > waitDelay+3*time.Second {
+			t.Fatalf("%q: %+v", tc.script, res)
 		}
 	}
 }

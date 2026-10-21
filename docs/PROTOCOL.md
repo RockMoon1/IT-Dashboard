@@ -136,7 +136,9 @@ Rules enforced by the agent, not the host:
 - A check (or action script, or custom command) whose shell exits while a process it started in
   the background still holds its output (`nohup … &` without redirecting it) keeps the shell's
   exit status, whatever it is. Its output is read for 2 s more and then cut, with
-  `truncated: true`: what that process writes later is not collected. On Linux and macOS that
+  `truncated: true`: what that process writes later is not collected. A timeout or abort in those
+  2 s stops nothing, so the run is not reported timed out or aborted for it; an abort there still
+  keeps a scan's next check, or an action's apply, from starting. On Linux and macOS that
   process is left running (a timeout or abort ends the whole process group, but only while the
   shell runs), though a write to the cut output then ends it unless it ignores SIGPIPE; on Linux
   systemd also ends it when the agent's service stops or restarts. On Windows the Job Object ends

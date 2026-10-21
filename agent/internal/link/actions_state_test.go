@@ -407,3 +407,104 @@ func TestScanCheckLeavingAProcessRunningKeepsItsExitStatus(t *testing.T) {
 		t.Fatalf("stderr %q, run-end %+v", stderr.String(), runEnd)
 	}
 }
+
+// stopWhileOutputIsRead sends abort for the run once checkID's shell has written a line and
+// ended, while a process it left in the background still holds its output, which is read for
+// 2 s more.
+func stopWhileOutputIsRead(t *testing.T, c *protocol.Codec, runID, checkID string) {
+	t.Helper()
+	for {
+		if m, _ := until(t, c, "check-output"); m.CheckID == checkID {
+			break
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	_ = c.Write(protocol.Message{Type: "abort", RunID: runID})
+}
+
+// A Stop that comes once a custom command's shell has exited on its own, while its output is
+// still read, stops nothing: the result keeps exit 0 and is not aborted, which the dashboard
+// would record as "stopped" for a command that ran to its end.
+func TestCustomCommandStopAfterItsShellEndedIsNotAborted(t *testing.T) {
+	h := newHarness(t, true)
+	h.setPolicy("full")
+	c, _, closeFn := h.connect()
+	defer closeFn()
+	_ = c.Write(protocol.Message{Type: "exec", RunID: "x8", Shell: "sh", Script: "sleep 5 &\necho started\nexit 0", Technician: "Lisandro", Reason: "test"})
+	stopWhileOutputIsRead(t, c, "x8", "exec")
+	end, _ := until(t, c, "run-end")
+	if end.OK == nil || !*end.OK || end.Result == nil || end.Result.Aborted || !end.Result.Applied || end.Result.ExitCode == nil || *end.Result.ExitCode != 0 {
+		t.Fatalf("x8: ok %v, %+v", end.OK, end.Result)
+	}
+	if r, _ := h.agent.journal.find("x8"); r.Aborted {
+		t.Fatalf("x8 in the outbox: %+v", r)
+	}
+}
+
+// The same for an action: a Stop once its apply script has ended on its own does not make the
+// finished change aborted, nor one once a preview's measure has ended. A Stop once the measure
+// of a run that still has to apply has ended keeps the change from starting.
+func TestActionStopAfterItsScriptEndedStopsOnlyWhatIsLeft(t *testing.T) {
+	h := newHarness(t, true)
+	applying := testAction(t, true, "sleep 5 &")
+	applying.Apply = append(applying.Apply, "echo started")
+	measuring := testAction(t, false, ":")
+	measuring.Name = "linux-test-measure"
+	measuring.Measure = append([]string{"sleep 5 &", "echo started"}, measuring.Measure...)
+	h.agent.catalog = func(string) []actions.Action { return []actions.Action{applying, measuring} }
+	h.setPolicy("actions")
+	c, _, closeFn := h.connect()
+	defer closeFn()
+
+	_ = c.Write(actionMsg(applying, "a1", "apply", "on"))
+	stopWhileOutputIsRead(t, c, "a1", actions.PhaseApply)
+	end, _ := until(t, c, "run-end")
+	if end.OK == nil || !*end.OK || end.Result == nil || end.Result.Aborted || !end.Result.Applied || end.Result.Apply == nil || end.Result.Apply.ExitCode != 0 {
+		t.Fatalf("a1: ok %v, %+v", end.OK, end.Result)
+	}
+
+	_ = c.Write(actionMsg(measuring, "p1", "preview", "off"))
+	stopWhileOutputIsRead(t, c, "p1", actions.PhaseMeasure)
+	if end, _ = until(t, c, "run-end"); end.OK == nil || !*end.OK || end.Result == nil || end.Result.Aborted || end.Result.Skipped != "" {
+		t.Fatalf("p1: ok %v, %+v", end.OK, end.Result)
+	}
+
+	_ = c.Write(actionMsg(measuring, "a2", "apply", "off"))
+	stopWhileOutputIsRead(t, c, "a2", actions.PhaseMeasure)
+	if end, _ = until(t, c, "run-end"); end.Result == nil || !end.Result.Aborted || end.Result.Applied {
+		t.Fatalf("a2: %+v", end.Result)
+	}
+	if b, _ := os.ReadFile(filepath.Join(h.dir, "value")); string(b) != "on" {
+		t.Fatalf("value %q after a run stopped before its change", b)
+	}
+}
+
+// The same for a scan: a Stop once its last check has ended on its own stops nothing, while one
+// that leaves a check still to run stops the scan there.
+func TestScanStopAfterACheckEndedStopsOnlyWhatIsLeft(t *testing.T) {
+	h := newHarness(t, true)
+	bg := profiles.Check{ID: "bg", Title: "bg", Category: "Test", Shell: "sh", Format: "text", TimeoutSeconds: 10, Access: "read",
+		Command: []string{"sleep 5 &", "echo started", "exit 0"}}
+	next := profiles.Check{ID: "next", Title: "next", Category: "Test", Shell: "sh", Format: "text", TimeoutSeconds: 10, Access: "read", Command: []string{"exit 0"}}
+	for _, checks := range [][]profiles.Check{{bg}, {bg, next}} {
+		ctx, stop := context.WithCancel(h.ctx)
+		var runEnd protocol.Message
+		started := map[string]bool{}
+		codec := protocol.NewCodec(onWrite(func(m protocol.Message) {
+			switch m.Type {
+			case "check-start":
+				started[m.CheckID] = true
+			case "check-output":
+				time.AfterFunc(500*time.Millisecond, stop) // bg's shell has ended by then
+			case "run-end":
+				runEnd = m
+			}
+		}))
+		h.agent.execute(ctx, codec, "r10", profiles.Profile{Name: "linux-test-scan", Version: 1, OS: "linux", Checks: checks})
+		stop()
+		stopped := len(checks) > 1 // a check was still to run
+		if runEnd.OK == nil || *runEnd.OK == stopped || (runEnd.Error == "aborted") != stopped || started["next"] {
+			t.Fatalf("%d checks: run-end %+v, started %v", len(checks), runEnd, started)
+		}
+	}
+}

@@ -224,10 +224,11 @@ func (a *Agent) runAction(ctx context.Context, act actions.Action, params map[st
 		a.cfg.Logger.Printf("run %s: cannot note the run as started: %v", m.RunID, err)
 	}
 
-	before := a.phase(ctx, act, params, actions.PhaseMeasure, m.RunID, actions.MeasureTimeout)
+	// a stop once the measure has ended stops only what is left: apply, refused by enterPhase
+	before, stopped := a.phase(ctx, act, params, actions.PhaseMeasure, m.RunID, actions.MeasureTimeout)
 	res.Before = &before
 	switch {
-	case ctx.Err() != nil:
+	case stopped:
 		res.Aborted = true
 		res.Skipped = "stopped before any change"
 	case preview:
@@ -254,9 +255,9 @@ func (a *Agent) runAction(ctx context.Context, act actions.Action, params map[st
 		if err := a.journal.running(res); err != nil {
 			a.cfg.Logger.Printf("run %s: cannot note the change as started: %v", m.RunID, err)
 		}
-		ap := a.phase(applyCtx, act, params, actions.PhaseApply, m.RunID, time.Duration(act.TimeoutSeconds)*time.Second)
+		var ap actions.Measurement
+		ap, res.Aborted = a.phase(applyCtx, act, params, actions.PhaseApply, m.RunID, time.Duration(act.TimeoutSeconds)*time.Second)
 		res.Apply = &ap
-		res.Aborted = applyCtx.Err() != nil
 		a.noteRestart(act, params, ap)
 		a.enterPhase(ctx, m.RunID, actions.PhaseAfter, false)
 		limit := actions.MeasureTimeout
@@ -265,7 +266,7 @@ func (a *Agent) runAction(ctx context.Context, act actions.Action, params map[st
 		} else if act.SettleSeconds > 0 {
 			time.Sleep(time.Duration(act.SettleSeconds) * time.Second)
 		}
-		after := a.phase(context.WithoutCancel(ctx), act, params, actions.PhaseAfter, m.RunID, limit)
+		after, _ := a.phase(context.WithoutCancel(ctx), act, params, actions.PhaseAfter, m.RunID, limit)
 		res.After = &after
 	}
 	res.EndedAt = now()
@@ -330,14 +331,15 @@ func phaseTitle(phase string) string {
 	return "measure"
 }
 
-// phase runs one script of an action with a fresh result file and returns what it reported.
-func (a *Agent) phase(ctx context.Context, act actions.Action, params map[string]string, phase, runID string, limit time.Duration) actions.Measurement {
+// phase runs one script of an action with a fresh result file and returns what it reported, and
+// whether ctx stopped the script (not a stop that came once it had ended on its own).
+func (a *Agent) phase(ctx context.Context, act actions.Action, params map[string]string, phase, runID string, limit time.Duration) (actions.Measurement, bool) {
 	a.send(protocol.Message{Type: "check-start", RunID: runID, CheckID: phase, Title: act.Title + " · " + phaseTitle(phase), Category: act.Category})
 	file, err := a.newResultFile()
 	if err != nil {
 		a.send(protocol.Message{Type: "check-output", RunID: runID, CheckID: phase, Stream: "stderr", Data: "cannot create the result file: " + err.Error() + "\n"})
 		a.send(protocol.Message{Type: "check-end", RunID: runID, CheckID: phase, ExitCode: protocol.IntPtr(-1)})
-		return actions.Measurement{ExitCode: -1}
+		return actions.Measurement{ExitCode: -1}, false
 	}
 	defer os.Remove(file)
 	access := "read"
@@ -356,7 +358,7 @@ func (a *Agent) phase(ctx context.Context, act actions.Action, params map[string
 	raw := readLimited(file, actions.MaxResultFile+1)
 	m := actions.Parse(raw, act.RestoreNames())
 	m.ExitCode, m.TimedOut = res.ExitCode, res.TimedOut
-	return m
+	return m, res.Stopped
 }
 
 // newResultFile creates an empty file with a random name in the agent's own data folder, which
@@ -490,7 +492,7 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	}
 	a.send(protocol.Message{Type: "check-end", RunID: m.RunID, CheckID: "exec", ExitCode: protocol.IntPtr(r.ExitCode), DurationMs: r.Duration.Milliseconds(), TimedOut: r.TimedOut, Truncated: r.Truncated})
 	res.ExitCode = protocol.IntPtr(r.ExitCode)
-	res.Aborted = ctx.Err() != nil
+	res.Aborted = r.Stopped
 	if !r.Started {
 		// nothing ran, so nothing was applied (and the dashboard adds no Change Log row)
 		res.Applied, res.AppliedAt = false, ""
