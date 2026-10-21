@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { cp, mkdtemp, rm, writeFile, unlink, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { VaultIndex, parseFrontmatter } from '../src/main/services/lookup/vaultindex.ts'
 import {
   buildComputers,
@@ -170,10 +170,11 @@ test('computers merge enrollment, scans and Asset Inventory; different serials s
     const notes = await new VaultIndex().notes(vault)
     const roles = noteRoles(notes, DEFAULT_SETTINGS)
     assert.ok(roles.assets && roles.openLoops && roles.workLog)
-    assert.deepEqual(
-      roles.changeLogs.map((n) => n.rel),
-      ['ARH Change Log.md'],
-      'the default Change Log note is the root one, read once'
+    assert.equal(roles.changeLog?.rel, 'ARH Change Log.md')
+    assert.equal(
+      roles.changeLog,
+      roles.rootChangeLog,
+      'the default Change Log note is the root one'
     )
     assert.equal(roles.tickets.length, 3)
     const rows = inventoryRows(roles.assets!)
@@ -1004,5 +1005,94 @@ test('the computer page reads the Change Log note the dashboard writes to, and t
   } finally {
     await done()
     await rm(appData, { recursive: true, force: true })
+  }
+})
+
+test('the Change Log note Settings names is found as the writer finds it, and only its block is the Change Log', async () => {
+  const logs = join('Logs', 'Device Changes.md')
+  const own = 'Swapped the power supply in ARH-T01; the old one is in the closet.'
+  /** One write of change a_1 with the setting, then the computer page as the lookup builds it. */
+  const pageAfterWrite = async (
+    changeLogNote: string,
+    prepare: (vault: string) => Promise<void> = async () => {}
+  ): Promise<{ p: ComputerProfile; read?: string; written: string | null }> => {
+    const { vault, done } = await copyVault()
+    const appData = await mkdtemp(join(tmpdir(), 'arh-lookup-appdata-'))
+    try {
+      await prepare(vault)
+      const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, changeLogNote }
+      const writer = new VaultWriter({ appDataDir: appData, live: true })
+      const plans = await buildWritePlans({
+        settings,
+        devices: [device],
+        runs: [],
+        actions: [change('a_1', '2026-10-14T16:00:00.000Z')]
+      })
+      const results = await writer.apply(plans)
+      assert.ok(
+        results.every((r) => !r.error),
+        JSON.stringify(results)
+      )
+      const notes = await new VaultIndex().notes(vault)
+      const roles = noteRoles(notes, settings)
+      const p = buildProfile({
+        target: { deviceId: device.id },
+        computers: buildComputers([device], [], inventoryRows(roles.assets!)),
+        notes,
+        settings,
+        connected: () => false
+      })
+      const path = notePaths(settings).changeLog
+      return { p, read: roles.changeLog?.rel, written: path && relative(vault, path) }
+    } finally {
+      await done()
+      await rm(appData, { recursive: true, force: true })
+    }
+  }
+  const changes = (p: ComputerProfile): string[][] =>
+    p.changes.map((c) => [c.file, c.cells['By'] ?? ''])
+  const logsNote = async (vault: string): Promise<void> => {
+    await mkdir(join(vault, 'Logs'))
+    await writeFile(join(vault, 'Logs', 'Device Changes.md'), `# Device changes\n\n${own}\n`)
+  }
+  // typed with "./", a leading separator ("\Logs\Device Changes" on Windows) or a ".." step,
+  // notePaths writes to Logs/Device Changes.md, and the page reads its rows from there
+  for (const typed of [
+    './Logs/Device Changes.md',
+    `${sep}Logs${sep}Device Changes`,
+    'Assets/../Logs/Device Changes'
+  ]) {
+    const { p, read, written } = await pageAfterWrite(typed, logsNote)
+    assert.equal(written, logs, `${typed}: the note the writer writes to`)
+    assert.equal(read, logs, `${typed}: the note the lookup reads`)
+    assert.deepEqual(
+      changes(p),
+      [
+        [logs, 'Lisandro · run a_1'],
+        ['ARH Change Log.md', 'L.P.']
+      ],
+      typed
+    )
+    assert.equal(p.timeline.filter((e) => e.kind === 'change').length, 2, typed)
+    // the technician's own line in that note is still found, as a mention
+    assert.deepEqual(
+      p.mentions.filter((m) => m.file === logs).map((m) => m.text),
+      [own],
+      `${typed}: text outside the dashboard's block`
+    )
+  }
+  // a note that holds other tables naming the computer (the hub's health block, the inventory's
+  // computers): only the rows of its CHANGES block are Change Log rows
+  for (const typed of [DEFAULT_SETTINGS.hubNote, DEFAULT_SETTINGS.assetNote]) {
+    const { p, written } = await pageAfterWrite(typed)
+    assert.ok(written, typed)
+    assert.deepEqual(
+      changes(p),
+      [
+        [written, 'Lisandro · run a_1'],
+        ['ARH Change Log.md', 'L.P.']
+      ],
+      typed
+    )
   }
 })

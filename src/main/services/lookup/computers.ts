@@ -1,3 +1,4 @@
+import { relative } from 'node:path'
 import type {
   ComputerFact,
   ComputerProfile,
@@ -12,7 +13,6 @@ import type {
   RecurringFinding,
   ScanRun,
   SeriesAlert,
-  Settings,
   Severity,
   TimelineEvent,
   VaultMention,
@@ -23,6 +23,7 @@ import { purposeLabel } from '../../../shared/types.ts'
 import type { EnrolledDevice } from '../link/devices.ts'
 import { THRESHOLDS } from '../scans/health.ts'
 import {
+  BLOCK_KEYS,
   cellText,
   DEFAULT_CONTENT_OPTIONS,
   deviceFacts,
@@ -32,6 +33,7 @@ import {
   unescapeVaultText,
   zoned
 } from '../vault/content.ts'
+import { notePaths } from '../vault/plans.ts'
 import { parseDatedEntries, parseTasks } from '../vault/reader.ts'
 import type { IndexedNote } from './vaultindex.ts'
 
@@ -112,14 +114,19 @@ export function inventoryRows(note: IndexedNote): VaultRow[] {
     .map(({ file, line, cells }) => ({ file, line, cells }))
 }
 
-/** Lines inside the dashboard's own marker blocks, so its output is not read back as a note. */
-function dashboardLines(note: IndexedNote): Set<number> {
+/**
+ * Lines inside the dashboard's own marker blocks (or only the block `key`), so its output is not
+ * read back as a note.
+ */
+function dashboardLines(note: IndexedNote, key = '[A-Z0-9_-]+'): Set<number> {
+  const start = new RegExp(`<!--\\s*DASH:${key}:START\\s*-->`)
+  const end = new RegExp(`<!--\\s*DASH:${key}:END\\s*-->`)
   const out = new Set<number>()
   let inside = false
   note.lines.forEach((l, i) => {
-    if (/<!--\s*DASH:[A-Z0-9_-]+:START\s*-->/.test(l)) inside = true
+    if (start.test(l)) inside = true
     if (inside) out.add(i + 1)
-    if (/<!--\s*DASH:[A-Z0-9_-]+:END\s*-->/.test(l)) inside = false
+    if (end.test(l)) inside = false
   })
   return out
 }
@@ -330,8 +337,10 @@ export interface NoteRoles {
   assets?: IndexedNote
   openLoops?: IndexedNote
   workLog?: IndexedNote
-  /** The note the dashboard writes its rows to (Settings), then the root ARH Change Log. */
-  changeLogs: IndexedNote[]
+  /** Settings › Change Log note, where the dashboard writes its CHANGES block. */
+  changeLog?: IndexedNote
+  /** The technician's own ARH Change Log at the top of the vault, read whole. */
+  rootChangeLog?: IndexedNote
   tickets: IndexedNote[]
 }
 
@@ -341,22 +350,24 @@ const relKey = (p: string): string =>
     .toLowerCase()
     .replace(/\.md$/, '')
 
-export function noteRoles(
-  notes: IndexedNote[],
-  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote' | 'changeLogNote'>
-): NoteRoles {
-  const byRel = (setting: string): IndexedNote | undefined =>
-    notes.find((n) => relKey(n.rel) === relKey(setting))
-  // trimmed as notePaths does; an empty name matches no note
-  const changeLogs = [
-    byRel((settings.changeLogNote ?? '').trim()),
-    notes.find((n) => n.folder === '' && norm(n.name) === 'arh change log')
-  ]
+/** The settings that name notes, as the writer reads them. */
+export type RoleSettings = Parameters<typeof notePaths>[0]
+
+export function noteRoles(notes: IndexedNote[], settings: RoleSettings): NoteRoles {
+  // each note the writer writes to (notePaths: trimmed, ".md" added, joined to the vault folder),
+  // found in the index by that path, else ignoring case and "/" against "\" as Windows does
+  const paths = notePaths(settings)
+  const byPath = (path: string | null): IndexedNote | undefined => {
+    if (path === null) return undefined
+    const rel = relative(settings.vaultPath, path)
+    return notes.find((n) => n.rel === rel) ?? notes.find((n) => relKey(n.rel) === relKey(rel))
+  }
   return {
-    assets: byRel(settings.assetNote),
-    openLoops: byRel(settings.openLoopsNote),
-    workLog: byRel(settings.workLogNote),
-    changeLogs: [...new Set(changeLogs)].filter((n): n is IndexedNote => !!n),
+    assets: byPath(paths.assets),
+    openLoops: byPath(paths.openLoops),
+    workLog: byPath(paths.workLog),
+    changeLog: byPath(paths.changeLog),
+    rootChangeLog: notes.find((n) => n.folder === '' && norm(n.name) === 'arh change log'),
     tickets: notes.filter(
       (n) =>
         n.folder.toLowerCase() === 'tickets' &&
@@ -515,7 +526,7 @@ export interface ProfileInput {
   target: LookupTarget
   computers: Computer[]
   notes: IndexedNote[]
-  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote' | 'changeLogNote'>
+  settings: RoleSettings
   connected: (deviceId: string) => boolean
   vaultError?: string
 }
@@ -554,8 +565,9 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
     : matcher([{ text: term }])
   const runs = computer?.runs ?? []
   const roles = noteRoles(input.notes, input.settings)
+  // read for their role, not for mentions; the Change Log note Settings names only for its block
   const special = new Set(
-    [roles.assets, roles.openLoops, roles.workLog, ...roles.changeLogs, ...roles.tickets]
+    [roles.assets, roles.openLoops, roles.workLog, roles.rootChangeLog, ...roles.tickets]
       .filter((n): n is IndexedNote => !!n)
       .map((n) => n.abs)
   )
@@ -705,16 +717,23 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
     lines,
     line
   }))
-  // a row the dashboard wrote to both notes, before and after the setting changed, shows once
-  const changes: VaultRow[] = []
-  const listed = new Set<string>()
-  for (const n of roles.changeLogs) {
-    const rows = tableRows(n)
+  // Change Log: the rows of the CHANGES block in the note Settings names (its other tables and
+  // text are the technician's, found as mentions), then every table of the root ARH Change Log.
+  // A row the dashboard wrote to both, before and after the setting changed, shows once.
+  const naming = (rows: VaultRow[]): VaultRow[] =>
+    rows
       .filter((r) => Object.values(r.cells).some((v) => match.test(v)))
       .map(({ file, line, cells }) => ({ file, line, cells }))
-    changes.push(...rows.filter((r) => !listed.has(JSON.stringify(r.cells))))
-    for (const r of rows) listed.add(JSON.stringify(r.cells))
-  }
+  const setNote = roles.changeLog !== roles.rootChangeLog ? roles.changeLog : undefined
+  const block = setNote ? dashboardLines(setNote, BLOCK_KEYS.changes) : new Set<number>()
+  const blockRows = setNote ? naming(tableRows(setNote).filter((r) => block.has(r.line))) : []
+  const listed = new Set(blockRows.map((r) => JSON.stringify(r.cells)))
+  const changes = [
+    ...blockRows,
+    ...naming(roles.rootChangeLog ? tableRows(roles.rootChangeLog) : []).filter(
+      (r) => !listed.has(JSON.stringify(r.cells))
+    )
+  ]
   const mentions: VaultMention[] = []
   for (const n of input.notes) {
     if (special.has(n.abs)) continue

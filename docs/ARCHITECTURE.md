@@ -77,7 +77,8 @@ computer does not need to be connected:
 - `computers.ts` merges enrolled devices, every stored scan and the computer rows of Asset
   Inventory into one record per machine (by device id, then serial, then name; two serials under
   one name stay two machines). It then collects tickets, Open Loops lines, Work Log parts,
-  Change Log rows and other mentions by whole-word match on the computer's names and serials,
+  Change Log rows (the `CHANGES` block of the note Settings names, every table of the root ARH
+  Change Log) and other mentions by whole-word match on the computer's names and serials,
   skipping the dashboard's own marker blocks. Vault times written in MT are converted to UTC
   so the timeline sorts correctly with scan times.
 - Trends use `HealthReport.values`, raw numbers each scan now stores (disk free per drive, days
@@ -174,6 +175,6 @@ and first lines of System/Security events, not message bodies of application log
   one-shot systemd has unloaded since its run reads as never started.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
   read only, and the security-check profile is now v2.
-- Saving Settings in an older build (Phase 2) drops the settings it does not know. The next time
-  this build starts they are back at their defaults: full access, live vault writes, the shipped
-  Asset Inventory and Change Log notes.
+- Saving Settings in an older build (Phase 2) drops the settings it does not know, the settings
+  version among them. The next time this build starts it is back at full access, live vault
+  writes and the shipped Change Log note.
