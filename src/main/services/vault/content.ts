@@ -504,13 +504,22 @@ export function latestPerProfile(runs: ScanRun[]): ScanRun[] {
   return latestBy(runs, (r) => r.profile)
 }
 
+const NO_LOOPS = '_No open device findings._'
+const NO_SCANS = '_No scans logged yet._'
+/** What a list block holds when it is empty, in this build or an earlier one. */
+const PLACEHOLDERS: ReadonlySet<string> = new Set([NO_LOOPS, NO_SCANS, '_No open health loops._'])
+
+/** An italic line the dashboard writes: a placeholder, or an intro (every version names it). */
+const ownItalic = (line: string): boolean =>
+  /^_.*_$/.test(line) && (PLACEHOLDERS.has(line) || line.includes('ARH IT Dashboard'))
+
 /** The block's lines without its heading, intro and blank lines, but the blank before an id. */
 function bodyLines(existingBody: string | null, heading: string): string[] {
   const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
   const all = (existingBody ?? '').split(/\r?\n/)
   const out: string[] = []
   all.forEach((l, i) => {
-    if (!l.trim() || headings.has(l.trim()) || /^_.*_$/.test(l.trim())) return
+    if (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim())) return
     // a list's block id stays apart from its last item
     if (BLOCK_ID_LINE.test(l) && out.length && !all[i - 1]?.trim()) out.push('')
     out.push(l)
@@ -558,13 +567,7 @@ export function mergeLoops(
   // new tasks join the list, above an id the list is linked by
   const all = [...lines.slice(0, end), ...lines.slice(kept), ...lines.slice(end, kept)]
   return {
-    body: [
-      HEADINGS.loops,
-      '',
-      intro,
-      '',
-      ...(all.length ? all : ['_No open device findings._'])
-    ].join('\n'),
+    body: [HEADINGS.loops, '', intro, '', ...(all.length ? all : [NO_LOOPS])].join('\n'),
     added
   }
 }
@@ -986,9 +989,7 @@ export function mergeLog(
   const all = [...fresh.flatMap((f) => f.lines), ...lines]
   const intro = `_One entry per scan, action or custom command, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]], changes to [[${opts.changeLogNoteName}]]._`
   return {
-    body: [HEADINGS.log, '', intro, '', ...(all.length ? all : ['_No scans logged yet._'])].join(
-      '\n'
-    ),
+    body: [HEADINGS.log, '', intro, '', ...(all.length ? all : [NO_SCANS])].join('\n'),
     added: fresh.length
   }
 }

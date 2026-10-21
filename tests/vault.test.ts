@@ -447,6 +447,47 @@ test('content: work log entries newest first, MT times, duration, findings as su
   assert.equal(again.body, log2.body)
 })
 
+test('content: a line typed in the Work Log or Open Loops block is kept, italic ones too', () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const today = new Date('2026-10-14T18:00:00Z')
+  const later = run({ runId: 'r_2', finishedAt: '2026-10-15T14:00:00.000Z' })
+  const merges = [
+    ['Work Log', (b: string | null, runs: ScanRun[]) => mergeLog(b, runs, opts)],
+    ['Open Loops', (b: string | null, runs: ScanRun[]) => mergeLoops(b, runs, opts, today)]
+  ] as const
+  for (const [name, merge] of merges) {
+    const first = merge(null, [run()]).body
+    for (const typed of [
+      'Called the vendor, waiting on parts.',
+      '_Older scans: see the paper log._',
+      '*Older scans: see the paper log.*',
+      '__Ask Dr. Lee before a restart.__'
+    ]) {
+      const edited = `${first}\n${typed}`
+      assert.equal(merge(edited, [run()]).body, edited, `${name}: ${typed} stays, nothing new`)
+      assert.ok(merge(edited, [run(), later]).body.includes(typed), `${name}: ${typed} stays`)
+    }
+  }
+
+  // the dashboard's own italic lines, from this build or an earlier one, are still replaced
+  const fresh = mergeLog(null, [run()], opts).body
+  const intro = fresh.split('\n')[2]!
+  const oldIntro =
+    '_One entry per scan, newest first (MT). Written by the ARH IT Dashboard; findings that need action go to [[ARH Open Loops]]._'
+  for (const own of [oldIntro, intro.replace('[[ARH Change Log]]', '[[Logs/Device Changes]]')])
+    assert.equal(mergeLog(fresh.replace(intro, own), [run()], opts).body, fresh)
+  const empty = mergeLog(null, [], opts).body
+  assert.ok(empty.endsWith('\n_No scans logged yet._'))
+  assert.equal(mergeLog(empty, [run()], opts).body, fresh)
+  assert.equal(mergeLog(`${empty}\n_No scans logged yet._`, [], opts).body, empty)
+  const noLoops = mergeLoops(null, [], opts, today).body
+  assert.ok(noLoops.endsWith('\n_No open device findings._'))
+  const loops = mergeLoops(null, [run()], opts, today).body
+  for (const placeholder of ['_No open device findings._', '_No open health loops._'])
+    assert.equal(mergeLoops(placeholder, [run()], opts, today).body, loops)
+  assert.equal(mergeLoops(noLoops, [run()], opts, today).body, loops)
+})
+
 const device = {
   id: 'abc',
   serial: 'SER1',
