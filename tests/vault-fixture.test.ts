@@ -520,9 +520,14 @@ test('two block ids after a table, a blank line before each, stay two ids on eve
 /**
  * Links the still empty Work Log and Open Loops lists (`link` turns the placeholder line into the
  * linked form), then checks with real writes: nothing new writes nothing; once the list has items
- * the placeholder is gone and the id is last, after the items, a blank line before it.
+ * the placeholder is gone and the ids are last, in order, after the items, a blank line before
+ * each. `crlf` turns both notes to CRLF first.
  */
-async function linkEmptyLists(link: (placeholder: string, eol: string) => string, id: string) {
+async function linkEmptyLists(
+  link: (placeholder: string, eol: string) => string,
+  ids: string[],
+  crlf = false
+) {
   const tmp = await mkdtemp(join(tmpdir(), 'arh-vault-ids-'))
   const appData = await mkdtemp(join(tmpdir(), 'arh-appdata-'))
   try {
@@ -547,7 +552,8 @@ async function linkEmptyLists(link: (placeholder: string, eol: string) => string
       [paths.openLoops, BLOCK_KEYS.loops, '_No open device findings._']
     ] as const
     for (const [note, key, placeholder] of lists) {
-      const text = await readFile(note, 'utf8')
+      const read = await readFile(note, 'utf8')
+      const text = crlf ? read.replace(/\r?\n/g, '\r\n') : read
       const body = findBlock(text, key)!.body
       assert.ok(body.includes(placeholder), note)
       const eol = text.includes('\r\n') ? '\r\n' : '\n'
@@ -580,11 +586,21 @@ async function linkEmptyLists(link: (placeholder: string, eol: string) => string
         if (!written) assert.equal(text, before[n], `${where}: byte for byte as it was`)
         if (!runs.length) continue
         const body = findBlock(text, key)!.body.split(/\r?\n/)
+        if (crlf) assert.ok(!/(^|[^\r])\n/.test(text), `${where}: CRLF kept`)
         assert.ok(!body.some((l) => l.includes(placeholder)), `${where}: no placeholder`)
-        assert.equal(body.filter((l) => l.includes(id)).length, 1, `${where}: the id once`)
-        assert.equal(body.at(-1), id, `${where}: the id last in the block`)
-        assert.equal(body.at(-2), '', `${where}: a blank line before it`)
-        assert.equal(body.length - 3, body.map(item).lastIndexOf(true), `${where}: after the list`)
+        for (const id of ids)
+          assert.equal(body.filter((l) => l.includes(id)).length, 1, `${where}: ${id} once`)
+        const tail = ids.flatMap((id) => ['', id])
+        assert.deepEqual(
+          body.slice(-tail.length),
+          tail,
+          `${where}: the ids last, a blank before each`
+        )
+        assert.equal(
+          body.length - 1 - tail.length,
+          body.map(item).lastIndexOf(true),
+          `${where}: after the list`
+        )
       }
       const loops = findBlock(await readFile(paths.openLoops, 'utf8'), BLOCK_KEYS.loops)!.body
       assert.equal(loops.split(/\r?\n/).filter(item).length, runs.length, 'one task per finding')
@@ -596,11 +612,27 @@ async function linkEmptyLists(link: (placeholder: string, eol: string) => string
 }
 
 test('a block id on its own line after the empty Work Log or Open Loops list stays after it', () =>
-  linkEmptyLists((placeholder, eol) => `${placeholder}${eol}${eol}^mylist`, '^mylist'))
+  linkEmptyLists((placeholder, eol) => `${placeholder}${eol}${eol}^mylist`, ['^mylist']))
 
 test('"Copy link to block" on the empty Work Log or Open Loops list: its id is the list id', () =>
   // Obsidian puts a paragraph's block id at the end of its line
-  linkEmptyLists((placeholder) => `${placeholder} ^a1b2c3`, '^a1b2c3'))
+  linkEmptyLists((placeholder) => `${placeholder} ^a1b2c3`, ['^a1b2c3']))
+
+test('a block id on the line right under the empty list placeholder is the list id', async () => {
+  // no blank line between: one paragraph, the placeholder's, and the id is its id
+  const link = (placeholder: string, eol: string): string => `${placeholder}${eol}^mylist`
+  await linkEmptyLists(link, ['^mylist'])
+  await linkEmptyLists(link, ['^mylist'], true)
+})
+
+test('two linked placeholder lines settle, and both ids become the list ids in order', () =>
+  linkEmptyLists(
+    (placeholder, eol) => `${placeholder} ^aaa${eol}${eol}${placeholder} ^bbb`,
+    ['^aaa', '^bbb']
+  ))
+
+test('an id on the empty placeholder line and one on its own line after it keep their order', () =>
+  linkEmptyLists((placeholder, eol) => `${placeholder} ^aaa${eol}${eol}^bbb`, ['^aaa', '^bbb']))
 
 test('the fixture source itself is never modified', async () => {
   const files = await listFiles(SOURCE)

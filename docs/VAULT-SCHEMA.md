@@ -151,14 +151,16 @@ padded or realigned header row (table plugins) is still recognised. A link to a 
 own after it, a blank line between (`^chg-table`). That line stays there on every write: after
 the rows (in the hub, above the `Inventory:` line), or after the list with its blank line; new
 Open Loops tasks join the list above it. That holds for an id put there while the list is still
-empty, and for the one "Copy link to block" puts at the end of an empty list's placeholder line
-(`_No open device findings._ ^a1b2c3`): it stays on that line until the list's first item, then
-the placeholder goes and the id is the list's. Inside the markers, a line you type in the Work
-Log or Open Loops block is kept, italic or not, unless it repeats the block's heading or one of the
-dashboard's own italic lines (a line in underscores that names the ARH IT Dashboard counts as
-its intro); the blank lines between such lines are not kept, and a table block keeps only its
-rows (the hub's are rebuilt) and block ids. Type notes outside the markers, and put a block id
-on its own line right after the list or table. Previews, things already
+empty, and for an id on the empty list's placeholder: the one "Copy link to block" puts at the
+end of its line (`_No open device findings._ ^a1b2c3`), or one typed on the line right under it
+(no blank line between, so Obsidian reads it as the placeholder's). The placeholder stays as it
+is until the list's first item; then it goes, and each id it carried is the list's, on its own
+line after the list with a blank line before it, ahead of ids typed there. Inside the markers, a
+line you type in the Work Log or Open Loops block is kept, italic or not, unless it repeats the
+block's heading or one of the dashboard's own italic lines (a line in underscores that names the
+ARH IT Dashboard counts as its intro); the blank lines between such lines are not kept, and a
+table block keeps only its rows (the hub's are rebuilt) and block ids. Type notes outside the
+markers, and put a block id on its own line right after the list or table. Previews, things already
 set, and refused requests never reach the vault. Every value that came from a device is cleaned
 first: no line breaks of any kind, and the characters Markdown, HTML and Obsidian give a meaning
 to are escaped. Both logs list as changed only items measured before and after, so a Work Log

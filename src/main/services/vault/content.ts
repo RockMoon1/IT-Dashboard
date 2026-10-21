@@ -514,37 +514,35 @@ const ownItalic = (line: string): boolean =>
   /^_.*_$/.test(line) && (PLACEHOLDERS.has(line) || line.includes('ARH IT Dashboard'))
 
 /**
- * The list's block id on the empty list's placeholder: "Copy link to block" puts a paragraph's id
- * at the end of its line (`_No open device findings._ ^a1b2c3`).
+ * The empty list's placeholder, and the list's block id when "Copy link to block" put one at the
+ * end of its line (`_No open device findings._ ^a1b2c3`).
  */
-const placeholderId = (line: string): string | undefined => {
-  const m = /^(_.*_)\s+(\^[A-Za-z0-9-]+)$/.exec(line.trim())
-  return m && PLACEHOLDERS.has(m[1]!) ? m[2] : undefined
+const placeholderOf = (line: string): { text: string; id?: string } | undefined => {
+  const m = /^(_.*_)(?:\s+(\^[A-Za-z0-9-]+))?$/.exec(line.trim())
+  return m && PLACEHOLDERS.has(m[1]!) ? { text: m[1]!, id: m[2] } : undefined
 }
 
-/** A block id on a line of its own, or on the empty list's placeholder. */
-const idLine = (line: string): boolean => BLOCK_ID_LINE.test(line) || !!placeholderId(line)
+/** A block id on a line of its own, or the placeholder (kept only while it carries the list's). */
+const idLine = (line: string): boolean => BLOCK_ID_LINE.test(line) || !!placeholderOf(line)
 
 /**
- * The block's lines without its heading, intro and blank lines, but the blank before an id. A
- * placeholder with the list's id on it goes last, a blank line before it.
+ * The block's lines without its heading, intro and blank lines, but the blank before an id. The
+ * placeholder stays, as it is, while it carries the list's id: at the end of its line, or on the
+ * line right under it (one paragraph, so the id is the placeholder's).
  */
 function bodyLines(existingBody: string | null, heading: string): string[] {
   const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
   const all = (existingBody ?? '').split(/\r?\n/)
   const out: string[] = []
-  const linked: string[] = []
   all.forEach((l, i) => {
-    if (placeholderId(l)) {
-      linked.push('', l)
-      return
-    }
-    if (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim())) return
-    // a list's block id stays apart from its last item, or from the placeholder dropped above it
-    if (BLOCK_ID_LINE.test(l) && !all[i - 1]?.trim()) out.push('')
+    const p = placeholderOf(l)
+    const linked = !!p && (!!p.id || BLOCK_ID_LINE.test(all[i + 1] ?? ''))
+    if (!linked && (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim()))) return
+    // a list's block id (or the placeholder carrying it) stays apart from the line above it
+    if ((linked || BLOCK_ID_LINE.test(l)) && !all[i - 1]?.trim()) out.push('')
     out.push(l)
   })
-  return [...out, ...linked]
+  return out
 }
 
 /** Where the block ids after a list start, a blank line before them; the end if there are none. */
@@ -556,14 +554,33 @@ function listEnd(lines: string[]): number {
 }
 
 /**
- * The list, or its placeholder while it has no items. An id on the placeholder stays on its line
- * until then; after that it is the list's, on a line of its own.
+ * The list, or its placeholder while it has no items. A placeholder that carries the list's id
+ * stays as it is until then; after that it goes, and each id it carried is the list's, on a line
+ * of its own after the list, a blank line before it, ahead of the ids typed there.
  */
 function listOr(all: string[], placeholder: string): string[] {
-  const id = placeholderId(all[all.length - 1] ?? '')
-  if (!all.some((l) => l.trim() && !idLine(l)))
-    return id ? [`${placeholder} ${id}`, ...all.slice(0, -2)] : [placeholder, ...all]
-  const list = id ? [...all.slice(0, -1), id] : all
+  if (!all.some((l) => l.trim() && !idLine(l))) {
+    if (!all.some((l) => placeholderOf(l))) return [placeholder, ...all]
+    // nothing to list: as it was, in this build's words
+    return (all[0] === '' ? all.slice(1) : all).map((l) => {
+      const p = placeholderOf(l)
+      return p ? l.replace(p.text, placeholder) : l
+    })
+  }
+  const ids: string[] = []
+  const rest: string[] = []
+  let under = false // right under the placeholder, where an id line is the placeholder's
+  for (const l of all) {
+    const p = placeholderOf(l)
+    if (p?.id) ids.push('', p.id)
+    else if (!p && under && BLOCK_ID_LINE.test(l)) ids.push('', l)
+    else if (!p) rest.push(l)
+    under = !!p || (under && BLOCK_ID_LINE.test(l))
+  }
+  // the blank kept above a placeholder goes with it
+  const kept = rest.filter((l, i) => l !== '' || BLOCK_ID_LINE.test(rest[i + 1] ?? ''))
+  const end = listEnd(kept)
+  const list = [...kept.slice(0, end), ...ids, ...kept.slice(end)]
   // an id above the items needs no second blank line under the intro
   return list[0] === '' ? list.slice(1) : list
 }
