@@ -155,3 +155,25 @@ test('a note the parser struggles with does not stop the notes it mentions from 
     await rm(tmp, { recursive: true, force: true })
   }
 })
+
+test('a note of links nested 10000 deep opens, and its links count as backlinks', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const nested = '['.repeat(10_000) + 'a' + '](https://x.org)'.repeat(10_000)
+    await writeFile(
+      join(vault, 'Ticket 13.md'),
+      `# Ticket 13\n\nPrinter down on [[T-0001 Front desk printer]]\n\n${nested}\n`
+    )
+    const notes = await new VaultIndex().notes(vault)
+    const t0 = performance.now()
+    const view = noteView(notes.find((n) => n.name === 'Ticket 13')!, notes)
+    assert.ok(performance.now() - t0 < 2000, 'opens without a long freeze')
+    const ticket = notes.find((n) => n.name === 'T-0001 Front desk printer')!
+    assert.equal(view.links['T-0001 Front desk printer']?.file, ticket.rel)
+    assert.ok(noteView(ticket, notes).backlinks.some((b) => b.title === 'Ticket 13'))
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})

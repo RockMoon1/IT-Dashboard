@@ -126,93 +126,130 @@ function frontmatter(lines: string[]): { data: Array<[string, string]>; end: num
 }
 
 const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^`\s]*)/
-/** A fence line as stripComments sees it: also after quote markers and a list marker. */
-const FENCE_IN = /^((?:\s*(?:>|(?:[-*+]|\d{1,9}[.)])\s))*\s*)(`{3,}|~{3,})(.*)$/
-const quoteDepth = (s: string): number => (/^(?:\s*>)*/.exec(s)?.[0].match(/>/g) ?? []).length
-/** A line with its first n quote markers taken off, as parseBlocks reads it inside the quotes. */
-function quoteBody(s: string, n: number): string {
-  let t = s
-  for (let k = 0; k < n; k++) {
-    const m = /^\s*>\s?(.*)$/.exec(t)
-    if (!m) break
-    t = m[1] ?? ''
+
+/**
+ * What parseBlocks has open at one level of a note: the note itself, a quote's or callout's
+ * body, or a list item's body. `fresh`: the level has no line yet or its last line was blank
+ * (parseBlocks' afterBlank).
+ */
+interface Level {
+  depth: number
+  fresh: boolean
+  open:
+    | { t: 'none' | 'para' | 'table' | 'indented' }
+    | { t: 'fence'; mark: string }
+    | { t: 'quote'; inner: Level }
+    | { t: 'item'; base: number; ordered: boolean; content: number; blank: boolean; inner: Level }
+}
+
+const newLevel = (depth: number): Level => ({ depth, fresh: true, open: { t: 'none' } })
+/** A line and the one after it, as isBlockStart and isTableStart read them. */
+const pair = (s: string, next: string): Line[] => [
+  { n: 0, s },
+  { n: 0, s: next }
+]
+/**
+ * A line as a list item's body holds it, as parseBlocks collects the body: blank, indented past
+ * the item's marker, or a lazy line right after text; null when the item ends before it. `next`
+ * is the line after `s`, which only a table start needs.
+ */
+function inItem(
+  base: number,
+  content: number,
+  lastBlank: boolean,
+  s: string,
+  next: string
+): string | null {
+  const ind = indentOf(s)
+  if (!s.trim()) return ''
+  if (ind > base) return expandTabs(s).slice(Math.min(ind, content))
+  return !lastBlank && !isBlockStart(pair(s, next), 0) ? s.trim() : null
+}
+
+/**
+ * Reads one line at a level the way parseBlocks does, rule for rule and in its order, and says
+ * whether the line is code there. `s` and `next` (the line after, '' when the level ends before
+ * it; only a table start reads it) are as the level sees them. Returns a new level; `l` stays
+ * as it was.
+ */
+function step(l: Level, s: string, next: string): { l: Level; code: boolean } {
+  if (l.depth > MAX_NEST) return { l, code: false } // read as one paragraph of text
+  const blank = !s.trim()
+  const to = (open: Level['open'], code: boolean): { l: Level; code: boolean } => ({
+    l: { depth: l.depth, fresh: blank, open },
+    code
+  })
+  const o = l.open
+  // the open block goes on
+  if (o.t === 'fence') {
+    const t = s.trim()
+    const close = t.startsWith(o.mark[0]!.repeat(o.mark.length)) && /^[`~]+$/.test(t)
+    return to(close ? { t: 'none' } : o, true)
   }
-  return t
+  if (o.t === 'indented' && (blank || indentOf(s) >= 4)) return to(o, true)
+  if (o.t === 'para' && !blank && !isBlockStart(pair(s, next), 0, true)) return to(o, false)
+  if (o.t === 'table' && !blank && s.includes('|')) return to(o, false)
+  const quote = QUOTE.exec(s)
+  if (o.t === 'quote' && quote) {
+    const r = step(o.inner, quote[1] ?? '', QUOTE.exec(next)?.[1] ?? '')
+    return to({ t: 'quote', inner: r.l }, r.code)
+  }
+  const ind = indentOf(s)
+  const item = ITEM.exec(s)
+  // an item's body gets the line after as the item holds it, judged without the one after that
+  const startItem = (m: RegExpExecArray): { l: Level; code: boolean } => {
+    const { content, first } = itemText(s, m)
+    const r = step(newLevel(l.depth + 1), first, inItem(ind, content, false, next, '') ?? '')
+    return to({ t: 'item', base: ind, ordered: !!m[3], content, blank: false, inner: r.l }, r.code)
+  }
+  if (o.t === 'item') {
+    // the item goes on with the line
+    const own = inItem(o.base, o.content, o.blank, s, next)
+    if (own !== null) {
+      const r = step(o.inner, own, inItem(o.base, o.content, blank, next, '') ?? '')
+      return to({ ...o, blank, inner: r.l }, r.code)
+    }
+    // or the list goes on with its next item, whatever else the line could start
+    if (item?.[4] !== undefined && ind === o.base && !!item[3] === o.ordered) return startItem(item)
+  }
+  if (blank) return to({ t: 'none' }, false)
+  // a new block
+  const fence = FENCE.exec(s)
+  if (fence?.[2]) return to({ t: 'fence', mark: fence[2] }, true)
+  if (l.fresh && ind >= 4 && item?.[4] === undefined) return to({ t: 'indented' }, true)
+  if (HEADING.test(s) || HR.test(s)) return to({ t: 'none' }, false)
+  if (isTableStart(pair(s, next), 0)) return to({ t: 'table' }, false)
+  if (quote) {
+    const inner = newLevel(l.depth + 1)
+    // a callout's title line is not part of its body
+    if (CALLOUT.test(quote[1] ?? '')) return to({ t: 'quote', inner }, false)
+    const r = step(inner, quote[1] ?? '', QUOTE.exec(next)?.[1] ?? '')
+    return to({ t: 'quote', inner: r.l }, r.code)
+  }
+  if (item?.[4] !== undefined) return startItem(item)
+  return to({ t: 'para' }, false)
 }
 
 /**
  * Blanks out <!-- --> and %% %% comments outside code, keeping every line where it was. Code
- * is what parseBlocks reads as code: fences (also in a callout or list item), indented code
- * after a blank line outside lists, and `code spans`; comment markers in it are text.
+ * is what parseBlocks reads as code, followed with step() over the lines as written out (a line
+ * that held only a comment is blank there), and `code spans`; comment markers in it are text.
  */
 function stripComments(lines: string[]): string[] {
   const out: string[] = []
-  let fence: { mark: string; depth: number } | null = null
   let inHtml = false
   let inPct = false
-  let indented = -1 // quote depth of the indented code block being read; -1 when none
-  let list = -1 // indent of the open list's outermost item; -1 when no list is open
-  let prevBlank = true
-  let prevQ = 0 // quote depth of the line before
-  let prevInnerBlank = true // the line before was blank inside its quote ("> ")
-  let prevHead = false // the line before was a callout's title line
-  for (const raw of lines) {
-    const blank = !raw.trim()
-    const q = quoteDepth(raw)
-    const body = q ? quoteBody(raw, q) : raw // the line as parseBlocks reads it inside the quote
-    const innerBlank = !body.trim()
-    // after a blank line as parseBlocks sees it: at the top, a blank line; in a quote, a blank
-    // quoted line, the quote's first line, or a callout's title
-    const afterBlank =
-      q === 0 ? prevBlank : prevQ < q || (prevQ === q && (prevInnerBlank || prevHead))
-    const note = (): void => {
-      prevBlank = blank
-      prevQ = q
-      prevInnerBlank = innerBlank
-      prevHead = /^\[![A-Za-z0-9_-]+\]/.test(body.trim())
+  let at = newLevel(0)
+  for (let k = 0; k < lines.length; k++) {
+    const raw = lines[k]!
+    const after = lines[k + 1] ?? ''
+    // a line that starts in a comment is not read for code: the comment goes on over it
+    const read = inHtml || inPct ? null : step(at, raw, after)
+    if (read?.code) {
+      out.push(raw)
+      at = read.l
+      continue
     }
-    if (!inHtml && !inPct) {
-      // a fence ends with its closing line, or with the quote it was opened in
-      if (fence && q < fence.depth) fence = null
-      const f = FENCE_IN.exec(raw)
-      if (fence) {
-        // only a line at the fence's own quote depth holding nothing but the fence closes it
-        const inner = q === fence.depth ? quoteBody(raw, fence.depth).trim() : ''
-        if (
-          /^[`~]+$/.test(inner) &&
-          inner[0] === fence.mark[0] &&
-          inner.length >= fence.mark.length
-        )
-          fence = null
-        out.push(raw)
-        note()
-        continue
-      }
-      if (indented >= 0 && q === indented && (innerBlank || indentOf(body) >= 4)) {
-        out.push(raw)
-        note()
-        continue
-      }
-      indented = -1
-      if (!blank) {
-        const ind = indentOf(raw)
-        const item = ITEM.exec(raw)?.[4] !== undefined
-        if (item && (list < 0 || ind < list)) list = ind
-        else if (!item && ind <= list && (prevBlank || HEADING.test(raw) || f)) list = -1
-        const innerItem = ITEM.exec(body)?.[4] !== undefined
-        if (f?.[2]) {
-          fence = { mark: f[2], depth: quoteDepth(f[1] ?? '') }
-        } else if (!innerItem && afterBlank && indentOf(body) >= 4 && (q > 0 || list < 0)) {
-          indented = q
-        }
-        if (fence || indented >= 0) {
-          out.push(raw)
-          note()
-          continue
-        }
-      }
-    }
-    note()
     let result = ''
     let i = 0
     // next comment opener and backtick from i, found again only once i has passed them
@@ -252,7 +289,9 @@ function stripComments(lines: string[]): string[] {
       }
     }
     // a line that held only a comment disappears (blank), like in reading view
-    out.push(result.trim() === '' && raw.trim() !== '' ? '' : result)
+    const shown = result.trim() === '' && raw.trim() !== '' ? '' : result
+    out.push(shown)
+    at = read && shown === raw ? read.l : step(at, shown, after).l
   }
   return out
 }
@@ -322,8 +361,17 @@ const EMPHASIS: Array<[string, Inline['t']]> = [
   ['_', 'em']
 ]
 
-export function parseInline(s: string): Inline[] {
+/**
+ * Links and emphasis nested deeper than this are read as text, so no line can exhaust the stack
+ * (each level reads its text again: 10000 nested links took 30 s before overflowing it).
+ */
+const MAX_INLINE_NEST = 32
+
+export function parseInline(s: string, depth = 0): Inline[] {
   const out: Inline[] = []
+  // a link's or emphasis's text, read one level down; past MAX_INLINE_NEST it is plain text
+  const nested = (v: string): Inline[] =>
+    depth < MAX_INLINE_NEST ? parseInline(v, depth + 1) : v ? [{ t: 'text', v }] : []
   // What one scan already showed, so a long paragraph full of unmatched openers (* _ [[ [ `)
   // costs one scan per kind instead of one per opener: delimiters with no closer, the shortest
   // backtick run with no closer, the next ]] and line break, and where each [ and ( closes.
@@ -409,14 +457,16 @@ export function parseInline(s: string): Inline[] {
             // remote images are not fetched: the viewer never loads anything from the internet
             pushText(out, label ? `[image: ${label}]` : '[image]')
           } else if (href) {
-            out.push({ t: 'link', href, c: parseInline(label) })
+            out.push({ t: 'link', href, c: nested(label) })
           } else if (/\.md$/i.test(decodeSafe(rawUrl)) || !/^[a-z][a-z0-9+.-]*:/i.test(rawUrl)) {
             // a relative link to another note behaves like a wikilink
             const target = decodeSafe(rawUrl).replace(/\.md(#.*)?$/i, '$1')
             const w = wiki(target, false)
             if (w.t === 'wiki') out.push({ ...w, alias: label || undefined })
           } else {
-            out.push(...parseInline(label)) // javascript:, file: and the like: text only
+            // javascript:, file: and the like: text only (pushed one by one, as a spread of a
+            // label with 100000 parts overflows the stack)
+            for (const x of nested(label)) out.push(x)
           }
           i = urlEnd + 1
           continue
@@ -453,7 +503,7 @@ export function parseInline(s: string): Inline[] {
       const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d)
       if (end === -1 && !intraword) noClose.add(d)
       if (end !== -1) {
-        const inner = parseInline(s.slice(i + d.length, end))
+        const inner = nested(s.slice(i + d.length, end))
         if (d === '***') out.push({ t: 'strong', c: [{ t: 'em', c: inner }] })
         else out.push({ t: kind as 'strong' | 'em' | 'del' | 'mark', c: inner })
         i = end + d.length
@@ -532,11 +582,27 @@ export function inlineText(c: Inline[]): string {
 const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/
 const HR = /^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
+const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/
 const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+(.*))?$/
 const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 
 const expandTabs = (s: string): string => s.replace(/^\t+/, (t) => '    '.repeat(t.length))
 const indentOf = (s: string): number => /^ */.exec(expandTabs(s))?.[0].length ?? 0
+
+/** A list item line (`m` is its ITEM match): where its text starts, its task box, its text. */
+function itemText(
+  s: string,
+  m: RegExpExecArray
+): { content: number; task?: string; first: string } {
+  const base = indentOf(s)
+  const marker =
+    expandTabs(s)
+      .slice(base)
+      .match(/^([-*+]|\d{1,9}[.)])\s+/)?.[0] ?? '- '
+  const text = m[5] ?? ''
+  const tm = /^\[(.)\](?:\s+|$)(.*)$/.exec(text)
+  return { content: base + marker.length, task: tm?.[1], first: tm ? (tm[2] ?? '') : text }
+}
 
 function isTableStart(lines: Line[], i: number): boolean {
   const a = lines[i]?.s ?? ''
@@ -684,7 +750,7 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
         inner.push({ n: lines[i]!.n, s: QUOTE.exec(lines[i]!.s)?.[1] ?? '' })
         i++
       }
-      const head = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/.exec(inner[0]?.s ?? '')
+      const head = CALLOUT.exec(inner[0]?.s ?? '')
       if (head?.[1]) {
         const kind = head[1].toLowerCase()
         const titleText = head[3]?.trim() || kind.charAt(0).toUpperCase() + kind.slice(1)
@@ -715,18 +781,7 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
         const cur = lines[i]!
         const m = ITEM.exec(cur.s)
         if (!m || m[4] === undefined || indentOf(cur.s) !== base || !!m[3] !== ordered) break
-        const marker =
-          expandTabs(cur.s)
-            .slice(base)
-            .match(/^([-*+]|\d{1,9}[.)])\s+/)?.[0] ?? '- '
-        const contentOffset = base + marker.length
-        let first = m[5] ?? ''
-        let task: string | undefined
-        const tm = /^\[(.)\](?:\s+|$)(.*)$/.exec(first)
-        if (tm) {
-          task = tm[1]
-          first = tm[2] ?? ''
-        }
+        const { content: contentOffset, task, first } = itemText(cur.s, m)
         const body: Line[] = [{ n: cur.n, s: first }]
         i++
         let lastBlank = false

@@ -494,3 +494,247 @@ test('very deep quotes and lists are read as text instead of overflowing the sta
     assert.equal(last?.t === 'para' ? inlineText(last.c) : '', 'after')
   }
 })
+
+type List = Extract<Block, { t: 'list' }>
+type Callout = Extract<Block, { t: 'callout' }>
+
+test('a list item reads on from where its text starts, in a callout and at the top', () => {
+  // 4 columns into the quote but 1 past the item's text: the item's second paragraph, so text
+  const md = [
+    '> [!note] Front desk printer',
+    '> 1. Stop the spooler.',
+    '>',
+    '>     Check the queue first %% ask Maria (front desk) before clearing it %%',
+    '> 2. Start it again.'
+  ].join('\n')
+  const steps = (parseMarkdown(md).blocks[0] as Callout).c[0] as List
+  assert.deepEqual(texts(steps.items[0]!.c), [
+    ['para', 2, 'Stop the spooler.'],
+    ['para', 4, 'Check the queue first']
+  ])
+  // 4 columns past an item's text after a blank line: code in the item, its %% kept
+  const logs = parseMarkdown(
+    '1. Rename the logs:\n\n       for %%f in (*.log) do ren "%%f" "%%~nf.old"\n\n2. Check'
+  ).blocks[0] as List
+  assert.deepEqual(
+    logs.items.map((it) => texts(it.c)),
+    [
+      [
+        ['para', 1, 'Rename the logs:'],
+        ['code', 3, 'for %%f in (*.log) do ren "%%f" "%%~nf.old"']
+      ],
+      [['para', 5, 'Check']]
+    ]
+  )
+})
+
+test('an indented code line that starts with ">" stays in the code block', () => {
+  const md = [
+    'Script:',
+    '',
+    '    @echo off',
+    '    > "%TEMP%\\list.txt" dir /b',
+    '    for /f %%f in (%TEMP%\\list.txt) do echo %%f'
+  ].join('\n')
+  assert.deepEqual(texts(parseMarkdown(md).blocks), [
+    ['para', 1, 'Script:'],
+    [
+      'code',
+      3,
+      '@echo off\n> "%TEMP%\\list.txt" dir /b\nfor /f %%f in (%TEMP%\\list.txt) do echo %%f'
+    ]
+  ])
+})
+
+test('a fence opened after a list marker and a quote marker closes there', () => {
+  const md = [
+    '- Output:',
+    '- > ```',
+    '  > ipconfig /all',
+    '  > ```',
+    '',
+    'After the fix %% private: called Dr. X at home %% done.'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(texts(p.blocks), [
+    ['list', 1, ''],
+    ['para', 6, 'After the fix  done.']
+  ])
+  const quote = (p.blocks[0] as List).items[1]!.c[0]
+  assert.deepEqual(quote?.t === 'quote' && texts(quote.c), [['code', 2, 'ipconfig /all']])
+})
+
+test('only the first line of a quote can be a callout title', () => {
+  for (const md of [
+    '> Printer notes\n> [!todo] follow up\n>     Ask about %% patient name on the stuck job %% the queue',
+    '>  [!note] Steps\n>     Ask about %% patient name on the stuck job %% the queue'
+  ]) {
+    const quote = parseMarkdown(md).blocks[0]
+    assert.equal(quote?.t, 'quote', md)
+    const para = quote?.t === 'quote' ? quote.c[0] : undefined
+    assert.equal(para?.t, 'para', md)
+    const text = para?.t === 'para' ? inlineText(para.c) : ''
+    assert.ok(text.endsWith('Ask about  the queue'), text)
+  }
+})
+
+test('a line that held only a comment is a blank line before the code after it', () => {
+  const batch = parseMarkdown(
+    '> [!note] Batch\n> %% reviewed 10/20 %%\n>     for %%i in (*.tmp) do del "%%i"'
+  ).blocks[0] as Callout
+  assert.deepEqual(texts(batch.c), [['code', 3, 'for %%i in (*.tmp) do del "%%i"']])
+  const top = parseMarkdown(
+    'Clean the temp folder:\n%% reviewed %%\n    for %%i in (*.tmp) do del "%%i"'
+  )
+  assert.deepEqual(texts(top.blocks), [
+    ['para', 1, 'Clean the temp folder:'],
+    ['code', 3, 'for %%i in (*.tmp) do del "%%i"']
+  ])
+})
+
+test('a fence in a list item ends with the item', () => {
+  // the closing fence was forgotten: item 2 is text again, and its comment is hidden
+  const md = '1. Command:\n   ```\n   ipconfig\n2. Then note %% private: patient John Doe %% ok'
+  const list = parseMarkdown(md).blocks[0] as List
+  assert.deepEqual(
+    list.items.map((it) => texts(it.c)),
+    [
+      [
+        ['para', 1, 'Command:'],
+        ['code', 2, 'ipconfig']
+      ],
+      [['para', 4, 'Then note  ok']]
+    ]
+  )
+  // "- ````" ends the item's fence and opens one of its own, closed by the next item
+  const next = parseMarkdown('- step\n  ```` x\n- ````\n- note %% hidden %%').blocks[0] as List
+  assert.deepEqual(texts(next.items[2]!.c), [['para', 4, 'note']])
+})
+
+test('a line of 120000 quote markers parses in linear time', () => {
+  for (const md of ['> '.repeat(120_000) + 'x', '>'.repeat(120_000) + ' x']) {
+    const t0 = performance.now()
+    const p = parseMarkdown(`before\n\n${md}\n\nafter %% hidden %%`)
+    const ms = performance.now() - t0
+    // about 100 ms when each line is read once per level, seconds when once per marker
+    assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms for ${md.length} chars`)
+    const last = p.blocks.at(-1)
+    assert.equal(last?.t === 'para' ? inlineText(last.c) : '', 'after')
+  }
+})
+
+test('links nested 10000 deep parse quickly and stop nesting at a limit', () => {
+  const n = 10_000
+  const md = '['.repeat(n) + 'a' + '](https://x.org)'.repeat(n)
+  const depth = (c: Inline[]): number =>
+    Math.max(0, ...c.map((x) => ('c' in x ? 1 + depth(x.c) : 0)))
+  // a few hundred ms each; without the limit, half a minute and then a stack overflow
+  for (const text of [md, `*${md}*`]) {
+    const t0 = performance.now()
+    const para = parseMarkdown(text).blocks[0]
+    const ms = performance.now() - t0
+    assert.ok(ms < 2000, `took ${ms.toFixed(0)} ms for ${text.length} chars`)
+    assert.ok(para?.t === 'para' && depth(para.c) <= 40, 'past the limit a label is text')
+    assert.ok(inlineText(para.c).includes('a' + '](https://x.org)'.repeat(n - 40)))
+  }
+  // a few levels still read as links
+  const two = parseInline('[[x](https://a.org) and more](https://b.org)')
+  assert.ok(two[0]?.t === 'link' && two[0].c[0]?.t === 'link')
+  // nor does a label of 200000 parts overflow the stack
+  const parts = parseInline('[' + '`a` '.repeat(200_000) + '](javascript:x)')
+  assert.equal(parts.filter((x) => x.t === 'code').length, 200_000)
+})
+
+/** A small deterministic random source (mulberry32): every run checks the same notes. */
+function random(seed: number): () => number {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/**
+ * A random note of quotes, callouts, lists, indented code, fences, commands with %% in them and
+ * comments. With `reshaping`, also comments that change the note's shape once hidden: lines
+ * that hold only a comment, and comments over several lines.
+ */
+function randomNote(rand: () => number, reshaping: boolean): string {
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
+  const prefixes = ['> ', '>', '>  ', '>     ', '- ', '1. ', '- [ ] ', ' ', '  ', '   ', '    ']
+  let id = 0
+  const contents = [
+    () => `text ${id++}`,
+    () => `text %% secret ${id++} %% more`,
+    () => `word <!-- secret ${id++} --> after`,
+    () => pick(['```', '````', '```bat', '~~~']),
+    () => `for %%f in (c${id++}) do echo %%f`,
+    () => `    for %%i in (c${id++}) do del "%%i"`,
+    () => `[!note] Title %% secret ${id++} %%`,
+    () => `- item %% secret ${id++} %%`,
+    () => '1. step',
+    () => pick(['- - -', '* * *', `# Step ${id++} %% secret %%`]),
+    () => '',
+    ...(reshaping ? [() => `%% secret ${id++} %%`, () => '%%', () => '<!--', () => '-->'] : [])
+  ]
+  const lines: string[] = []
+  for (let k = 2 + Math.floor(rand() * 14); k > 0; k--) {
+    let prefix = ''
+    for (let d = Math.floor(rand() * 4); d > 0; d--) prefix += pick(prefixes)
+    lines.push(prefix + pick(contents)())
+  }
+  return lines.join('\n')
+}
+
+/** The text nodes and the code blocks ([line, lang, code]) of a parsed note, in order. */
+function textAndCode(blocks: Block[], text: string[], code: Array<[number, string, string]>): void {
+  const inline = (c: Inline[]): void => {
+    for (const x of c) {
+      if (x.t === 'text') text.push(x.v)
+      else if ('c' in x) inline(x.c)
+    }
+  }
+  for (const b of blocks) {
+    if (b.t === 'code') code.push([b.line, b.lang, b.v])
+    else if (b.t === 'para' || b.t === 'heading') inline(b.c)
+    else if (b.t === 'quote') textAndCode(b.c, text, code)
+    else if (b.t === 'callout') {
+      inline(b.title)
+      textAndCode(b.c, text, code)
+    } else if (b.t === 'list') for (const it of b.items) textAndCode(it.c, text, code)
+  }
+}
+
+test('comments are hidden wherever the note shows text, and code keeps every byte', () => {
+  const rand = random(20261021)
+  for (let k = 0; k < 4000; k++) {
+    const reshaping = k % 2 === 1
+    const md = randomNote(rand, reshaping)
+    const text: string[] = []
+    const code: Array<[number, string, string]> = []
+    textAndCode(parseMarkdown(md).blocks, text, code)
+    const shown = text.find((v) => v.includes('%%') || v.includes('<!--'))
+    assert.equal(shown, undefined, `a comment shows as text in:\n${md}`)
+    if (reshaping) {
+      // a command in a code block is whole
+      for (const [, , v] of code) {
+        for (const line of v.split('\n').filter((l) => l.includes('for '))) {
+          assert.match(line, /for %%(f in \(c\d+\) do echo %%f|i in \(c\d+\) do del "%%i")$/, md)
+        }
+      }
+    } else {
+      // these comments leave each line's shape as it was, so the code blocks are the ones the
+      // note has when no comment is hidden at all
+      const plain = md.replaceAll('%%', '§§').replaceAll('<!--', '‹!--')
+      const want: Array<[number, string, string]> = []
+      textAndCode(parseMarkdown(plain).blocks, [], want)
+      const back = (v: string): string => v.replaceAll('§§', '%%').replaceAll('‹!--', '<!--')
+      assert.deepEqual(
+        code,
+        want.map(([line, lang, v]) => [line, lang, back(v)]),
+        `code differs in:\n${md}`
+      )
+    }
+  }
+})
