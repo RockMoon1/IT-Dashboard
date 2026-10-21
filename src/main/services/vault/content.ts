@@ -339,12 +339,15 @@ export function readTable(body: string | null): {
 }
 
 /**
- * Block id lines in a body, written back after the table, a blank line before them. Obsidian
- * links a table by an id on its own line after it, which lands inside the markers, since the END
- * marker comes right after the last row.
+ * A block id on a line of its own. Obsidian links a table or a list as a whole by an id on its
+ * own line after it, a blank line between (without one, a list's id is its last item's). It
+ * lands inside the markers, since the END marker comes right after the last row or item.
  */
+const BLOCK_ID_LINE = /^\s*\^[A-Za-z0-9-]+\s*$/
+
+/** Block id lines in a body, written back after the table, a blank line before them. */
 function tableIds(body: string | null): string[] {
-  const ids = (body ?? '').split(/\r?\n/).filter((l) => /^\s*\^[A-Za-z0-9-]+\s*$/.test(l))
+  const ids = (body ?? '').split(/\r?\n/).filter((l) => BLOCK_ID_LINE.test(l))
   return ids.length ? ['', ...ids] : []
 }
 
@@ -496,11 +499,26 @@ export function latestPerProfile(runs: ScanRun[]): ScanRun[] {
   return latestBy(runs, (r) => r.profile)
 }
 
+/** The block's lines without its heading, intro and blank lines, but the blank before an id. */
 function bodyLines(existingBody: string | null, heading: string): string[] {
   const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
-  return (existingBody ?? '')
-    .split(/\r?\n/)
-    .filter((l) => l.trim() && !headings.has(l.trim()) && !/^_.*_$/.test(l.trim()))
+  const all = (existingBody ?? '').split(/\r?\n/)
+  const out: string[] = []
+  all.forEach((l, i) => {
+    if (!l.trim() || headings.has(l.trim()) || /^_.*_$/.test(l.trim())) return
+    // a list's block id stays apart from its last item
+    if (BLOCK_ID_LINE.test(l) && out.length && !all[i - 1]?.trim()) out.push('')
+    out.push(l)
+  })
+  return out
+}
+
+/** Where the block ids after a list start, a blank line before them; the end if there are none. */
+function listEnd(lines: string[]): number {
+  let i = lines.length
+  while (i > 0 && (lines[i - 1] === '' || BLOCK_ID_LINE.test(lines[i - 1]!))) i--
+  const blank = lines.indexOf('', i)
+  return blank < 0 ? lines.length : blank
 }
 
 /**
@@ -516,6 +534,8 @@ export function mergeLoops(
   devices: DeviceRef[] = []
 ): { body: string; added: number } {
   const lines = bodyLines(existingBody, HEADINGS.loops)
+  const kept = lines.length
+  const end = listEnd(lines)
   let added = 0
   for (const run of currentRuns(runs, devices)) {
     for (const f of run.health?.findings ?? []) {
@@ -530,13 +550,15 @@ export function mergeLoops(
     }
   }
   const intro = `_Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a line when it is fixed. The dashboard never edits a line once written; if a ticked problem shows up on a later scan it adds a new line. Device details: [[${opts.assetNoteName}]]._`
+  // new tasks join the list, above an id the list is linked by
+  const all = [...lines.slice(0, end), ...lines.slice(kept), ...lines.slice(end, kept)]
   return {
     body: [
       HEADINGS.loops,
       '',
       intro,
       '',
-      ...(lines.length ? lines : ['_No open device findings._'])
+      ...(all.length ? all : ['_No open device findings._'])
     ].join('\n'),
     added
   }
@@ -561,10 +583,12 @@ export function countOpenLoops(body: string | null): { open: number; done: numbe
 
 /* ---------- DEVICE-HEALTH: compact hub table ---------- */
 
+/** The hub's table, rebuilt on every write; block id lines in the block stay after its rows. */
 export function healthBlock(
   rows: DeviceRow[],
   loopsBody: string | null,
-  opts: ContentOptions
+  opts: ContentOptions,
+  existingBody: string | null = null
 ): string {
   const open = openLoopsByHost(loopsBody)
   const lines = [
@@ -581,6 +605,7 @@ export function healthBlock(
     )
   if (!rows.length) lines.push(`| ${PLACEHOLDER_ROW} | | | |`)
   lines.push(
+    ...tableIds(existingBody),
     '',
     `Inventory: [[${opts.assetNoteName}]] · findings: [[${opts.openLoopsNoteName}]] · scan record: [[${opts.workLogNoteName}]]`
   )

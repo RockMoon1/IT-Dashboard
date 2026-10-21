@@ -459,6 +459,55 @@ const device = {
   profiles: []
 }
 
+test('content: a block id on its own line stays where the technician put it, in every block', () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const today = new Date('2026-10-14T18:00:00Z')
+  const defender = run({
+    health: { ...run().health!, findings: run().health!.findings.slice(0, 1) }
+  })
+  const later = run({ runId: 'r_2', finishedAt: '2026-10-15T14:00:00.000Z' })
+  const loops = mergeLoops(null, [defender], opts, today).body
+
+  // a list linked as a whole: a blank line, then the id; a new task joins the list above it
+  const linked = mergeLoops(`${loops}\n\n^loops-list`, [defender, later], opts, today)
+  assert.equal(linked.added, 1)
+  const ll = linked.body.split('\n')
+  assert.deepEqual(ll.slice(-2), ['', '^loops-list'])
+  assert.match(ll.at(-3)!, /Disk C: has 9% free\.\*\* .* run r_2\./)
+  assert.match(ll.at(-4)!, /Microsoft Defender .* run r_1\./)
+  assert.equal(mergeLoops(linked.body, [defender, later], opts, today).body, linked.body)
+  // with no blank line the id is the last task's: it stays with that task
+  const glued = mergeLoops(`${loops}\n^last-task`, [defender, later], opts, today).body.split('\n')
+  assert.match(glued.at(-3)!, /Microsoft Defender/)
+  assert.equal(glued.at(-2), '^last-task')
+  assert.match(glued.at(-1)!, /Disk C: has 9% free/)
+
+  // the Work Log: new entries go on top, the id stays after the list, apart from its last item
+  const log = mergeLog(`${mergeLog(null, [defender]).body}\n\n^log-list`, [defender, later])
+  assert.equal(log.added, 1)
+  const gl = log.body.split('\n')
+  assert.deepEqual(gl.slice(-3), [
+    '    - 🔴 Microsoft Defender antivirus is disabled',
+    '',
+    '^log-list'
+  ])
+  assert.match(gl[4]!, /run r_2$/)
+  assert.equal(mergeLog(log.body, [defender, later]).body, log.body)
+
+  // the hub table is rebuilt on every write; its id stays after the rows, above "Inventory:"
+  const rows = [{ device, facts: deviceFacts([later], opts) }]
+  const hub = healthBlock(rows, linked.body, opts)
+  assert.equal(healthBlock(rows, linked.body, opts, hub), hub, 'no id: exactly as before')
+  const hl = hub.split('\n')
+  const lastRow = hl.map((l) => l.startsWith('|')).lastIndexOf(true)
+  hl.splice(lastRow + 1, 0, '', '^hub-table')
+  for (const existing of [hl.join('\n'), hl.join('\r\n')]) {
+    const next = healthBlock(rows, linked.body, opts, existing)
+    assert.equal(next, hl.join('\n'), 'the id after the last row, a blank line on each side')
+    assert.equal(healthBlock(rows, linked.body, opts, next), next)
+  }
+})
+
 test('content: Asset Inventory computers table keeps the technician columns and unknown rows', () => {
   const diag = run({
     runId: 'r_d',

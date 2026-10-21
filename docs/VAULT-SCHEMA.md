@@ -49,7 +49,7 @@ no markers, the pair is appended once at the end of the note. No note is ever cr
 | Findings to act on | `ARH Open Loops.md`         | `HEALTH-LOOPS`  | one task per warning or critical finding, in the note's own style | a line is never edited once written. Ticked lines stay. A ticked problem seen on a later scan gets a new line |
 | Scan record        | `ARH Work Log.md`           | `SCAN-LOG`      | one entry per scan, action or custom command, newest first, MT    | append-only by run id                                                                                         |
 | Changes on devices | `ARH Change Log.md`         | `CHANGES`       | one row per change, in the note's own columns, oldest first       | append-only by run id; created with the first change; Settings: empty **Change Log note** turns it off        |
-| Health at a glance | `ARH IT Hub.md` (optional)  | `DEVICE-HEALTH` | one row per computer: health, last scan, open findings            | regenerated. Leave **Hub note** empty in Settings and the hub is never touched                                |
+| Health at a glance | `ARH IT Hub.md` (optional)  | `DEVICE-HEALTH` | one row per computer: health, last scan, open findings            | regenerated (block id kept). Leave **Hub note** empty in Settings and the hub is never touched                |
 
 Column ownership in the computers table:
 
@@ -146,9 +146,11 @@ are found the same way, by the end of their first line; the block id Obsidian ad
 a technician copies a link to an entry (` ^a1b2c3`) is allowed. The id in that ending is always
 one the dashboard made: a result a device reports under any other id (one with no request on
 record) is kept under an id made from the device and what it sent (`d_` and 16 hex digits). A
-padded or realigned header row (table plugins) is still recognised. A link to the Change Log or
-computers table itself puts its block id on a line of its own after the table (`^chg-table`);
-that line stays after the rows on every write. Previews, things already
+padded or realigned header row (table plugins) is still recognised. A link to a whole table
+(Change Log, computers, hub) or list (Work Log, Open Loops) puts its block id on a line of its
+own after it, a blank line between (`^chg-table`). That line stays there on every write: after
+the rows (in the hub, above the `Inventory:` line), or after the list with its blank line; new
+Open Loops tasks join the list above it. Previews, things already
 set, and refused requests never reach the vault. Every value that came from a device is cleaned
 first: no line breaks of any kind, and the characters Markdown, HTML and Obsidian give a meaning
 to are escaped. Both logs list as changed only items measured before and after, so a Work Log

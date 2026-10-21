@@ -103,11 +103,12 @@ export async function buildWritePlans(input: PlanInput): Promise<WritePlan[]> {
     return { device, facts: deviceFacts(mine, opts) }
   })
 
-  const [assetsText, loopsText, logText, changesText] = await Promise.all([
+  const [assetsText, loopsText, logText, changesText, hubText] = await Promise.all([
     read(paths.assets),
     read(paths.openLoops),
     read(paths.workLog),
-    paths.changeLog ? read(paths.changeLog) : Promise.resolve(null)
+    paths.changeLog ? read(paths.changeLog) : Promise.resolve(null),
+    paths.hub ? read(paths.hub) : Promise.resolve(null)
   ])
   const assetsBlock = safeBlock(assetsText, BLOCK_KEYS.devices)
   const loopsBlock = safeBlock(loopsText, BLOCK_KEYS.loops)
@@ -141,11 +142,15 @@ export async function buildWritePlans(input: PlanInput): Promise<WritePlan[]> {
         basedOn: changesBlock
       })
   }
-  if (paths.hub)
+  if (paths.hub) {
+    // regenerated, but a block id the technician linked the table by is kept
+    const hubBlock = safeBlock(hubText, BLOCK_KEYS.health)
     plans.push({
       notePath: paths.hub,
       key: BLOCK_KEYS.health,
-      body: healthBlock(rows, loops.body, opts)
+      body: healthBlock(rows, loops.body, opts, hubBlock),
+      basedOn: hubBlock
     })
+  }
   return plans
 }

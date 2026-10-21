@@ -10,7 +10,7 @@ import { findBlock } from '../src/main/services/vault/markers.ts'
 import { parseTasks } from '../src/main/services/vault/reader.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
 import type { Measurement } from '../src/shared/actions.ts'
-import type { ScanRun } from '../src/shared/types.ts'
+import type { HealthFinding, ScanRun } from '../src/shared/types.ts'
 import type { EnrolledDevice } from '../src/main/services/link/devices.ts'
 
 /**
@@ -356,7 +356,7 @@ function change(runId: string): ActionEntry {
   }
 }
 
-test("a table's block id the technician linked to stays after its rows on every write", async () => {
+test('a block id the technician linked a table or list by stays after it on every write', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'arh-vault-ids-'))
   const appData = await mkdtemp(join(tmpdir(), 'arh-appdata-'))
   try {
@@ -365,43 +365,89 @@ test("a table's block id the technician linked to stays after its rows on every 
     const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, schemaApproved: true }
     const paths = notePaths(settings)
     const writer = new VaultWriter({ appDataDir: appData, live: true })
-    const scans = [run('r_1', 'ok', [], '2026-10-14T14:05:00.000Z')]
-    const write = async (actions: ActionEntry[]): Promise<void> => {
-      const plans = await buildWritePlans({ settings, devices: [device], runs: scans, actions })
+    const finding = (id: string, message: string): HealthFinding => ({
+      id,
+      severity: 'warning',
+      category: 'Storage',
+      message,
+      loop: true
+    })
+    const disk = finding('disk', 'Disk C: has 12% free (28 GB)')
+    const write = async (runs: ScanRun[], actions: ActionEntry[]): Promise<void> => {
+      const plans = await buildWritePlans({ settings, devices: [device], runs, actions })
       const results = await writer.apply(plans)
       assert.ok(
         results.every((r) => !r.error),
         JSON.stringify(results)
       )
     }
-    await write([change('a_1')])
-    // "Copy link to block" on a table puts the id on its own line after the table; the END
-    // marker right under the last row ends the table, so the id lands inside the markers
-    const tables = [
-      [paths.changeLog!, BLOCK_KEYS.changes, '^chg-table'],
-      [paths.assets, BLOCK_KEYS.devices, '^computers']
+    await write([run('r_1', 'ok', [disk], '2026-10-14T14:05:00.000Z')], [change('a_1')])
+    // "Copy link to block" on a table puts the id on its own line after the table, a blank line
+    // before it; a list is linked the same way. The END marker right under the last row or item
+    // ends the table or list, so the id lands inside the markers (in the hub, before the
+    // "Inventory:" line under the table)
+    const table = (l: string): boolean => l.startsWith('|')
+    const item = (l: string): boolean => /^\s*- /.test(l)
+    const lastOf = (lines: string[], part: (l: string) => boolean): number =>
+      lines.map(part).lastIndexOf(true)
+    const blocks = [
+      [paths.changeLog!, BLOCK_KEYS.changes, '^chg-table', table],
+      [paths.assets, BLOCK_KEYS.devices, '^computers', table],
+      [paths.hub!, BLOCK_KEYS.health, '^hub-table', table],
+      [paths.workLog, BLOCK_KEYS.log, '^log-list', item],
+      [paths.openLoops, BLOCK_KEYS.loops, '^loops-list', item]
     ] as const
-    for (const [note, key, id] of tables) {
+    const bodyOf = async (note: string, key: string): Promise<string[]> =>
+      findBlock(await readFile(note, 'utf8'), key)!.body.split(/\r?\n/)
+    // a new scan finding and a new change
+    const again = [
+      run('r_2', 'ok', [disk, finding('temp', 'Temp folder is 9 GB')], '2026-10-15T14:05:00.000Z'),
+      run('r_1', 'ok', [disk], '2026-10-14T14:05:00.000Z')
+    ]
+    const changes = [change('a_1'), change('a_2')]
+    const stale = await buildWritePlans({
+      settings,
+      devices: [device],
+      runs: again,
+      actions: changes
+    })
+    for (const [note, key, id, part] of blocks) {
       const text = await readFile(note, 'utf8')
-      const end = `\n<!-- DASH:${key}:END -->`
-      assert.ok(text.includes(end))
-      await writeFile(note, text.replace(end, `\n\n${id}${end}`), 'utf8')
+      const eol = text.includes('\r\n') ? '\r\n' : '\n'
+      const body = findBlock(text, key)!.body
+      const lines = body.split(/\r?\n/)
+      lines.splice(lastOf(lines, part) + 1, 0, '', id)
+      await writeFile(note, text.replace(body, lines.join(eol)), 'utf8')
     }
-    // a write with a new change, then one with nothing new
-    for (const actions of [
-      [change('a_1'), change('a_2')],
-      [change('a_1'), change('a_2')]
-    ]) {
-      await write(actions)
-      for (const [note, key, id] of tables) {
-        const body = findBlock(await readFile(note, 'utf8'), key)!.body.split('\n')
-        assert.deepEqual(body.slice(-2), ['', id], `${id} kept after the table in ${note}`)
-        assert.match(body.at(-3)!, /^\| /, 'right after its last row')
-        assert.equal(body.filter((l) => l === id).length, 1)
+    // a plan built before the id was added is refused, not written over it
+    const refused = await writer.apply(stale)
+    for (const [note, key, id] of blocks) {
+      assert.match(refused.find((r) => r.notePath === note)?.error ?? '', /changed after/, note)
+      assert.ok((await bodyOf(note, key)).includes(id))
+    }
+    // a write with the new finding and change, then one with nothing new
+    for (const pass of [1, 2]) {
+      await write(again, changes)
+      for (const [note, key, id, part] of blocks) {
+        const body = await bodyOf(note, key)
+        const at = body.indexOf(id)
+        const where = `${id} in ${note}, write ${pass}`
+        assert.equal(body.filter((l) => l === id).length, 1, where)
+        assert.equal(body[at - 1], '', `${where}: a blank line before it`)
+        assert.equal(at - 2, lastOf(body, part), `${where}: right after the last row or item`)
+        if (key === BLOCK_KEYS.health) assert.match(body[at + 2] ?? '', /^Inventory: /, where)
+        else assert.equal(at, body.length - 1, `${where}: last in the block`)
       }
-      const changes = findBlock(await readFile(paths.changeLog!, 'utf8'), BLOCK_KEYS.changes)!
-      const rows = changes.body.split('\n').map((l) => / · run (a_\d) \|$/.exec(l)?.[1])
-      assert.deepEqual(rows.filter(Boolean), ['a_1', 'a_2'], 'one row per change')
+      const rows = (await bodyOf(paths.changeLog!, BLOCK_KEYS.changes))
+        .map((l) => / · run (a_\d) \|$/.exec(l)?.[1])
+        .filter(Boolean)
+      assert.deepEqual(rows, ['a_1', 'a_2'], 'one row per change')
+      const loops = (await bodyOf(paths.openLoops, BLOCK_KEYS.loops)).filter(item)
+      assert.deepEqual(
+        loops.map((l) => /\*\*EXAM2-LT — (\w+)/.exec(l)?.[1]),
+        ['Disk', 'Temp'],
+        'the new finding joins the list, above its id'
+      )
     }
   } finally {
     await rm(tmp, { recursive: true, force: true })
