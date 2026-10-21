@@ -383,9 +383,10 @@ func TestShippedActionsApplyHere(t *testing.T) {
 		})
 		// a one-shot service never started, or failed and cleared with reset-failed, still needs a
 		// start (systemd says inactive, Result=success both times); one that failed and is started
-		// runs and finishes ("inactive"), which is done
+		// runs and finishes ("inactive"), which is done. The name is new on each run: the journal
+		// keeps this boot's runs of a unit after its file is gone.
 		t.Run("service-start-oneshot", func(t *testing.T) {
-			const name = "arh-test-oneshot.service"
+			name := fmt.Sprintf("arh-test-oneshot-%d.service", os.Getpid())
 			unit := "/etc/systemd/system/" + name
 			write := func(cmd string) {
 				body := "[Unit]\nDescription=ARH live test\n[Service]\nType=oneshot\nExecStart=" + cmd + "\n[Install]\nWantedBy=multi-user.target\n"
@@ -427,17 +428,26 @@ func TestShippedActionsApplyHere(t *testing.T) {
 			}
 		})
 		// a one-shot whose exit systemd counts a success although it is not 0 (listed in
-		// SuccessExitStatus=, or a command marked ExecStart=-) is done; an exit not listed, failed
-		// and cleared with reset-failed, still needs a start
+		// SuccessExitStatus=, or a command marked ExecStart=-) is done; a run that failed, in its
+		// main process or in another command (ExecStartPost=), or that timed out, cleared with
+		// reset-failed, still needs a start
 		t.Run("service-start-oneshot-exit-codes", func(t *testing.T) {
+			// journal: the case needs this boot's journal (a start that timed out, killed with a
+			// signal listed in SuccessExitStatus=, looks like a success in what systemd keeps)
 			cases := []struct {
 				name, service string
-				ok            bool
+				ok, journal   bool
 			}{
-				{"arh-test-okexit.service", "ExecStart=/bin/sh -c \"exit 65\"\nSuccessExitStatus=65", true},
-				{"arh-test-ignored.service", "ExecStart=-/bin/false", true},
-				{"arh-test-badexit.service", "ExecStart=/bin/sh -c \"exit 66\"\nSuccessExitStatus=65", false},
+				{"arh-test-okexit.service", "ExecStart=/bin/sh -c \"exit 65\"\nSuccessExitStatus=65", true, false},
+				{"arh-test-ignored.service", "ExecStart=-/bin/false", true, false},
+				{"arh-test-sigusr.service", "ExecStart=/bin/sh -c \"kill -USR1 $$$$\"\nSuccessExitStatus=SIGUSR1", true, false},
+				{"arh-test-postok.service", "ExecStart=/bin/true\nExecStartPost=-/bin/false", true, false},
+				{"arh-test-badexit.service", "ExecStart=/bin/sh -c \"exit 66\"\nSuccessExitStatus=65", false, false},
+				{"arh-test-post.service", "ExecStart=/bin/true\nExecStartPost=/bin/false", false, false},
+				{"arh-test-ignpost.service", "ExecStart=-/bin/false\nExecStartPost=/bin/false", false, false},
+				{"arh-test-timeout.service", "ExecStart=/bin/sleep 10\nTimeoutStartSec=1\nSuccessExitStatus=TERM", false, true},
 			}
+			journal := sh(t, "journalctl -b -q -n 1 _PID=1") != ""
 			for _, c := range cases {
 				unit := "/etc/systemd/system/" + c.name
 				body := "[Unit]\nDescription=ARH live test\n[Service]\nType=oneshot\n" + c.service + "\n[Install]\nWantedBy=multi-user.target\n"
@@ -453,13 +463,17 @@ func TestShippedActionsApplyHere(t *testing.T) {
 			}
 			sh(t, "systemctl daemon-reload")
 			for _, c := range cases {
+				if c.journal && !journal {
+					t.Logf("%s: no journal for this boot here, not checked", c.name)
+					continue
+				}
 				sh(t, "systemctl enable "+c.name)
 				if got := sh(t, "systemctl is-enabled "+c.name); got != "enabled" {
 					t.Skipf("the test unit %s is %q, not enabled", c.name, got)
 				}
 				sh(t, "systemctl start "+c.name)
 				state := sh(t, "systemctl is-active "+c.name)
-				t.Logf("%s is %s: %s", c.name, state, sh(t, "systemctl show -p Result -p ExecMainCode -p ExecMainStatus -p SuccessExitStatus -p ExecStart -- "+c.name))
+				t.Logf("%s is %s: %s", c.name, state, sh(t, "systemctl show -p Result -p ExecMainCode -p ExecMainStatus -p SuccessExitStatus -p ExecStart -p ExecStartPost -- "+c.name))
 				if c.ok && state != "inactive" {
 					t.Fatalf("%s is %q after it ran, not inactive", c.name, state)
 				}
@@ -473,6 +487,64 @@ func TestShippedActionsApplyHere(t *testing.T) {
 				if m.Change == nil || *m.Change == c.ok || value(&m, "Service "+c.name) != "inactive" {
 					t.Errorf("%s: items %v plan %v %q, want inactive and a plan to change %v", c.name, m.Items, deref(m.Change), m.Plan, !c.ok)
 				}
+			}
+		})
+		// a one-shot that only a target never started wants: after a run nothing refers to it, so
+		// systemd unloads it and its run with it (it then shows as never started). The Fix of its
+		// failure must still end applied, and a later preview must find it done, from the journal.
+		t.Run("service-start-oneshot-unloaded", func(t *testing.T) {
+			if sh(t, "journalctl -b -q -n 1 _PID=1") == "" {
+				t.Skip("no journal for this boot here")
+			}
+			name := fmt.Sprintf("arh-test-unloaded-%d.service", os.Getpid())
+			target := fmt.Sprintf("arh-test-idle-%d.target", os.Getpid())
+			flag := "/run/" + name + ".fail"
+			files := map[string]string{
+				"/etc/systemd/system/" + target: "[Unit]\nDescription=ARH live test (never started)\n",
+				"/etc/systemd/system/" + name:   "[Unit]\nDescription=ARH live test\n[Service]\nType=oneshot\nExecStart=/bin/sh -c \"test ! -e " + flag + "\"\n[Install]\nWantedBy=" + target + "\n",
+			}
+			t.Cleanup(func() {
+				sh(t, "systemctl disable "+name+"; systemctl reset-failed "+name)
+				for f := range files {
+					_ = os.Remove(f)
+				}
+				_ = os.Remove(flag)
+				sh(t, "systemctl daemon-reload")
+			})
+			for f, body := range files {
+				if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+					t.Skipf("cannot write a unit here: %v", err)
+				}
+			}
+			sh(t, "systemctl daemon-reload")
+			sh(t, "systemctl enable "+name)
+			if got := sh(t, "systemctl is-enabled "+name); got != "enabled" {
+				t.Skipf("the test unit is %q, not enabled", got)
+			}
+			if err := os.WriteFile(flag, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sh(t, "systemctl start "+name)
+			if got := sh(t, "systemctl is-active "+name); got != "failed" {
+				t.Skipf("the test unit is %q, not failed", got)
+			}
+			_ = os.Remove(flag)
+			r := runLive(t, a, "linux-service-start", map[string]string{"name": name})
+			wantApplied(t, r)
+			if value(r.Before, "Service "+name) != "failed" || value(r.After, "Service "+name) != "inactive" || r.After.Change == nil || *r.After.Change {
+				t.Fatalf("before %v after %v change %v plan %q", r.Before.Items, r.After.Items, r.After.Change, r.After.Plan)
+			}
+			unloaded := false
+			for i := 0; i < 30 && !unloaded; i++ {
+				time.Sleep(500 * time.Millisecond)
+				unloaded = sh(t, "systemctl show -p ExecMainStartTimestampMonotonic --value -- "+name) == "0"
+			}
+			if !unloaded {
+				t.Skip("systemd kept the unit and its run loaded here")
+			}
+			m, _ := measureLive(t, a, "linux-service-start", map[string]string{"name": name})
+			if m.Change == nil || *m.Change || !strings.Contains(m.Plan, "Ran and finished") {
+				t.Errorf("after systemd unloaded it: items %v plan %v %q, want it done", m.Items, deref(m.Change), m.Plan)
 			}
 		})
 		t.Run("time-resync", func(t *testing.T) { runLive(t, a, "linux-time-resync", nil) })
