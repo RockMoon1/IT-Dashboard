@@ -146,7 +146,9 @@ are found the same way, by the end of their first line; the block id Obsidian ad
 a technician copies a link to an entry (` ^a1b2c3`) is allowed. The id in that ending is always
 one the dashboard made: a result a device reports under any other id (one with no request on
 record) is kept under an id made from the device and what it sent (`d_` and 16 hex digits). A
-padded or realigned header row (table plugins) is still recognised. Previews, things already
+padded or realigned header row (table plugins) is still recognised. A link to the Change Log or
+computers table itself puts its block id on a line of its own after the table (`^chg-table`);
+that line stays after the rows on every write. Previews, things already
 set, and refused requests never reach the vault. Every value that came from a device is cleaned
 first: no line breaks of any kind, and the characters Markdown, HTML and Obsidian give a meaning
 to are escaped. Both logs list as changed only items measured before and after, so a Work Log

@@ -338,6 +338,16 @@ export function readTable(body: string | null): {
   return { header, rows }
 }
 
+/**
+ * Block id lines in a body, written back after the table, a blank line before them. Obsidian
+ * links a table by an id on its own line after it, which lands inside the markers, since the END
+ * marker comes right after the last row.
+ */
+function tableIds(body: string | null): string[] {
+  const ids = (body ?? '').split(/\r?\n/).filter((l) => /^\s*\^[A-Za-z0-9-]+\s*$/.test(l))
+  return ids.length ? ['', ...ids] : []
+}
+
 export interface DeviceRow {
   device: EnrolledDevice
   facts: DeviceFacts
@@ -348,7 +358,8 @@ const PLACEHOLDER_ROW = '_no enrolled computers yet_'
 /**
  * Merges enrolled devices into the existing table. Rows are matched by serial, then by name.
  * The dashboard's columns are refreshed when a scan supplied a value and kept otherwise; the
- * technician's columns, rows the dashboard does not know and extra columns are kept as typed.
+ * technician's columns, rows the dashboard does not know, extra columns and block ids are kept
+ * as typed.
  */
 export function devicesBlock(
   existingBody: string | null,
@@ -405,7 +416,7 @@ export function devicesBlock(
   for (const r of out) lines.push(`| ${columns.map((c) => r[c] ?? '').join(' | ')} |`)
   if (!out.length)
     lines.push(`| ${[PLACEHOLDER_ROW, ...columns.slice(1).map(() => '')].join(' | ')} |`)
-  return lines.join('\n')
+  return [...lines, ...tableIds(existingBody)].join('\n')
 }
 
 /* ---------- HEALTH-LOOPS: Open Loops findings ---------- */
@@ -619,15 +630,50 @@ const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  */
 type Own = 'run' | 'pending' | 'result'
 const BLOCK_ID_END = '(?:\\s+\\^[A-Za-z0-9-]+)?$'
+const ROW_END = '\\s*\\|$'
+const ownShape = (t: string, table: boolean): boolean =>
+  table ? t.trimStart().startsWith('|') : t.startsWith('- ')
 function ownLine(line: string, runId: string, table: boolean): Own | null {
   const t = line.trimEnd()
-  if (table ? !t.trimStart().startsWith('|') : !t.startsWith('- ')) return null
+  if (!ownShape(t, table)) return null
   const id = escapeRe(runId)
-  const end = table ? '\\s*\\|$' : BLOCK_ID_END
+  const end = table ? ROW_END : BLOCK_ID_END
   if (new RegExp(`· run ${id} · ${pendingMark}${end}`).test(t)) return 'pending'
   if (new RegExp(`· run ${id}${end}`).test(t)) return 'run'
   if (new RegExp(`· result ${id}${end}`).test(t)) return 'result'
   return null
+}
+
+/** ownLine's three endings in one pattern, in its order, the run id captured. */
+const ownEnd = (end: string): RegExp =>
+  new RegExp(`· (?:run (\\S+) · ${pendingMark}|run (\\S+)|result (\\S+))${end}`)
+const OWN_ENTRY = ownEnd(BLOCK_ID_END)
+const OWN_ROW = ownEnd(ROW_END)
+
+/**
+ * Every run's own lines in a block, found in one pass over it, so a merge costs the block's
+ * length plus the runs, not one times the other. A line's ending names one id, and for an id
+ * without whitespace, as every id the dashboard makes is, that is the only id it can be the own
+ * of. "pending" is the one exception (a line ending "· run <id> · result pending" also ends
+ * "· result pending"); it and any id with whitespace, which only an older build could keep as a
+ * device sent it, are matched line by line as before.
+ */
+export function ownIndex(lines: string[], table: boolean): (runId: string) => Own[] {
+  const index = new Map<string, Own[]>()
+  for (const line of lines) {
+    const t = line.trimEnd()
+    const m = ownShape(t, table) ? (table ? OWN_ROW : OWN_ENTRY).exec(t) : null
+    if (!m) continue
+    const id = m[1] ?? m[2] ?? m[3] ?? ''
+    const own: Own = m[1] !== undefined ? 'pending' : m[2] !== undefined ? 'run' : 'result'
+    const list = index.get(id)
+    if (list) list.push(own)
+    else index.set(id, [own])
+  }
+  return (runId) =>
+    /^\S+$/.test(runId) && runId !== 'pending'
+      ? (index.get(runId) ?? [])
+      : lines.map((l) => ownLine(l, runId, table)).filter((o) => o !== null)
 }
 
 /** Real runs the vault should show: finished, or applied with the outcome still unknown. */
@@ -792,11 +838,12 @@ export function mergeChanges(
   const rows = bodyLines(existingBody, HEADINGS.changes).filter(
     (l) => l.trim().startsWith('|') && !isChangeHeader(l) && !isSeparator(splitRow(l))
   )
+  const ownOf = ownIndex(rows, true)
   const fresh: Array<{ at: string; line: string }> = []
   for (const e of entries) {
     const r = e.record
     if (!shown(e)) continue
-    const own = rows.map((l) => ownLine(l, r.runId, true)).filter(Boolean)
+    const own = ownOf(r.runId)
     if (own.length) {
       // written while the outcome was unknown: add what it ended as, whatever that is
       if (own.includes('pending') && !own.includes('result') && r.status !== 'unknown')
@@ -825,7 +872,8 @@ export function mergeChanges(
       '',
       CHANGE_COLUMNS,
       '| --- | --- | --- | --- | --- | --- | --- |',
-      ...all
+      ...all,
+      ...tableIds(existingBody)
     ].join('\n'),
     added: fresh.length
   }
@@ -887,15 +935,16 @@ export function mergeLog(
   actions: ActionEntry[] = []
 ): { body: string; added: number } {
   const lines = bodyLines(existingBody, HEADINGS.log)
+  const ownOf = ownIndex(lines, false)
   const fresh: Array<{ at: string; lines: string[] }> = []
   for (const run of runs.filter((r) => r.status !== 'running')) {
-    if (lines.some((l) => ownLine(l, run.runId, false) === 'run')) continue
+    if (ownOf(run.runId).includes('run')) continue
     fresh.push({ at: runTime(run), lines: logEntry(run, opts) })
   }
   for (const e of actions) {
     if (!shown(e)) continue
     const r = e.record
-    const own = lines.map((l) => ownLine(l, r.runId, false)).filter(Boolean)
+    const own = ownOf(r.runId)
     if (!own.length) {
       fresh.push({ at: actionTime(r), lines: actionLogEntry(e, opts) })
       continue

@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultWriter } from '../src/main/services/vault/writer.ts'
 import { buildWritePlans, notePaths } from '../src/main/services/vault/plans.ts'
-import { BLOCK_KEYS } from '../src/main/services/vault/content.ts'
+import { BLOCK_KEYS, type ActionEntry } from '../src/main/services/vault/content.ts'
 import { findBlock } from '../src/main/services/vault/markers.ts'
 import { parseTasks } from '../src/main/services/vault/reader.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
+import type { Measurement } from '../src/shared/actions.ts'
 import type { ScanRun } from '../src/shared/types.ts'
 import type { EnrolledDevice } from '../src/main/services/link/devices.ts'
 
@@ -306,6 +307,102 @@ test('writer against a copy of the vault: dry-run first, then live writes touch 
     })
     assert.equal(noHub.length, 3)
     assert.ok(noHub.every((p) => !p.notePath.endsWith('ARH IT Hub.md')))
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+    await rm(appData, { recursive: true, force: true })
+  }
+})
+
+function change(runId: string): ActionEntry {
+  const when = '2026-10-14T16:00:00.000Z'
+  const measured = (value: string): Measurement => ({
+    items: [{ item: 'Firewall Public', value }],
+    exitCode: 0
+  })
+  return {
+    record: {
+      runId,
+      kind: 'action',
+      mode: 'apply',
+      deviceId: 'dev1',
+      serial: 'SN-TEST-01',
+      hostname: 'EXAM2-LT',
+      displayName: 'Exam room 2 laptop',
+      os: 'windows',
+      link: 'cable',
+      action: 'windows-firewall-on',
+      version: 1,
+      title: 'Turn on firewall profiles that are off',
+      access: 'write',
+      reason: 'Fix: Firewall profile "Public" is disabled',
+      technician: 'Lisandro',
+      requestedAt: when,
+      startedAt: when,
+      appliedAt: when,
+      endedAt: when,
+      status: 'changed',
+      checks: [],
+      result: {
+        runId,
+        kind: 'action',
+        dryRun: false,
+        applied: true,
+        startedAt: when,
+        before: measured('off'),
+        apply: { items: null, exitCode: 0 },
+        after: measured('on')
+      }
+    }
+  }
+}
+
+test("a table's block id the technician linked to stays after its rows on every write", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-vault-ids-'))
+  const appData = await mkdtemp(join(tmpdir(), 'arh-appdata-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, schemaApproved: true }
+    const paths = notePaths(settings)
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const scans = [run('r_1', 'ok', [], '2026-10-14T14:05:00.000Z')]
+    const write = async (actions: ActionEntry[]): Promise<void> => {
+      const plans = await buildWritePlans({ settings, devices: [device], runs: scans, actions })
+      const results = await writer.apply(plans)
+      assert.ok(
+        results.every((r) => !r.error),
+        JSON.stringify(results)
+      )
+    }
+    await write([change('a_1')])
+    // "Copy link to block" on a table puts the id on its own line after the table; the END
+    // marker right under the last row ends the table, so the id lands inside the markers
+    const tables = [
+      [paths.changeLog!, BLOCK_KEYS.changes, '^chg-table'],
+      [paths.assets, BLOCK_KEYS.devices, '^computers']
+    ] as const
+    for (const [note, key, id] of tables) {
+      const text = await readFile(note, 'utf8')
+      const end = `\n<!-- DASH:${key}:END -->`
+      assert.ok(text.includes(end))
+      await writeFile(note, text.replace(end, `\n\n${id}${end}`), 'utf8')
+    }
+    // a write with a new change, then one with nothing new
+    for (const actions of [
+      [change('a_1'), change('a_2')],
+      [change('a_1'), change('a_2')]
+    ]) {
+      await write(actions)
+      for (const [note, key, id] of tables) {
+        const body = findBlock(await readFile(note, 'utf8'), key)!.body.split('\n')
+        assert.deepEqual(body.slice(-2), ['', id], `${id} kept after the table in ${note}`)
+        assert.match(body.at(-3)!, /^\| /, 'right after its last row')
+        assert.equal(body.filter((l) => l === id).length, 1)
+      }
+      const changes = findBlock(await readFile(paths.changeLog!, 'utf8'), BLOCK_KEYS.changes)!
+      const rows = changes.body.split('\n').map((l) => / · run (a_\d) \|$/.exec(l)?.[1])
+      assert.deepEqual(rows.filter(Boolean), ['a_1', 'a_2'], 'one row per change')
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true })
     await rm(appData, { recursive: true, force: true })
