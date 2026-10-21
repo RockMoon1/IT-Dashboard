@@ -728,10 +728,27 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   const block = setNote ? dashboardLines(setNote, BLOCK_KEYS.changes) : new Set<number>()
   const blockRows = setNote ? naming(tableRows(setNote).filter((r) => block.has(r.line))) : []
   const listed = new Set(blockRows.map((r) => JSON.stringify(r.cells)))
+  // The run a row of the dashboard's ends with ("· run <id>", "… · result pending", "· result <id>").
+  // The root's own rows for a run the note Settings names now holds (written as pending, then with
+  // its result, before the setting moved) are the same change, so only the new note's row shows.
+  const runOf = (r: VaultRow): string | undefined => {
+    for (const v of Object.values(r.cells)) {
+      const m = /· (?:run|result) (\S+?)(?: · result pending)?$/.exec(v.trim())
+      if (m) return m[1]
+    }
+    return undefined
+  }
+  const moved = new Set(blockRows.map(runOf).filter((id) => id !== undefined))
+  const rootBlock =
+    setNote && roles.rootChangeLog
+      ? dashboardLines(roles.rootChangeLog, BLOCK_KEYS.changes)
+      : new Set<number>()
   const changes = [
     ...blockRows,
     ...naming(roles.rootChangeLog ? tableRows(roles.rootChangeLog) : []).filter(
-      (r) => !listed.has(JSON.stringify(r.cells))
+      (r) =>
+        !listed.has(JSON.stringify(r.cells)) &&
+        !(rootBlock.has(r.line) && moved.has(runOf(r) ?? ''))
     )
   ]
   const mentions: VaultMention[] = []

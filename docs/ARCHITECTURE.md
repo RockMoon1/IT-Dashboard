@@ -94,11 +94,14 @@ page in under 1.5 s with the index warm.
 
 `src/shared/markdown.ts` turns a note into a tree (frontmatter, headings, lists and task boxes,
 callouts, tables, code, wikilinks, tags), never HTML; `MdBlocks.vue` and `MdInline.vue` draw it
-with text nodes only, so note content cannot inject markup or script. Comments, the dashboard's
-own markers and `^block-ids` are hidden as in Obsidian's reading view, and every block keeps its
-source line so a click can jump to and mark that line. The main process (`lookup/notes.ts`)
-reads only notes the vault index knows, resolves each `[[link]]` the way Obsidian does (exact
-path, else file name; same folder first, then the shortest path) and lists backlinks.
+with text nodes only, so note content cannot inject markup or script. Comments, YAML comments
+after a property, the dashboard's own markers and `^block-ids` are hidden as in Obsidian's reading
+view, and every block keeps its source line so a click can jump to and mark that line. Tables
+follow GFM (a delimiter row with as many cells as the header) up to 256 columns; a wider one
+reads as a paragraph. The main process (`lookup/notes.ts`) reads only notes the vault index
+knows, resolves each `[[link]]` the way Obsidian does (exact path, else file name; same folder
+first, then the shortest path) and lists backlinks, each shown as the reader shows its line, with
+its comments hidden.
 Opening Obsidian itself is a separate, explicit action.
 
 ## Actions (Phase 3)

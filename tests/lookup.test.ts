@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cp, mkdtemp, rm, writeFile, unlink, mkdir } from 'node:fs/promises'
+import { cp, mkdtemp, rm, writeFile, unlink, mkdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { VaultIndex, parseFrontmatter } from '../src/main/services/lookup/vaultindex.ts'
@@ -1080,6 +1080,58 @@ test('the Change Log note Settings names is found as the writer finds it, and on
       [own],
       `${typed}: text outside the dashboard's block`
     )
+  }
+  // a change first written to the root as pending, then with its result, then once more after the
+  // setting moved: the root's two rows for that run are the same change, so it shows once
+  {
+    const { vault, done } = await copyVault()
+    const appData = await mkdtemp(join(tmpdir(), 'arh-lookup-appdata-'))
+    try {
+      await logsNote(vault)
+      const writer = new VaultWriter({ appDataDir: appData, live: true })
+      const at = '2026-10-14T16:00:00.000Z'
+      const { endedAt: _e, result: _r, ...open } = change('a_1', at).record
+      const steps: Array<[string, ActionEntry]> = [
+        ['ARH Change Log', { record: { ...open, status: 'unknown' } }],
+        ['ARH Change Log', change('a_1', at)],
+        ['Logs/Device Changes', change('a_1', at)]
+      ]
+      let settings = DEFAULT_SETTINGS
+      for (const [changeLogNote, entry] of steps) {
+        settings = { ...DEFAULT_SETTINGS, vaultPath: vault, changeLogNote }
+        const plans = await buildWritePlans({
+          settings,
+          devices: [device],
+          runs: [],
+          actions: [entry]
+        })
+        const results = await writer.apply(plans)
+        assert.ok(
+          results.every((r) => !r.error),
+          JSON.stringify(results)
+        )
+      }
+      const root = await readFile(join(vault, 'ARH Change Log.md'), 'utf8')
+      assert.match(root, /run a_1 · result pending/, 'the root holds the pending row')
+      assert.match(root, /result a_1/, 'and the result row')
+      const notes = await new VaultIndex().notes(vault)
+      const roles = noteRoles(notes, settings)
+      const p = buildProfile({
+        target: { deviceId: device.id },
+        computers: buildComputers([device], [], inventoryRows(roles.assets!)),
+        notes,
+        settings,
+        connected: () => false
+      })
+      assert.deepEqual(changes(p), [
+        [logs, 'Lisandro · run a_1'],
+        ['ARH Change Log.md', 'L.P.']
+      ])
+      assert.equal(p.timeline.filter((e) => e.kind === 'change').length, 2)
+    } finally {
+      await done()
+      await rm(appData, { recursive: true, force: true })
+    }
   }
   // a note that holds other tables naming the computer (the hub's health block, the inventory's
   // computers): only the rows of its CHANGES block are Change Log rows
