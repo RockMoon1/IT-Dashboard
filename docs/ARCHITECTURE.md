@@ -158,5 +158,14 @@ and first lines of System/Security events, not message bodies of application log
   about 0.2 s. A custom command that uses a command outside that table may still be slow then.
 - A restart is recorded as scheduled; whether it happened is not yet confirmed from the next
   `bootTime`.
+- Restart counts as "signed in" anyone who owns a process in a session above 0, not only those
+  running `explorer.exe`, so a process left over for a moment after sign-out can still make the
+  dashboard ask for the typed computer name.
+- `linux-service-start` reads how a one-shot service's last run ended from this boot's journal
+  (PID 1's success, failure or skip record for the unit). Without such a record (journald off,
+  `LogLevelMax=` below info on the unit, or systemd older than 246), it reads the status of every
+  command of the run. A start that timed out, was killed with a signal listed in
+  `SuccessExitStatus=` and was then cleared with `reset-failed` reads as done in that case, and a
+  one-shot systemd has unloaded since its run reads as never started.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
   read only, and the security-check profile is now v2.
