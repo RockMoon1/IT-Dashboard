@@ -253,7 +253,7 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   }
   if (o.t === 'indented' && (blank || indentOf(s) >= 4)) return to(o, true)
   if (o.t === 'para' && !blank && !blockStart(s, next, true)) return to(o, false, true)
-  if (o.t === 'table' && !blank && s.includes('|')) return to(o, false)
+  if (o.t === 'table' && !blank && s.includes('|') && !otherStart(s, false)) return to(o, false)
   const quote = QUOTE.exec(s)
   if (o.t === 'quote' && quote) {
     const r = step(o.inner, quote[1] ?? '', inQuote(ahead))
@@ -283,7 +283,7 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   if (fence?.[2]) return to({ t: 'fence', mark: fence[2] }, true)
   if (l.fresh && ind >= 4 && item?.[4] === undefined) return to({ t: 'indented' }, true)
   if (HEADING.test(s) || HR.test(s)) return to({ t: 'none' }, false)
-  if (tableStart(s, next)) return to({ t: 'table' }, false)
+  if (tableStart(s, next, o.t === 'para')) return to({ t: 'table' }, false)
   if (quote) {
     const inner = newLevel(l.depth + 1)
     // a callout's title line is not part of its body
@@ -432,6 +432,15 @@ function written(raw: string, cut: Ranges, open: Open, tick: string | null): Hid
 /** How many times hideComments reads a line's code spans before it hides all its comments. */
 const MAX_READS = 4
 
+/** Whether a line has a comment marker in it. */
+const hasMarker = (s: string): boolean => s.includes('%%') || s.includes('<!--')
+
+/** The run of backticks a reading leaves open, unless it is in a comment (then it is none). */
+function leftOpen(read: Probe, cut: Ranges): string | null {
+  const run = read.open
+  return run && !cut.some(([a, b]) => a <= run.at && run.at < b) ? run.run : null
+}
+
 /**
  * One line with its comments hidden. A comment opens at %% or <!-- wherever parseInline reads
  * the line as text, so not in a code span, and the code spans are the ones parseInline reads in
@@ -442,14 +451,16 @@ const MAX_READS = 4
  * `from`: where the line's text starts, past its markers (copied as they are). `open`: the
  * comment the line starts in. `tick`: the run of backticks a line before left open, which closes
  * the span at its next run here; until it does, every comment is hidden. `plain`: every comment
- * is hidden, in code spans too.
+ * is hidden, in code spans too. `later`: a later line may use the run this line leaves open (if
+ * not, it is not worked out).
  */
 function hideComments(
   raw: string,
   from: number,
   open: Open,
   tick: string | null,
-  plain: boolean
+  plain: boolean,
+  later: boolean
 ): Hidden {
   const cut: Ranges = []
   let i = 0
@@ -466,20 +477,30 @@ function hideComments(
     i = end + tick.length
   }
   if (plain || !raw.includes('`', i)) return written(raw, cut, findComments(raw, i, [], cut), null)
-  const comments = raw.includes('%%', i) || raw.includes('<!--', i)
+  const pct = raw.indexOf('%%', i)
+  const html = raw.indexOf('<!--', i)
+  const first = pct === -1 ? html : html === -1 ? pct : Math.min(pct, html)
+  if (first === -1 || first > raw.lastIndexOf('`')) {
+    // no comment can be in a code span, however the line reads: its spans give only the run it
+    // leaves open, read with its comments hidden as the readings below would end up doing
+    const o = findComments(raw, i, [], cut)
+    return written(raw, cut, o, later ? leftOpen(readSpans(raw, cut, i), cut) : null)
+  }
   const before = cut.length
   let read = readSpans(raw, cut, i)
+  // the comments `read` was read with: read with the same ones, the line reads the same
+  let readWith = cut.join(';')
   let last = ''
   for (let k = 0; k < MAX_READS; k++) {
     cut.length = before
     const o = findComments(raw, i, read.spans, cut)
-    // a run left open in a comment is no run
-    const run = read.open
-    const left = run && !cut.some(([a, b]) => a <= run.at && run.at < b) ? run.run : null
-    const key = `${cut.join(';')} ${left}`
-    if (!comments || key === last) return written(raw, cut, o, left)
+    const left = leftOpen(read, cut)
+    const found = cut.join(';')
+    const key = `${found} ${left}`
+    if (key === last) return written(raw, cut, o, left)
     last = key
-    read = readSpans(raw, cut, i)
+    if (found !== readWith) read = readSpans(raw, cut, i)
+    readWith = found
   }
   cut.length = before
   return written(raw, cut, findComments(raw, i, [], cut), null)
@@ -503,6 +524,13 @@ function textStart(raw: string, view: string): number {
  */
 function stripComments(lines: string[], plain: (k: number) => boolean): string[] {
   const out: string[] = []
+  // whether a line after line k, before the next blank one, has a comment marker: only such a
+  // line can use the run of backticks line k leaves open (a blank line ends it)
+  const later = new Array<boolean>(lines.length).fill(false)
+  for (let k = lines.length - 1, seen = false; k >= 0; k--) {
+    later[k] = seen
+    seen = !!lines[k]!.trim() && (seen || hasMarker(lines[k]!))
+  }
   let open: Open = null
   let tick: string | null = null
   let at = newLevel(0)
@@ -510,7 +538,8 @@ function stripComments(lines: string[], plain: (k: number) => boolean): string[]
     const raw = lines[k]!
     const rawAt = (j: number): string | null => lines[k + j] ?? null
     const read = open ? null : step(at, raw, { at: rawAt, raw: rawAt })
-    if (read?.code) {
+    // code, or a line with no comment marker whose open run no later line can use, is as written
+    if (read && (read.code || (!later[k] && !hasMarker(raw)))) {
       out.push(raw)
       at = read.l
       tick = null
@@ -518,7 +547,7 @@ function stripComments(lines: string[], plain: (k: number) => boolean): string[]
     }
     const from = read ? textStart(raw, read.text) : 0
     const hide = (wait: string | null): { s: string; r: Read; open: Open; tick: string | null } => {
-      const h = hideComments(raw, from, open, wait, plain(k))
+      const h = hideComments(raw, from, open, wait, plain(k), later[k]!)
       // the lines ahead as they will be written: one that starts in this line's comment shows
       // only what follows its end
       const shownAt = (j: number): string | null => {
@@ -898,28 +927,41 @@ function itemText(
   return { content: base + marker.length, task: tm?.[1], first: tm ? (tm[2] ?? '') : text }
 }
 
-/** Whether a line heads a table: it has a pipe and `next()`, the line after it, is a delimiter row. */
-function tableStart(s: string, next: () => string): boolean {
-  if (!s.includes('|')) return false
-  const b = next()
-  return b.includes('|') && b.includes('-') && TABLE_SEP.test(b)
-}
-
 /**
- * Whether a line starts a new block (`next()` gives the line after it, read only for a table).
- * Inside a paragraph (`para`) only a numbered item that starts at 1 begins a list, as in
- * CommonMark: "bought in\n2024. It was…" stays one paragraph.
+ * Whether a line starts a block other than a table. Inside a paragraph (`para`) only a numbered
+ * item that starts at 1 begins a list, as in CommonMark: "bought in\n2024. It was…" stays one
+ * paragraph.
  */
-function blockStart(s: string, next: () => string, para = false): boolean {
+function otherStart(s: string, para: boolean): boolean {
   const item = ITEM.exec(s)
   return (
     HEADING.test(s) ||
     FENCE.test(s) ||
     QUOTE.test(s) ||
     HR.test(s) ||
-    (!!item?.[4] && (!para || !item[3] || Number(item[3]) === 1)) ||
-    tableStart(s, next)
+    (!!item?.[4] && (!para || !item[3] || Number(item[3]) === 1))
   )
+}
+
+/**
+ * Whether a line heads a table: it has a pipe, would be a paragraph's line there (as in GFM, a
+ * quote or a list item heads no table, and ends one), and `next()`, the line after it, is a
+ * delimiter row. `para`: the line comes right after a paragraph's line.
+ */
+function tableStart(s: string, next: () => string, para = false): boolean {
+  return s.includes('|') && !otherStart(s, para) && delimiterRow(next())
+}
+
+/** Whether a line is a table's delimiter row, and starts no other block ("- |---|" is an item). */
+const delimiterRow = (b: string): boolean =>
+  b.includes('|') && b.includes('-') && TABLE_SEP.test(b) && !otherStart(b, true)
+
+/**
+ * Whether a line starts a new block (`next()` gives the line after it, read only for a table),
+ * `para` as for otherStart.
+ */
+function blockStart(s: string, next: () => string, para = false): boolean {
+  return otherStart(s, para) || (s.includes('|') && delimiterRow(next()))
 }
 
 /** The line after line i, for tableStart and blockStart. */
@@ -966,6 +1008,8 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
   }
   const out: Block[] = []
   let i = 0
+  // the line a paragraph ended at, which can head a table as the paragraph's line it would be
+  let paraEnd = -1
   while (i < lines.length) {
     const line = lines[i]!
     const s = line.s
@@ -1023,7 +1067,7 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
       continue
     }
 
-    if (tableStart(s, lineAfter(lines, i))) {
+    if (tableStart(s, lineAfter(lines, i), paraEnd === i)) {
       const head = splitCells(trimShown(s))
       const align = splitCells(lines[i + 1]!.s).map((c) => {
         const l = c.startsWith(':')
@@ -1033,7 +1077,13 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
       const rows: Inline[][][] = []
       const rowLines: number[] = []
       i += 2
-      while (i < lines.length && lines[i]!.s.includes('|') && lines[i]!.s.trim()) {
+      // a row has a pipe; a line that starts another block ends the table (GFM)
+      while (
+        i < lines.length &&
+        lines[i]!.s.includes('|') &&
+        lines[i]!.s.trim() &&
+        !otherStart(lines[i]!.s, false)
+      ) {
         const cells = splitCells(trimShown(lines[i]!.s))
         rows.push(head.map((_, j) => parseInline(cells[j] ?? '')))
         rowLines.push(lines[i]!.n)
@@ -1121,6 +1171,7 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
       para.push(trimShown(lines[i]!.s))
       i++
     }
+    paraEnd = i
     // a line whose only text was a comment shows nothing, not even a line break
     const text = stripBlockId(para.filter(Boolean).join('\n'))
     // a ^block-id on its own line (after a table or callout) is hidden too
@@ -1218,15 +1269,19 @@ export function parseMarkdown(text: string): ParsedNote {
     .split(/\r?\n/)
   const fm = frontmatter(raw)
   const src = raw.slice(fm.end)
+  // a note with no comment marker is read as it is (stripComments would give it back unchanged)
+  const commented = src.some(hasMarker)
   const read = (plain: (k: number) => boolean): Block[] =>
-    parseBlocks(stripComments(src, plain).map((s, k) => ({ n: fm.end + k + 1, s })))
+    parseBlocks(
+      (commented ? stripComments(src, plain) : src).map((s, k) => ({ n: fm.end + k + 1, s }))
+    )
   // stripComments reads a paragraph's code spans a line at a time, so a span parseInline reads
   // in the whole paragraph (an emphasis from the line before, a table's cells) can differ: a
   // comment it kept as code must not show as anything else. Where one does, those lines are
   // read again with every comment on them hidden, until none does.
   const plain = new Set<number>()
   let blocks = read(() => false)
-  for (let n = 0; ; n++) {
+  for (let n = 0; commented; n++) {
     const shows = keptShown(blocks, raw.length)
     if (!shows.length) break
     if (n === MAX_REREADS) {

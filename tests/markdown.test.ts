@@ -698,6 +698,51 @@ test('a table needs a delimiter row as written, and a list item looks two lines 
   ])
 })
 
+test('a line that starts another block ends a table and heads none, as in GFM', () => {
+  // the command's only pipe is in a %% pair: with it hidden the line has none, and either way
+  // the line is quoted indented code, so the command shows whole
+  const command = `for /f %%a in ('net view ^| find "fs"') do echo %%a`
+  const codeOf = (md: string): string[] => {
+    const code: Array<[number, string, string]> = []
+    textAndCode(parseMarkdown(md).blocks, [], code)
+    return code.map(([, , v]) => v)
+  }
+  const row = parseMarkdown(`| Share | Path |\n|---|---|\n| Scans | D:\\scans |\n>     ${command}`)
+  assert.deepEqual(kinds(row.blocks), ['table', 'quote'])
+  assert.equal((row.blocks[0] as Extract<Block, { t: 'table' }>).rows.length, 1)
+  const quote = row.blocks[1]
+  assert.deepEqual(quote?.t === 'quote' && texts(quote.c), [['code', 4, command]])
+  // nor does a quote or a list item head a table, but a numbered line that goes on a paragraph
+  // (one that starts at 2 lists nothing there) can
+  for (const md of [`>     ${command}\n|---|---|`, `10) >     ${command}\n|---|---|`]) {
+    assert.equal(parseMarkdown(md).blocks[0]?.t, md.startsWith('>') ? 'quote' : 'list', md)
+    assert.deepEqual(codeOf(md), [command], md)
+  }
+  const ports = parseMarkdown('Ports:\n2. web | 443\n|---|---|').blocks
+  assert.deepEqual(kinds(ports), ['para', 'table'])
+  // and a delimiter row that is a list item makes none: the item holds a quote of code
+  const item = 'Port | Use\n- |---|---|\n    >     > %% checked %%`x`'
+  assert.deepEqual(kinds(parseMarkdown(item).blocks), ['para', 'list'])
+  assert.deepEqual(codeOf(item), ['> %% checked %%`x`'])
+  // a heading, a list item, a fence and a rule end a table too
+  const ends = parseMarkdown(
+    [
+      ...['| a | b |', '|---|---|', '| 1 | 2 |', '# Next | step'],
+      ...['| 3 | 4 |', '|---|---|', '- item | x'],
+      ...['| 5 | 6 |', '|---|---|', '```', 'code | x', '```'],
+      ...['| 7 | 8 |', '|---|---|', '***']
+    ].join('\n')
+  )
+  assert.deepEqual(kinds(ends.blocks), [
+    ...['table', 'heading', 'table', 'list'],
+    ...['table', 'code', 'table', 'hr']
+  ])
+  assert.deepEqual(
+    ends.blocks.flatMap((b) => (b.t === 'table' ? [b.rows.length] : [])),
+    [1, 0, 0, 0]
+  )
+})
+
 test('a backtick is a code span here only where parseInline reads one', () => {
   // \` is a backtick, not a span: the comment after it is text, so it is hidden
   const esc = parseMarkdown('Run \\`%% patient John Doe %%` now').blocks
@@ -996,7 +1041,9 @@ function textAndCode(
 }
 
 test('comments are hidden wherever the note shows text, and code keeps every byte', () => {
-  const rand = random(20261021)
+  // this seed's notes include table rows and heads whose only pipe is in a comment, on a line
+  // that reads as quoted code once the comment is hidden
+  const rand = random(15)
   for (let k = 0; k < 6000; k++) {
     const reshaping = k % 2 === 1
     const md = randomNote(rand, reshaping, k % 4 >= 2)
@@ -1009,10 +1056,18 @@ test('comments are hidden wherever the note shows text, and code keeps every byt
     // what stands in for a hidden comment, or marks a kept one, is never shown
     assert.ok(!all.some((v) => /[\uFDD0\uFDD1]/.test(v)), `a placeholder shows in:\n${md}`)
     if (reshaping) {
-      // a command in a code block is whole
+      // every line of a code block is a line of the note as written, past its quote and list
+      // markers (nothing in it hidden, nothing cut), and a command in one is whole
+      const source = md.split('\n').map((l) => l.trimEnd())
       for (const [, , v] of code) {
-        for (const line of v.split('\n').filter((l) => l.includes('for '))) {
-          assert.match(line, /for %%(f in \(c\d*\) do echo %%f|i in \(c\d*\) do del "%%i")$/, md)
+        for (const line of v.split('\n')) {
+          const t = line.trim()
+          const written = source.some(
+            (s) => s.endsWith(t) && /^[\s>*+\-\d.)[\]]*$/.test(s.slice(0, s.length - t.length))
+          )
+          assert.ok(!t || written, `code line ${JSON.stringify(line)} is not as written in:\n${md}`)
+          if (line.includes('for '))
+            assert.match(line, /for %%(f in \(c\d*\) do echo %%f|i in \(c\d*\) do del "%%i")$/, md)
         }
       }
     } else {
