@@ -158,6 +158,11 @@ and first lines of System/Security events, not message bodies of application log
   about 0.2 s. A custom command that uses a command outside that table may still be slow then.
 - A restart is recorded as scheduled; whether it happened is not yet confirmed from the next
   `bootTime`.
+- The note viewer reads a note's block structure once to hide `%%` comments and again to show it,
+  so that no comment shows and no command in a code block is cut. Notes of several MB with many
+  comments or deeply nested lists open about 1.5 to 2.5 times slower than before that rule (on
+  test machines about 0.5 to 1 s for 2 MB, up to 2 s for a 4 MB note); everyday notes take
+  milliseconds. The parse runs in the main process, so the window waits for it.
 - Restart counts as "signed in" anyone who owns a process in a session above 0, not only those
   running `explorer.exe`, so a process left over for a moment after sign-out can still make the
   dashboard ask for the typed computer name.
