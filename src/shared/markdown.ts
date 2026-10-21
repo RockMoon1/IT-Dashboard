@@ -65,6 +65,8 @@ export interface ParsedNote {
 interface Line {
   n: number
   s: string
+  /** A list item's line that it holds only lazily (unindented, after its text). */
+  lazy?: true
 }
 
 /* ---------- frontmatter and comments ---------- */
@@ -268,8 +270,10 @@ function step(l: Level, s: string, ahead: Ahead): Read {
     return to({ ...open, inner: r.l }, r.code, r.joins, r.text)
   }
   if (o.t === 'item') {
-    // the item goes on with the line
-    const own = inItem(o.base, o.content, o.blank, s, next)
+    // the item goes on with the line, unless its fence is open and the line is lazy: a fence
+    // takes no lazy line, so the item ends there (CommonMark)
+    const fenced = !blank && ind <= o.base && o.inner.open.t === 'fence'
+    const own = fenced ? null : inItem(o.base, o.content, o.blank, s, next)
     if (own !== null) {
       const r = step(o.inner, own, inItemAhead(ahead, o.base, o.content, blank))
       return to({ ...o, blank, inner: r.l }, r.code, r.joins, r.text)
@@ -317,6 +321,25 @@ function blankInner(a: Level, b: Level): boolean {
       blankInner(x.inner, y.inner)
     )
   return false
+}
+
+/** Whether two levels are alike, so that the lines after them read alike. */
+function sameLevel(a: Level, b: Level): boolean {
+  if (a === b) return true
+  const x = a.open
+  const y = b.open
+  if (a.depth !== b.depth || a.fresh !== b.fresh || x.t !== y.t) return false
+  if (x.t === 'fence' && y.t === 'fence') return x.mark === y.mark
+  if (x.t === 'quote' && y.t === 'quote') return x.title === y.title && sameLevel(x.inner, y.inner)
+  if (x.t === 'item' && y.t === 'item')
+    return (
+      x.base === y.base &&
+      x.ordered === y.ordered &&
+      x.content === y.content &&
+      x.blank === y.blank &&
+      sameLevel(x.inner, y.inner)
+    )
+  return true
 }
 
 /**
@@ -513,6 +536,33 @@ function textStart(raw: string, view: string): number {
   return t && s.endsWith(t) ? s.length - t.length : 0
 }
 
+/** A reading again of what `prev` read, where lines `first` to `last` have changed since. */
+interface Again<T> {
+  prev: T
+  first: number
+  last: number
+}
+
+/**
+ * How many lines apart stripComments and the top level of parseBlocks note where they are, so
+ * that a reading again can start there and see where it is back where the one before was (with
+ * one noted per line, all kept alive, a note read again in full took 15% longer).
+ */
+const MARK_EVERY = 32
+
+/** Where stripComments is before a line: the levels open there, and the comment and run it is in. */
+interface Before {
+  at: Level
+  open: Open
+  tick: string | null
+}
+
+/** stripComments' lines, and where it was before line m * MARK_EVERY for each m. */
+interface Stripped {
+  out: string[]
+  marks: Before[]
+}
+
 /**
  * Hides <!-- --> and %% %% comments outside code, keeping every line where it was. Code is what
  * parseBlocks reads as code, followed line by line with step(), and the code spans parseInline
@@ -520,10 +570,19 @@ function textStart(raw: string, view: string): number {
  * as written (HIDDEN stands in for it), except that a line, or a quote's or list item's line,
  * that held only a comment is blank there, as in reading view. A line that starts in a comment
  * is not read for code: the comment goes on over it. On a line `plain` names, every comment is
- * hidden, in code spans too.
+ * hidden, in code spans too. `again`: the reading before, when lines `first` to `last` have become
+ * plain since; the lines before those read as they did, and so does the rest once a line after
+ * them is read from where it was before.
  */
-function stripComments(lines: string[], plain: (k: number) => boolean): string[] {
-  const out: string[] = []
+function stripComments(
+  lines: string[],
+  plain: (k: number) => boolean,
+  again?: Again<Stripped>
+): Stripped {
+  // read again from the last line noted before the first that changed
+  const m0 = Math.floor((again?.first ?? 0) / MARK_EVERY)
+  const out = again ? again.prev.out.slice(0, m0 * MARK_EVERY) : []
+  const marks = again ? again.prev.marks.slice(0, m0) : []
   // whether a line after line k, before the next blank one, has a comment marker: only such a
   // line can use the run of backticks line k leaves open (a blank line ends it)
   const later = new Array<boolean>(lines.length).fill(false)
@@ -531,10 +590,22 @@ function stripComments(lines: string[], plain: (k: number) => boolean): string[]
     later[k] = seen
     seen = !!lines[k]!.trim() && (seen || hasMarker(lines[k]!))
   }
-  let open: Open = null
-  let tick: string | null = null
-  let at = newLevel(0)
-  for (let k = 0; k < lines.length; k++) {
+  const start = again?.prev.marks[m0]
+  let open: Open = start?.open ?? null
+  let tick: string | null = start?.tick ?? null
+  let at = start?.at ?? newLevel(0)
+  for (let k = m0 * MARK_EVERY; k < lines.length; k++) {
+    if (k % MARK_EVERY === 0) {
+      const m = k / MARK_EVERY
+      const was = again && k > again.last ? again.prev.marks[m] : undefined
+      if (again && was && was.open === open && was.tick === tick && sameLevel(was.at, at)) {
+        // from where it was before, the rest reads as it did
+        for (let j = k; j < lines.length; j++) out.push(again.prev.out[j]!)
+        for (let j = m; j < again.prev.marks.length; j++) marks.push(again.prev.marks[j]!)
+        break
+      }
+      marks.push({ at, open, tick })
+    }
     const raw = lines[k]!
     const rawAt = (j: number): string | null => lines[k + j] ?? null
     const read = open ? null : step(at, raw, { at: rawAt, raw: rawAt })
@@ -589,7 +660,7 @@ function stripComments(lines: string[], plain: (k: number) => boolean): string[]
     open = line.open
     tick = line.tick
   }
-  return out
+  return { out, marks }
 }
 
 /* ---------- inline ---------- */
@@ -998,7 +1069,36 @@ function splitCells(row: string): string[] {
 /** Quotes and lists nested deeper than this are read as text, so no note can exhaust the stack. */
 const MAX_NEST = 64
 
-function parseBlocks(lines: Line[], depth = 0): Block[] {
+/**
+ * Where a note's top level starts to read a block or passes a blank line: the line, how many
+ * blocks come before it, and whether a paragraph ended there (so that the line can head a table).
+ */
+interface Start {
+  i: number
+  blocks: number
+  para: boolean
+}
+
+/** A note's top level as read: its blocks, and a start at most every MARK_EVERY lines. */
+interface TopLevel {
+  blocks: Block[]
+  starts: Start[]
+}
+
+/**
+ * `end`, for a list item's body: a fence there takes none of the item's lazy lines, so the item
+ * ends at the first one it would take; `end.at` is set to its index, and the body read so far
+ * is returned. `top`, for a note's top level: `starts` is filled in. With `again`, the blocks
+ * that looked only at lines before the first changed one are as they were (a block looks at the
+ * line before it and at most at the line after the one that ends it), and from the first start
+ * past the last changed line that is one of the reading before, so are the rest.
+ */
+function parseBlocks(
+  lines: Line[],
+  depth = 0,
+  end?: { at: number },
+  top?: { starts: Start[]; again?: Again<TopLevel> }
+): Block[] {
   if (depth > MAX_NEST) {
     const text = lines
       .map((l) => trimShown(l.s))
@@ -1010,7 +1110,37 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
   let i = 0
   // the line a paragraph ended at, which can head a table as the paragraph's line it would be
   let paraEnd = -1
+  const again = top?.again
+  // where the reading before started its blocks, and the first one not passed yet
+  const was = again?.prev.starts ?? []
+  let w = 0
+  if (top && again && was.length) {
+    while (w + 1 < was.length && was[w + 1]!.i + 1 < again.first) w++
+    const start = was[w]!
+    for (let j = 0; j < start.blocks; j++) out.push(again.prev.blocks[j]!)
+    for (let j = 0; j < w; j++) top.starts.push(was[j]!)
+    i = start.i
+    paraEnd = start.para ? i : -1
+  }
   while (i < lines.length) {
+    if (top) {
+      const para = paraEnd === i
+      if (again && i > again.last + 1) {
+        while (w < was.length && was[w]!.i < i) w++
+        const start = was[w]
+        if (start?.i === i && start.para === para) {
+          // from where it was before, the rest reads as it did
+          const shift = out.length - start.blocks
+          for (let j = start.blocks; j < again.prev.blocks.length; j++)
+            out.push(again.prev.blocks[j]!)
+          for (; w < was.length; w++)
+            top.starts.push({ ...was[w]!, blocks: was[w]!.blocks + shift })
+          break
+        }
+      }
+      const noted = top.starts[top.starts.length - 1]
+      if (!noted || i >= noted.i + MARK_EVERY) top.starts.push({ i, blocks: out.length, para })
+    }
     const line = lines[i]!
     const s = line.s
     if (!s.trim()) {
@@ -1024,10 +1154,15 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
       const pad = fence[1]?.length ?? 0
       const body: string[] = []
       i++
+      let lazy = -1
       while (i < lines.length) {
         const t = lines[i]!.s
         if (t.trim().startsWith(mark[0]!.repeat(mark.length)) && /^[`~]+$/.test(t.trim())) {
           i++
+          break
+        }
+        if (end && lines[i]!.lazy) {
+          lazy = i
           break
         }
         // the fence's own indent comes off, as written: a tab is one character here, not four
@@ -1036,6 +1171,11 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
       }
       const lang = codeText(fence[3] ?? '')
       out.push({ t: 'code', line: line.n, lang, v: codeText(body.join('\n')) })
+      // a list item's fence takes none of its lazy lines: the item ends at the first
+      if (lazy !== -1 && end) {
+        end.at = lazy
+        return out
+      }
       continue
     }
 
@@ -1133,13 +1273,15 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
         if (!m || m[4] === undefined || indentOf(cur.s) !== base || !!m[3] !== ordered) break
         const { content: contentOffset, task, first } = itemText(cur.s, m)
         const body: Line[] = [{ n: cur.n, s: first }]
+        const from = i
         i++
         let lastBlank = false
         while (i < lines.length) {
           const t = lines[i]!
           const own = inItem(base, contentOffset, lastBlank, t.s, lineAfter(lines, i))
           if (own === null) break
-          body.push({ n: t.n, s: own })
+          const lazy = !!t.s.trim() && indentOf(t.s) <= base
+          body.push(lazy ? { n: t.n, s: own, lazy } : { n: t.n, s: own })
           lastBlank = !t.s.trim()
           i++
         }
@@ -1149,7 +1291,10 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
           i--
         }
         while (i < lines.length && !lines[i]!.s.trim()) i++
-        list.items.push({ line: cur.n, task, c: parseBlocks(body, depth + 1) })
+        const end = { at: -1 }
+        list.items.push({ line: cur.n, task, c: parseBlocks(body, depth + 1, end) })
+        // it ends where its fence met a lazy line, which is read after it
+        if (end.at !== -1) i = from + end.at
         const next = lines[i]
         if (!next) break
         const nm = ITEM.exec(next.s)
@@ -1269,27 +1414,51 @@ export function parseMarkdown(text: string): ParsedNote {
     .split(/\r?\n/)
   const fm = frontmatter(raw)
   const src = raw.slice(fm.end)
+  const lineAt = (s: string, k: number): Line => ({ n: fm.end + k + 1, s })
+  const readTop = (lines: string[], again?: Again<TopLevel>): TopLevel => {
+    const starts: Start[] = []
+    return { blocks: parseBlocks(lines.map(lineAt), 0, undefined, { starts, again }), starts }
+  }
+  let blocks: Block[]
   // a note with no comment marker is read as it is (stripComments would give it back unchanged)
-  const commented = src.some(hasMarker)
-  const read = (plain: (k: number) => boolean): Block[] =>
-    parseBlocks(
-      (commented ? stripComments(src, plain) : src).map((s, k) => ({ n: fm.end + k + 1, s }))
-    )
-  // stripComments reads a paragraph's code spans a line at a time, so a span parseInline reads
-  // in the whole paragraph (an emphasis from the line before, a table's cells) can differ: a
-  // comment it kept as code must not show as anything else. Where one does, those lines are
-  // read again with every comment on them hidden, until none does.
-  const plain = new Set<number>()
-  let blocks = read(() => false)
-  for (let n = 0; commented; n++) {
-    const shows = keptShown(blocks, raw.length)
-    if (!shows.length) break
-    if (n === MAX_REREADS) {
-      blocks = read(() => true)
-      break
+  if (!src.some(hasMarker)) blocks = parseBlocks(src.map(lineAt))
+  else {
+    // stripComments reads a paragraph's code spans a line at a time, so a span parseInline reads
+    // in the whole paragraph (an emphasis from the line before, a table's cells) can differ: a
+    // comment it kept as code must not show as anything else. Where one does, those lines are
+    // read again with every comment on them hidden, until none does: each time from the first
+    // of them, and only as far as the note reads differently.
+    const plain = new Set<number>()
+    let stripped = stripComments(src, () => false)
+    let top = readTop(stripped.out)
+    for (let n = 0; ; n++) {
+      const shows = keptShown(top.blocks, raw.length)
+      if (!shows.length) break
+      if (n === MAX_REREADS) {
+        top = readTop(stripComments(src, () => true).out)
+        break
+      }
+      let first = src.length
+      let last = -1
+      for (const [a, b] of shows) {
+        for (let k = a - fm.end - 1; k <= b - fm.end - 1; k++) {
+          if (plain.has(k)) continue
+          plain.add(k)
+          first = Math.min(first, k)
+          last = Math.max(last, k)
+        }
+      }
+      if (last === -1) continue
+      const next = stripComments(src, (k) => plain.has(k), { prev: stripped, first, last })
+      // the lines it writes differently
+      let from = 0
+      while (from < src.length && next.out[from] === stripped.out[from]) from++
+      let to = src.length - 1
+      while (to >= from && next.out[to] === stripped.out[to]) to--
+      if (from <= to) top = readTop(next.out, { prev: top, first: from, last: to })
+      stripped = next
     }
-    for (const [a, b] of shows) for (let line = a; line <= b; line++) plain.add(line - fm.end - 1)
-    blocks = read((k) => plain.has(k))
+    blocks = top.blocks
   }
   // links in properties ("related: [[Note]]") are links too, as in Obsidian's backlinks
   const props = raw

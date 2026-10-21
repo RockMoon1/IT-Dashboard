@@ -743,6 +743,44 @@ test('a line that starts another block ends a table and heads none, as in GFM', 
   )
 })
 
+test("a list item's fence takes no lazy line: the item ends there, as in CommonMark", () => {
+  const command = `for /f %%a in ('net view ^| find "fs"') do echo %%a`
+  const read = (md: string): { text: string[]; code: string[] } => {
+    const text: string[] = []
+    const code: Array<[number, string, string]> = []
+    textAndCode(parseMarkdown(md).blocks, text, code)
+    return { text, code: code.map(([, , v]) => v) }
+  }
+  // the command's only pipe is in a %% pair: as written the line heads a table, and with the
+  // comment hidden it would be an unindented line in the item's open fence; either way it is
+  // not code, so the code block is the one line above it
+  for (const [md, code] of [
+    [`1. Find the file server:\n   \`\`\`bat\n   net view\n${command}\n|---|---|`, ['net view']],
+    [`> - \`\`\`\n> ${command}\n> |---|---|`, ['']],
+    ['- ~~~\nx %% a|b %% y\n| - | - |', ['']],
+    ['- ~~~\nx | y %% start\n|---|---|\nend %% z', ['']],
+    [
+      '1. Run:\n   ```bat\n   ipconfig\nRestart %% asked Maria | front desk %% the spooler\n| - |',
+      ['ipconfig']
+    ],
+    // with no table after it too, and in an item in an item
+    ['- a\n  ```\n  x\nb %% secret %%', ['x']],
+    ['- a\n  - ```\n    x\nb %% secret %%', ['x']]
+  ] as const) {
+    const got = read(md)
+    assert.deepEqual(got.code, code, md)
+    assert.ok(!got.text.some((v) => v.includes('%%') || v.includes('asked')), md)
+  }
+  // an indented line, a closed fence and a lazy line after text go on as before
+  const item = parseMarkdown('- a\n  ```\n  x\n  ```\nb %% secret %%\n  c').blocks
+  assert.deepEqual(kinds(item), ['list'])
+  assert.deepEqual(texts((item[0] as List).items[0]!.c), [
+    ['para', 1, 'a'],
+    ['code', 2, 'x'],
+    ['para', 5, 'b c']
+  ])
+})
+
 test('a backtick is a code span here only where parseInline reads one', () => {
   // \` is a backtick, not a span: the comment after it is text, so it is hidden
   const esc = parseMarkdown('Run \\`%% patient John Doe %%` now').blocks
@@ -866,6 +904,32 @@ test('a line read for its code spans and comments takes a few readings, not one 
     const text: string[] = []
     textAndCode(p.blocks, text, [])
     assert.ok(!text.some((v) => v.includes('patient')), md.slice(0, 30))
+  }
+})
+
+test('a paragraph read again costs about its own lines, not the whole note again', () => {
+  // the paragraph only the whole paragraph reads differently (see above), after and before
+  // 10000 lines with comments: read again in full, the note took twice as long as without it
+  const body = Array.from({ length: 10_000 }, (_, i) =>
+    i % 7 === 0 ? '' : `Line ${i}: run \`Get-Printer -Name P${i}\` see [[Ticket ${i}]] %% n ${i} %%`
+  ).join('\n')
+  const para = '*a `b* c\nd` e* %% patient Jane Roe %% `f`'
+  const best = (md: string): number => {
+    let ms = Infinity
+    for (let k = 0; k < 5; k++) {
+      const t0 = performance.now()
+      parseMarkdown(md)
+      ms = Math.min(ms, performance.now() - t0)
+    }
+    return ms
+  }
+  const alone = best(body)
+  for (const md of [`${body}\n\n${para}`, `${para}\n\n${body}`]) {
+    const ms = best(md)
+    assert.ok(ms < alone * 1.5 + 10, `${ms.toFixed(0)} ms, ${alone.toFixed(0)} ms without it`)
+    const text: string[] = []
+    textAndCode(parseMarkdown(md).blocks, text, [])
+    assert.ok(!text.some((v) => v.includes('patient')))
   }
 })
 
@@ -1041,10 +1105,12 @@ function textAndCode(
 }
 
 test('comments are hidden wherever the note shows text, and code keeps every byte', () => {
-  // this seed's notes include table rows and heads whose only pipe is in a comment, on a line
-  // that reads as quoted code once the comment is hidden
-  const rand = random(15)
-  for (let k = 0; k < 6000; k++) {
+  // these seeds' notes include table rows and heads whose only pipe is in a comment, on a line
+  // that reads as quoted code once the comment is hidden (15), or as a line in a list item's
+  // open fence (135)
+  let rand = random(15)
+  for (let k = 0; k < 12_000; k++) {
+    if (k === 6000) rand = random(135)
     const reshaping = k % 2 === 1
     const md = randomNote(rand, reshaping, k % 4 >= 2)
     const text: string[] = []
