@@ -1121,6 +1121,67 @@ test('a YAML comment after a property is not shown, nor is a link in it, as in O
   assert.ok(!p.lines.slice(0, 18).some((l) => /Jane|MRN|DOB/.test(l)))
 })
 
+test("a YAML comment less indented than a block scalar's text ends it, and a key holds none", () => {
+  const link = '[[T-0001 Front desk printer]]'
+  const md = [
+    '---',
+    'notes: |',
+    '    Replaced the toner.',
+    `  # ask Jane Roe (MRN 445566) about ${link}`,
+    'status: open',
+    'summary: >',
+    '  called the vendor',
+    ' # Jane Roe, DOB 1970-01-02',
+    'steps: |2',
+    '    kept indent',
+    "  # content at the indicator's indent",
+    ' # MRN 445566',
+    'desc: |',
+    '  # a heading in the text',
+    '',
+    '  more',
+    ' # Jane Roe',
+    'room: |',
+    '    first',
+    '\t# Jane Roe',
+    // a blank line before the text indents it at least as far as its spaces
+    'lead: |',
+    '   ',
+    '  # Jane Roe',
+    'kept: >2-',
+    '    as given',
+    ' # MRN 445566',
+    'parent:',
+    '  child # Jane Roe: x',
+    'tags:',
+    '  - a',
+    'room 4 # Jane Roe: yes',
+    '---',
+    'body'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  // as YAML reads it: PyYAML gives the same, except that it keeps the text's last line break
+  // and, with an indent given, the spaces past it, that "child" (a plain line under a key) is
+  // parent's value there, and that it takes neither the tab (a space before a comment in YAML,
+  // not indent) nor "room 4 # Jane Roe: yes" (no key: its # starts a comment)
+  assert.deepEqual(p.frontmatter, [
+    ['notes', 'Replaced the toner.'],
+    ['status', 'open'],
+    ['summary', 'called the vendor'],
+    ['steps', "kept indent\n# content at the indicator's indent"],
+    ['desc', '# a heading in the text\n\nmore'],
+    ['room', 'first'],
+    ['lead', ''],
+    ['kept', 'as given'],
+    ['parent', ''],
+    ['tags', 'a']
+  ])
+  // the comment's link is no link, and no line a backlink can show holds a comment
+  assert.deepEqual(p.linkLines, [])
+  assert.ok(!p.lines.slice(0, 32).some((l) => /Jane|MRN|DOB/.test(l)), p.lines.join('\n'))
+  assert.equal(p.lines[32], 'body')
+})
+
 test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at its end', () => {
   const heads = (md: string): Array<[number, string]> =>
     parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))
@@ -1165,13 +1226,18 @@ test('a heading or near delimiter row with a long run of spaces parses in linear
 test('backtick runs that close nothing parse in linear time', () => {
   // shorter and shorter runs: each was searched for to the end of the line (14 to 27 s)
   const runs = 'a ' + Array.from({ length: 900 }, (_, k) => '`'.repeat(900 - k) + 'a').join('')
+  const long = 'a ' + '`'.repeat(20_000) + 'a' + ('`'.repeat(19_999) + 'a').repeat(20)
   for (const md of [
     runs,
     `*${runs}*`,
     `| a | b |\n|---|---|\n| ${runs} | c |`,
     `| ${runs} | c |\n|---|---|`,
     // one long run in emphasis: each of its backticks was read to the run's end (3 s)
-    '*a ' + '`'.repeat(100_000) + ' b*'
+    '*a ' + '`'.repeat(100_000) + ' b*',
+    // one long run over runs one shorter: indexOf read each of them again (2 to 5 s)
+    long,
+    `*${long}*`,
+    `| a | b |\n|---|---|\n| ${long} | c |`
   ]) {
     const ms = parseTime(md)
     // 5 to 40 ms here
@@ -1185,6 +1251,47 @@ test('backtick runs that close nothing parse in linear time', () => {
     ['*a ``` x ``` b*', ['x']]
   ] as const) {
     assert.deepEqual(codeSpans(parseMarkdown(md).blocks), spans, md)
+  }
+})
+
+test('ordinary code spans work out no table of backtick runs, so they cost what they did', () => {
+  // the longest run after each position was worked out for each text and row with a backtick,
+  // which made ordinary notes with code spans parse 25 to 40% slower than at cb9d5bb (50 to 90%
+  // with a lone backtick); only a text where three runs close nothing needs it
+  const Real = globalThis.Int32Array
+  let made = 0
+  globalThis.Int32Array = class extends Real {
+    constructor(...args: [number]) {
+      super(...args)
+      made++
+    }
+  } as Int32ArrayConstructor
+  try {
+    const md = [
+      'Run `Get-Printer` then ``Restart`Service`` and *see `a` and `b`* or **run `c`**.',
+      '',
+      '| Port | `Use` |',
+      '|---|---|',
+      '| `a|b` | *x `y`* |',
+      '',
+      '- [ ] call about `ARH-P01`',
+      '> [!note] `Title`',
+      '> body with `code`',
+      '',
+      'Use the ` key, or `` twice, then `code` here: ```',
+      '',
+      '| `x` ``y | `z |',
+      '|---|---|'
+    ].join('\n')
+    assert.equal(codeSpans(parseMarkdown(md).blocks).length, 15)
+    assert.equal(made, 0)
+    // once three runs close nothing, the table is worked out (and later runs are looked up in it)
+    assert.deepEqual(codeSpans(parseMarkdown('a ``` b `` c ` d `` e').blocks), ['c ` d'])
+    assert.equal(made, 0)
+    assert.deepEqual(codeSpans(parseMarkdown('a ```` b ``` c `` d ` e ` f').blocks), ['e'])
+    assert.equal(made, 1)
+  } finally {
+    globalThis.Int32Array = Real
   }
 })
 

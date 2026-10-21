@@ -1,6 +1,6 @@
 import { posix, sep } from 'node:path'
 import type { NoteLinkTarget, NoteView } from '../../../shared/types.ts'
-import { parseMarkdown, type ParsedNote } from '../../../shared/markdown.ts'
+import { parseMarkdown, type Block, type ParsedNote } from '../../../shared/markdown.ts'
 import type { IndexedNote } from './vaultindex.ts'
 
 /**
@@ -42,19 +42,29 @@ export function resolveLink(
   })[0]!
 }
 
-// a note's links as the reader shows them, and its lines as it reads them (comments hidden),
-// parsed once per version (the index replaces the object when the file changes)
-type Links = Pick<ParsedNote, 'linkLines' | 'lines'>
+/**
+ * A note's title as the reader shows it: the text of its first # heading, comments hidden, or
+ * its file name. Not the index's title, which is the first line that starts with "# " as
+ * written, also in a comment, a property's YAML comment or code.
+ */
+function titleOf(note: IndexedNote, blocks: Block[]): string {
+  const h = blocks.find((b) => b.t === 'heading' && b.level === 1)
+  return (h?.t === 'heading' && h.text) || note.name
+}
+
+// a note's links as the reader shows them, its lines as it reads them (comments hidden) and its
+// title, parsed once per version (the index replaces the object when the file changes)
+type Links = Pick<ParsedNote, 'linkLines' | 'lines'> & { title: string }
 const linkCache = new WeakMap<IndexedNote, Links>()
 function linksOf(note: IndexedNote): Links {
   let links = linkCache.get(note)
   if (!links) {
     try {
-      const { linkLines, lines } = parseMarkdown(note.text)
-      links = { linkLines, lines }
+      const { linkLines, lines, blocks } = parseMarkdown(note.text)
+      links = { linkLines, lines, title: titleOf(note, blocks) }
     } catch {
       // one note the parser cannot read must not stop the notes it mentions opening
-      links = { linkLines: [], lines: [] }
+      links = { linkLines: [], lines: [], title: note.name }
     }
     linkCache.set(note, links)
   }
@@ -78,14 +88,14 @@ export function backlinks(
   for (const other of notes) {
     if (other.abs === note.abs || !mentions.test(other.text)) continue
     const seen = new Set<number>()
-    const { linkLines, lines } = linksOf(other)
+    const { linkLines, lines, title } = linksOf(other)
     for (const { target, line } of linkLines) {
       if (out.length >= limit) break
       if (seen.has(line) || resolveLink(target, other, notes)?.abs !== note.abs) continue
       seen.add(line)
       out.push({
         file: other.rel,
-        title: other.title,
+        title,
         line,
         // the line as the reader shows it: a comment on it may hold a patient's details
         text: (lines[line - 1] ?? '').trim().slice(0, 300)
@@ -105,7 +115,7 @@ export function noteView(note: IndexedNote, notes: IndexedNote[]): NoteView {
   }
   return {
     file: note.rel,
-    title: note.title,
+    title: titleOf(note, parsed.blocks),
     folder: note.folder,
     mtimeMs: note.mtimeMs,
     frontmatter: parsed.frontmatter,

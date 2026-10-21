@@ -116,6 +116,46 @@ function commentAt(line: string, at: number): number {
   return line.length
 }
 
+/**
+ * The lines of a "key: |" or "key: >" block being read, and the spaces its text is indented by:
+ * the number given ("key: |2"), else the first line's with text (null until then), which is at
+ * least `lead`, the most spaces of a blank line before it (as YAML reads it).
+ */
+interface Scalar {
+  fold: boolean
+  lines: string[]
+  indent: number | null
+  lead: number
+}
+
+/** A block scalar's header ("|", ">-", "|2", "|+1", ">2-") and the indent it gives. */
+const SCALAR = /^([|>])(?:[+-]?([1-9])?|([1-9])[+-])$/
+
+/**
+ * Whether a frontmatter line goes on the block scalar being read: a blank line or one indented
+ * as far as its text. A comment less indented than that ends it, as in YAML (where a tab before
+ * a # is a space, not indent); any other indented line goes on it, as it always has.
+ */
+function inScalar(scalar: Scalar, line: string): boolean {
+  let spaces = 0
+  while (line[spaces] === ' ') spaces++
+  if (!line.trim()) {
+    if (scalar.indent === null) scalar.lead = Math.max(scalar.lead, spaces)
+    return true
+  }
+  // a top-level key's text is indented
+  if (spaces >= (scalar.indent ?? Math.max(scalar.lead, 1))) {
+    scalar.indent ??= spaces
+    return true
+  }
+  if (line.trimStart().startsWith('#') || !/^\s/.test(line)) return false
+  scalar.indent ??= Math.max(indentOf(line), scalar.lead)
+  return true
+}
+
+/** Whether a frontmatter key has a YAML comment in it ("room 4 # Jane: x" is "room 4" and one). */
+const keyComment = (key: string): boolean => commentAt(key, 0) < key.length
+
 /** The properties, where the frontmatter ends, and its lines without their YAML comments. */
 function frontmatter(lines: string[]): {
   data: Array<[string, string]>
@@ -125,13 +165,12 @@ function frontmatter(lines: string[]): {
   if ((lines[0] ?? '').trim() !== '---') return { data: [], end: 0, shown: [] }
   const data: Array<[string, string]> = []
   const shown = [lines[0] ?? '']
-  // the indented lines of a "key: |" or "key: >" block being read
-  let scalar: { fold: boolean; lines: string[] } | null = null
+  let scalar: Scalar | null = null
   for (let i = 1; i < lines.length && i < 400; i++) {
     const line = lines[i] ?? ''
     const last = data[data.length - 1]
     if (scalar && last) {
-      if (!line.trim() || /^\s/.test(line)) {
+      if (inScalar(scalar, line)) {
         scalar.lines.push(line)
         shown.push(line)
         continue
@@ -143,10 +182,12 @@ function frontmatter(lines: string[]): {
       shown.push(line)
       return { data, end: i + 1, shown }
     }
-    const kv = /^([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    let kv = /^([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    if (kv?.[1] && keyComment(kv[1])) kv = null
     // "- item" under a key: a YAML list, shown as "a, b"; "  child: x" under a key: "child: x"
     const item = kv ? null : /^\s*-\s+(.*)$/.exec(line)
-    const child = kv || item?.[1] ? null : /^\s+([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    let child = kv || item?.[1] ? null : /^\s+([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    if (child?.[1] && keyComment(child[1])) child = null
     // the line's value without its comment; any other line is cut at its comment too (all of
     // it, for a line of only a comment), as properties' links and backlinks read it
     const rest = kv ? (kv[2] ?? '') : item?.[1] ? item[1] : child ? (child[2] ?? '') : line
@@ -155,8 +196,9 @@ function frontmatter(lines: string[]): {
     const v = line.slice(at, end).trim()
     shown.push(line.slice(0, end))
     if (kv?.[1]) {
-      const block = /^([|>])[+-]?[1-9]?$/.exec(v)
-      if (block) scalar = { fold: block[1] === '>', lines: [] }
+      const block = SCALAR.exec(v)
+      const indent = Number(block?.[2] ?? block?.[3]) || null
+      if (block) scalar = { fold: block[1] === '>', lines: [], indent, lead: 0 }
       data.push([kv[1].trim(), block ? '' : unquote(v)])
     } else if (last) {
       const value = item?.[1]
@@ -758,11 +800,7 @@ function wiki(text: string, embed: boolean): Inline {
   return { t: 'wiki', target: (target ?? '').trim(), heading, alias, embed }
 }
 
-/**
- * For each position of `s`, the longest run of backticks at or after it, so that a run is looked
- * for only where one as long comes after it (looked for after each run, a line of shorter and
- * shorter runs that close nothing took 14 s for 400 KB).
- */
+/** For each position of `s`, the longest run of backticks at or after it. */
 function longestRuns(s: string): Int32Array {
   const out = new Int32Array(s.length + 1)
   for (let p = s.length - 1, run = 0; p >= 0; p--) {
@@ -773,10 +811,50 @@ function longestRuns(s: string): Int32Array {
 }
 
 /**
- * Finds the closing delimiter for an emphasis run: not escaped, not preceded by a space. `runs`
- * gives longestRuns(s).
+ * A text whose code spans are being read, and what its searches for runs of backticks found:
+ * how many found nothing, the last of them none of `failN` or more from `failAt` on, and once
+ * MAX_FAILS did, longestRuns of it.
  */
-function findClose(s: string, from: number, delim: string, runs: () => Int32Array): number {
+interface Ticks {
+  s: string
+  fails: number
+  failAt: number
+  failN: number
+  longest: Int32Array | null
+}
+
+const ticksOf = (s: string): Ticks => ({ s, fails: 0, failAt: Infinity, failN: 0, longest: null })
+
+/** How many searches for a run find nothing before longestRuns answers instead. */
+const MAX_FAILS = 3
+
+/**
+ * Where n backticks are next in a text from `from` on, as indexOf finds them (-1: nowhere): at
+ * the first run from there that is as long. Looked for run by run, unless the last search that
+ * found nothing shows there is none; after MAX_FAILS found nothing, only where a run as long
+ * comes after `from`. Looked for after each run, a line of shorter and shorter runs that close
+ * nothing took 14 s for 400 KB; with longestRuns worked out for each text with a backtick,
+ * ordinary notes with code spans parsed 25 to 40% slower, and 50 to 90% with a lone backtick;
+ * and with indexOf, a long run read each shorter run after it again (5 s for one of 20000
+ * backticks over runs of 19999, 400 KB).
+ */
+function nextRun(t: Ticks, n: number, from: number): number {
+  if (t.longest ? t.longest[from]! < n : from >= t.failAt && n >= t.failN) return -1
+  const s = t.s
+  for (let p = s.indexOf('`', from); p !== -1; p = s.indexOf('`', p)) {
+    const start = p
+    while (s[p] === '`') p++
+    if (p - start >= n) return start
+  }
+  if (++t.fails < MAX_FAILS) {
+    t.failAt = from
+    t.failN = n
+  } else t.longest ??= longestRuns(s)
+  return -1
+}
+
+/** Finds the closing delimiter for an emphasis run: not escaped, not preceded by a space. */
+function findClose(s: string, from: number, delim: string, ticks: Ticks): number {
   const c = delim[0]!
   // where the run of backticks the loop is in ends
   let tickEnd = -1
@@ -790,7 +868,7 @@ function findClose(s: string, from: number, delim: string, runs: () => Int32Arra
       // run that closes nothing read it to its end, 3 s for 100000)
       if (tickEnd <= i) for (tickEnd = i; s[tickEnd] === '`'; ) tickEnd++
       const n = tickEnd - i
-      const end = runs()[tickEnd]! >= n ? s.indexOf('`'.repeat(n), tickEnd) : -1
+      const end = nextRun(ticks, n, tickEnd)
       if (end !== -1) i = end + n - 1
       continue
     }
@@ -852,10 +930,10 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
   }
   // What one scan already showed, so a long paragraph full of unmatched openers (* _ [[ [ `)
   // costs one scan per kind instead of one per opener: delimiters with no closer, the longest
-  // backtick run after each position, the next ]] and line break, and where each [ and ( closes.
+  // backtick run after each position (nextRun), the next ]] and line break, and where each [
+  // and ( closes.
   const noClose = new Set<string>()
-  let longest: Int32Array | null = null
-  const runs = (): Int32Array => (longest ??= longestRuns(s))
+  let ticks: Ticks | null = null
   let wikiEnd = -2
   let lineEnd = -2
   let brackets: Map<number, number> | null = null
@@ -890,9 +968,7 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
     }
     if (ch === '`') {
       const run = /^`+/.exec(rest)?.[0] ?? '`'
-      // searched for only where a run as long comes after it
-      const after = i + run.length
-      const end = runs()[after]! >= run.length ? s.indexOf(run, after) : -1
+      const end = nextRun((ticks ??= ticksOf(s)), run.length, i + run.length)
       if (end !== -1) {
         let v = s.slice(i + run.length, end)
         if (/^ .* $/.test(v)) v = v.slice(1, -1)
@@ -983,7 +1059,8 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
       const kind = emph[1]
       const intraword = (d === '_' || d === '__') && /[A-Za-z0-9]/.test(s[i - 1] ?? '')
       // a delimiter that found no closer from an earlier opener finds none from a later one
-      const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d, runs)
+      const end =
+        intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d, (ticks ??= ticksOf(s)))
       if (end === -1 && !intraword) noClose.add(d)
       if (end !== -1) {
         const inner = nested(i + d.length, end)
@@ -1144,12 +1221,12 @@ function otherStart(s: string, para: boolean): boolean {
 }
 
 /**
- * Whether a line heads a table: it has a pipe, would be a paragraph's line there (as in GFM, a
- * quote or a list item heads no table, and ends one), and `next()`, the line after it, is a
- * delimiter row of its cells (heads). `para`: the line comes right after a paragraph's line.
+ * The table a line heads, or null: it has a pipe, would be a paragraph's line there (as in GFM,
+ * a quote or a list item heads no table, and ends one), and `next()`, the line after it, is a
+ * delimiter row of its cells (tableHead). `para`: the line comes right after a paragraph's line.
  */
-function tableStart(s: string, next: () => string, para = false): boolean {
-  return s.includes('|') && !otherStart(s, para) && heads(s, next())
+function tableStart(s: string, next: () => string, para = false): TableHead | null {
+  return s.includes('|') && !otherStart(s, para) ? tableHead(s, next()) : null
 }
 
 /** Whether a line is a table's delimiter row, and starts no other block ("- |---|" is an item). */
@@ -1162,14 +1239,23 @@ const delimiterRow = (b: string): boolean =>
  */
 const MAX_COLS = 256
 
+/** A table's head: its cells, and its delimiter row's. */
+interface TableHead {
+  cells: string[]
+  delims: string[]
+}
+
 /**
- * Whether a line with a pipe heads a table over `b`, the line after it: `b` is a delimiter row
- * with as many cells as the line, as in GFM, and at most MAX_COLS.
+ * The table a line with a pipe heads over `b`, the line after it, or null: `b` is a delimiter
+ * row with as many cells as the line, as in GFM, and at most MAX_COLS. (Split once: split here
+ * and again for the table, ordinary tables parsed 10 to 15% slower.)
  */
-function heads(s: string, b: string): boolean {
-  if (!delimiterRow(b)) return false
-  const n = splitCells(b).length
-  return n <= MAX_COLS && splitCells(trimShown(s)).length === n
+function tableHead(s: string, b: string): TableHead | null {
+  if (!delimiterRow(b)) return null
+  const delims = splitCells(b)
+  if (delims.length > MAX_COLS) return null
+  const cells = splitCells(trimShown(s))
+  return cells.length === delims.length ? { cells, delims } : null
 }
 
 /**
@@ -1177,7 +1263,7 @@ function heads(s: string, b: string): boolean {
  * `para` as for otherStart.
  */
 function blockStart(s: string, next: () => string, para = false): boolean {
-  return otherStart(s, para) || (s.includes('|') && heads(s, next()))
+  return otherStart(s, para) || (s.includes('|') && tableHead(s, next()) !== null)
 }
 
 /** The line after line i, for tableStart and blockStart. */
@@ -1188,7 +1274,7 @@ function splitCells(row: string): string[] {
   if (s.startsWith('|')) s = s.slice(1)
   if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1)
   const cells: string[] = []
-  let longest: Int32Array | null = null
+  let ticks: Ticks | null = null
   let cur = ''
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
@@ -1199,9 +1285,7 @@ function splitCells(row: string): string[] {
     } else if (ch === '`') {
       // a `code span` keeps its pipes; a lone backtick is text
       const run = /^`+/.exec(s.slice(i))?.[0] ?? '`'
-      longest ??= longestRuns(s)
-      const after = i + run.length
-      const end = longest[after]! >= run.length ? s.indexOf(run, after) : -1
+      const end = nextRun((ticks ??= ticksOf(s)), run.length, i + run.length)
       const stop = end === -1 ? i + run.length : end + run.length
       cur += s.slice(i, stop).replace(/\\\|/g, '|')
       i = stop - 1
@@ -1355,9 +1439,10 @@ function parseBlocks(
       continue
     }
 
-    if (tableStart(s, lineAfter(lines, i), paraEnd === i)) {
-      const head = splitCells(trimShown(s))
-      const align = splitCells(lines[i + 1]!.s).map((c) => {
+    const table = tableStart(s, lineAfter(lines, i), paraEnd === i)
+    if (table) {
+      const head = table.cells
+      const align = table.delims.map((c) => {
         const l = c.startsWith(':')
         const r = c.endsWith(':')
         return l && r ? 'center' : r ? 'right' : l ? 'left' : null
@@ -1629,7 +1714,8 @@ export function parseMarkdown(text: string): ParsedNote {
     blocks,
     links: [...links],
     linkLines,
-    lines: [...fm.shown, ...body]
+    // (not spread: a 1 MB note of short lines parsed 3% slower)
+    lines: fm.shown.length ? fm.shown.concat(body) : body
   }
 }
 

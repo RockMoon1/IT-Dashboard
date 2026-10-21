@@ -144,6 +144,57 @@ test("a backlink shows its line as the reader does: none of the line's comments"
   }
 })
 
+test("a note's title in the viewer and its backlinks is the heading the reader shows", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const link = 'Fixed [[T-0001 Front desk printer]]'
+    const files: Record<string, string[]> = {
+      // a heading in a comment, one with a comment, and a YAML comment in the properties
+      'Visit.md': ['%% about', '# Patient Jane Roe MRN 445566', '%%', '# Visit', '', link],
+      'Visit2.md': ['# Visit2 %% Jane Roe %%', '', link],
+      'Visit3.md': [
+        '---',
+        '# patient Jane Roe, MRN 445566',
+        'status: open',
+        '---',
+        '# Visit3',
+        link
+      ],
+      'Visit4.md': ['<!-- # MRN 445566 -->', '```sh', '# not the title', '```', '# Visit4', link],
+      // a heading of only a comment shows nothing: the file's name, as for a note with none
+      'Visit5.md': ['# %% Jane Roe %%', '', '# Later', link],
+      'Visit6.md': ['## Second level', '', link],
+      // its text as the heading shows it, closing #s and markup read
+      'Visit7.md': ['# Visit7 for **ARH-P01** #', '', link]
+    }
+    for (const [name, lines] of Object.entries(files))
+      await writeFile(join(vault, name), lines.join('\n'))
+    const notes = await new VaultIndex().notes(vault)
+    const ticket = notes.find((n) => n.name === 'T-0001 Front desk printer')!
+    const titles = backlinks(ticket, notes)
+      .filter((b) => b.file.startsWith('Visit'))
+      .map((b) => [b.file, b.title])
+      .sort()
+    assert.deepEqual(titles, [
+      ['Visit.md', 'Visit'],
+      ['Visit2.md', 'Visit2'],
+      ['Visit3.md', 'Visit3'],
+      ['Visit4.md', 'Visit4'],
+      ['Visit5.md', 'Visit5'],
+      ['Visit6.md', 'Visit6'],
+      ['Visit7.md', 'Visit7 for ARH-P01']
+    ])
+    for (const [file, title] of titles) {
+      const view = noteView(notes.find((n) => n.rel === file)!, notes)
+      assert.equal(view.title, title)
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
 test('relative links (./, ../ and <…>) resolve from the linking note', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
   try {
