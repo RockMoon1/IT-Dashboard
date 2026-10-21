@@ -95,6 +95,32 @@ func TestShippedActionsMeasureHere(t *testing.T) {
 			}
 		})
 	}
+	// an alias (sshd.service for ssh.service) is not the unit's Id, and systemd 246 and later
+	// answer "alias" to is-enabled for it: a service enabled at boot, named by an alias, is not
+	// blocked
+	if runtime.GOOS == "linux" {
+		t.Run("linux-service-start-alias", func(t *testing.T) {
+			act, _ := liveAction(t, "linux-service-start", nil)
+			alias, id := "", ""
+			for _, name := range strings.Fields(sh(t, "systemctl list-unit-files --type=service --state=alias --no-legend 2>/dev/null | awk '{print $1}'")) {
+				if strings.HasSuffix(name, "@.service") || act.CheckParams(map[string]string{"name": name}) != nil {
+					continue // a template (autovt@.service), or not a name the dashboard sends
+				}
+				id = sh(t, "systemctl show -p Id --value -- "+name+" 2>/dev/null")
+				if id != "" && id != name && sh(t, "systemctl is-enabled -- "+id+" 2>/dev/null") == "enabled" {
+					alias = name
+					break
+				}
+			}
+			if alias == "" {
+				t.Skip("no alias of a service enabled at boot here")
+			}
+			m, _ := measureLive(t, a, "linux-service-start", map[string]string{"name": alias})
+			if m.ExitCode != 0 || m.Change == nil || len(m.Blockers) > 0 {
+				t.Errorf("%s (an alias of %s): exit %d plan %v %q blockers %q, want no blocker", alias, id, m.ExitCode, deref(m.Change), m.Plan, m.Blockers)
+			}
+		})
+	}
 }
 
 func deref(b *bool) any {

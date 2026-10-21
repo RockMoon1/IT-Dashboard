@@ -123,8 +123,14 @@ func TestLinuxServiceStartMeasure(t *testing.T) {
 		{"long-running and stopped", "Id=arh-test.service\nType=simple\nRemainAfterExit=no\nActiveState=inactive\nResult=success\nExecMainStartTimestampMonotonic=81234567\nExecMainPID=4242\nExecMainCode=1\nExecMainStatus=0\n" + start("no", "0"), logged(succeeded, 82234567), "enabled", true, "Start", false},
 		{"masked", "Id=arh-test.service\nType=simple\nRemainAfterExit=no\nActiveState=inactive\nResult=success\n" + never, "", "masked", true, "Start", true},
 		{"not found", "Id=arh-test.service\nType=simple\nRemainAfterExit=no\nActiveState=inactive\nResult=success\n" + never, "", "", true, "Start", true},
+		// is-enabled is asked about the unit's Id, so an alias of a unit that is not enabled is
+		// still refused, and without an Id (systemctl show failed) about the name typed
+		{"named by an alias of a static unit", "Id=arh-real.service\nType=simple\nRemainAfterExit=no\nActiveState=inactive\nResult=success\n" + never, "", "static", true, "Start", true},
+		{"no Id shown", "", "", "enabled", true, "Start", false},
 	}
-	// show prints the lines of $STUB/show for each property named with -p, as systemctl does
+	// show prints the lines of $STUB/show for each property named with -p, as systemctl does;
+	// is-enabled answers, like systemd 246 and later, "alias" for a name (after --) that is not
+	// the Id in $STUB/show, nothing for an empty name, and $STUB/enabled otherwise
 	stub := `#!/bin/sh
 case "$1" in
 show)
@@ -135,7 +141,11 @@ show)
     prev=$a
   done
   exit 0 ;;
-is-enabled) cat "$STUB/enabled"; [ "$(cat "$STUB/enabled")" = enabled ] ;;
+is-enabled)
+  id=$(sed -n 's/^Id=//p' "$STUB/show")
+  [ -n "$3" ] || exit 1
+  if [ -n "$id" ] && [ "$3" != "$id" ]; then echo alias; exit 0; fi
+  cat "$STUB/enabled"; [ "$(cat "$STUB/enabled")" = enabled ] ;;
 esac
 `
 	// journalctl prints $STUB/journal only for this boot's records written by PID 1 (no other
