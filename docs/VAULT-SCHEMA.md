@@ -150,7 +150,10 @@ padded or realigned header row (table plugins) is still recognised. A link to a 
 (Change Log, computers, hub) or list (Work Log, Open Loops) puts its block id on a line of its
 own after it, a blank line between (`^chg-table`). That line stays there on every write: after
 the rows (in the hub, above the `Inventory:` line), or after the list with its blank line; new
-Open Loops tasks join the list above it. Previews, things already
+Open Loops tasks join the list above it. Inside the markers, a line you type in the Work Log or
+Open Loops block is kept but the blank lines between such lines are not, and a table block keeps
+only its rows (the hub's are rebuilt) and block ids; type notes outside the markers, and put a
+block id on its own line right after the list or table. Previews, things already
 set, and refused requests never reach the vault. Every value that came from a device is cleaned
 first: no line breaks of any kind, and the characters Markdown, HTML and Obsidian give a meaning
 to are escaped. Both logs list as changed only items measured before and after, so a Work Log

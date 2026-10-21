@@ -174,3 +174,6 @@ and first lines of System/Security events, not message bodies of application log
   one-shot systemd has unloaded since its run reads as never started.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
   read only, and the security-check profile is now v2.
+- Saving Settings in an older build (Phase 2) drops the settings it does not know. The next time
+  this build starts they are back at their defaults: full access, live vault writes, the shipped
+  Asset Inventory and Change Log notes.

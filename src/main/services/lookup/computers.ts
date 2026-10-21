@@ -330,7 +330,8 @@ export interface NoteRoles {
   assets?: IndexedNote
   openLoops?: IndexedNote
   workLog?: IndexedNote
-  changeLog?: IndexedNote
+  /** The note the dashboard writes its rows to (Settings), then the root ARH Change Log. */
+  changeLogs: IndexedNote[]
   tickets: IndexedNote[]
 }
 
@@ -342,15 +343,20 @@ const relKey = (p: string): string =>
 
 export function noteRoles(
   notes: IndexedNote[],
-  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote'>
+  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote' | 'changeLogNote'>
 ): NoteRoles {
   const byRel = (setting: string): IndexedNote | undefined =>
     notes.find((n) => relKey(n.rel) === relKey(setting))
+  // trimmed as notePaths does; an empty name matches no note
+  const changeLogs = [
+    byRel((settings.changeLogNote ?? '').trim()),
+    notes.find((n) => n.folder === '' && norm(n.name) === 'arh change log')
+  ]
   return {
     assets: byRel(settings.assetNote),
     openLoops: byRel(settings.openLoopsNote),
     workLog: byRel(settings.workLogNote),
-    changeLog: notes.find((n) => n.folder === '' && norm(n.name) === 'arh change log'),
+    changeLogs: [...new Set(changeLogs)].filter((n): n is IndexedNote => !!n),
     tickets: notes.filter(
       (n) =>
         n.folder.toLowerCase() === 'tickets' &&
@@ -509,7 +515,7 @@ export interface ProfileInput {
   target: LookupTarget
   computers: Computer[]
   notes: IndexedNote[]
-  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote'>
+  settings: Pick<Settings, 'assetNote' | 'openLoopsNote' | 'workLogNote' | 'changeLogNote'>
   connected: (deviceId: string) => boolean
   vaultError?: string
 }
@@ -549,7 +555,7 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   const runs = computer?.runs ?? []
   const roles = noteRoles(input.notes, input.settings)
   const special = new Set(
-    [roles.assets, roles.openLoops, roles.workLog, roles.changeLog, ...roles.tickets]
+    [roles.assets, roles.openLoops, roles.workLog, ...roles.changeLogs, ...roles.tickets]
       .filter((n): n is IndexedNote => !!n)
       .map((n) => n.abs)
   )
@@ -699,11 +705,16 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
     lines,
     line
   }))
-  const changes = roles.changeLog
-    ? tableRows(roles.changeLog)
-        .filter((r) => Object.values(r.cells).some((v) => match.test(v)))
-        .map(({ file, line, cells }) => ({ file, line, cells }))
-    : []
+  // a row the dashboard wrote to both notes, before and after the setting changed, shows once
+  const changes: VaultRow[] = []
+  const listed = new Set<string>()
+  for (const n of roles.changeLogs) {
+    const rows = tableRows(n)
+      .filter((r) => Object.values(r.cells).some((v) => match.test(v)))
+      .map(({ file, line, cells }) => ({ file, line, cells }))
+    changes.push(...rows.filter((r) => !listed.has(JSON.stringify(r.cells))))
+    for (const r of rows) listed.add(JSON.stringify(r.cells))
+  }
   const mentions: VaultMention[] = []
   for (const n of input.notes) {
     if (special.has(n.abs)) continue

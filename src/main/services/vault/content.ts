@@ -345,10 +345,15 @@ export function readTable(body: string | null): {
  */
 const BLOCK_ID_LINE = /^\s*\^[A-Za-z0-9-]+\s*$/
 
-/** Block id lines in a body, written back after the table, a blank line before them. */
+/**
+ * Block id lines in a body, written back after the table, a blank line before each: two id lines
+ * with none between are one paragraph, whose id is only the second.
+ */
 function tableIds(body: string | null): string[] {
-  const ids = (body ?? '').split(/\r?\n/).filter((l) => BLOCK_ID_LINE.test(l))
-  return ids.length ? ['', ...ids] : []
+  return (body ?? '')
+    .split(/\r?\n/)
+    .filter((l) => BLOCK_ID_LINE.test(l))
+    .flatMap((l) => ['', l])
 }
 
 export interface DeviceRow {

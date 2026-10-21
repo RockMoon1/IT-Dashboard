@@ -23,13 +23,17 @@ import {
   devicesBlock,
   mergeLoops,
   vaultText,
-  DEFAULT_CONTENT_OPTIONS
+  DEFAULT_CONTENT_OPTIONS,
+  type ActionEntry
 } from '../src/main/services/vault/content.ts'
 import { setBlock } from '../src/main/services/vault/markers.ts'
+import { buildWritePlans, notePaths } from '../src/main/services/vault/plans.ts'
+import { VaultWriter } from '../src/main/services/vault/writer.ts'
 import type { IndexedNote } from '../src/main/services/lookup/vaultindex.ts'
 import { evaluateHealth } from '../src/main/services/scans/health.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
-import type { ScanRun } from '../src/shared/types.ts'
+import type { Measurement } from '../src/shared/actions.ts'
+import type { ComputerProfile, ScanRun, Settings } from '../src/shared/types.ts'
 import type { EnrolledDevice } from '../src/main/services/link/devices.ts'
 
 const SOURCE = join(import.meta.dirname, 'fixtures', 'vault', 'ARH IT')
@@ -165,7 +169,12 @@ test('computers merge enrollment, scans and Asset Inventory; different serials s
   try {
     const notes = await new VaultIndex().notes(vault)
     const roles = noteRoles(notes, DEFAULT_SETTINGS)
-    assert.ok(roles.assets && roles.openLoops && roles.workLog && roles.changeLog)
+    assert.ok(roles.assets && roles.openLoops && roles.workLog)
+    assert.deepEqual(
+      roles.changeLogs.map((n) => n.rel),
+      ['ARH Change Log.md'],
+      'the default Change Log note is the root one, read once'
+    )
     assert.equal(roles.tickets.length, 3)
     const rows = inventoryRows(roles.assets!)
     assert.deepEqual(
@@ -888,5 +897,112 @@ test('a serial or name the vault writes respaced or cut short is still one compu
       connected: () => false
     })
     assert.equal(p.changes.length, 1, `${what}: the Change Log row is found by the serial`)
+  }
+})
+
+function change(runId: string, at: string): ActionEntry {
+  const measured = (value: string): Measurement => ({
+    items: [{ item: 'Firewall Public', value }],
+    exitCode: 0
+  })
+  return {
+    record: {
+      runId,
+      kind: 'action',
+      mode: 'apply',
+      deviceId: device.id,
+      serial: device.serial,
+      hostname: device.hostname,
+      displayName: device.displayName,
+      os: 'windows',
+      link: 'cable',
+      action: 'windows-firewall-on',
+      version: 1,
+      title: 'Turn on firewall profiles that are off',
+      access: 'write',
+      reason: 'Fix: Firewall profile "Public" is disabled',
+      technician: 'Lisandro',
+      requestedAt: at,
+      startedAt: at,
+      appliedAt: at,
+      endedAt: at,
+      status: 'changed',
+      checks: [],
+      result: {
+        runId,
+        kind: 'action',
+        dryRun: false,
+        applied: true,
+        startedAt: at,
+        before: measured('off'),
+        apply: { items: null, exitCode: 0 },
+        after: measured('on')
+      }
+    }
+  }
+}
+
+test('the computer page reads the Change Log note the dashboard writes to, and the root one', async () => {
+  const { vault, done } = await copyVault()
+  const appData = await mkdtemp(join(tmpdir(), 'arh-lookup-appdata-'))
+  try {
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const write = async (settings: Settings, actions: ActionEntry[]): Promise<void> => {
+      const plans = await buildWritePlans({ settings, devices: [device], runs: [], actions })
+      const results = await writer.apply(plans)
+      assert.ok(
+        results.every((r) => !r.error),
+        JSON.stringify(results)
+      )
+    }
+    const page = async (settings: Settings): Promise<ComputerProfile> => {
+      const notes = await new VaultIndex().notes(vault)
+      const rows = inventoryRows(noteRoles(notes, settings).assets!)
+      return buildProfile({
+        target: { deviceId: device.id },
+        computers: buildComputers([device], [], rows),
+        notes,
+        settings,
+        connected: () => false
+      })
+    }
+    const changes = (p: ComputerProfile): string[][] =>
+      p.changes.map((c) => [c.file, c.cells['By'] ?? ''])
+    // by default the dashboard's rows go to the root ARH Change Log, under the technician's own
+    const root = { ...DEFAULT_SETTINGS, vaultPath: vault }
+    await write(root, [change('a_1', '2026-10-14T16:00:00.000Z')])
+    const before = await page(root)
+    assert.deepEqual(changes(before), [
+      ['ARH Change Log.md', 'L.P.'],
+      ['ARH Change Log.md', 'Lisandro · run a_1']
+    ])
+    // Settings › Change Log note set to a note of the technician's (the dashboard creates none),
+    // typed as notePaths reads it: trimmed, ".md" added
+    await mkdir(join(vault, 'Logs'))
+    await writeFile(join(vault, 'Logs', 'Device Changes.md'), '# Device changes\n')
+    const moved = { ...root, changeLogNote: ' Logs/Device Changes ' }
+    assert.equal(notePaths(moved).changeLog, join(vault, 'Logs', 'Device Changes.md'))
+    // its first write puts every change on record there, a_1 again
+    await write(moved, [
+      change('a_1', '2026-10-14T16:00:00.000Z'),
+      change('a_2', '2026-10-15T16:00:00.000Z')
+    ])
+    const p = await page(moved)
+    const logs = join('Logs', 'Device Changes.md')
+    assert.deepEqual(
+      changes(p),
+      [
+        [logs, 'Lisandro · run a_1'],
+        [logs, 'Lisandro · run a_2'],
+        ['ARH Change Log.md', 'L.P.']
+      ],
+      "the dashboard's note first, then the root note's rows it does not hold"
+    )
+    assert.equal(p.timeline.filter((e) => e.kind === 'change').length, 3)
+    // no Change Log note: the dashboard writes none, and the root note is still read
+    assert.deepEqual(changes(await page({ ...root, changeLogNote: '' })), changes(before))
+  } finally {
+    await done()
+    await rm(appData, { recursive: true, force: true })
   }
 })

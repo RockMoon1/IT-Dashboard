@@ -455,6 +455,68 @@ test('a block id the technician linked a table or list by stays after it on ever
   }
 })
 
+test('two block ids after a table, a blank line before each, stay two ids on every write', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-vault-ids-'))
+  const appData = await mkdtemp(join(tmpdir(), 'arh-appdata-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, schemaApproved: true }
+    const paths = notePaths(settings)
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const first = run('r_1', 'ok', [], '2026-10-14T14:05:00.000Z')
+    const write = async (runs: ScanRun[], actions: ActionEntry[]) => {
+      const results = await writer.apply(
+        await buildWritePlans({ settings, devices: [device], runs, actions })
+      )
+      assert.ok(
+        results.every((r) => !r.error),
+        JSON.stringify(results)
+      )
+      return results
+    }
+    await write([first], [change('a_1')])
+    // an id Obsidian made and one typed by hand: "^a1b2c3" is one block, "^table" another
+    const tables = [
+      [paths.changeLog!, BLOCK_KEYS.changes],
+      [paths.assets, BLOCK_KEYS.devices],
+      [paths.hub!, BLOCK_KEYS.health]
+    ] as const
+    const ids = ['', '^a1b2c3', '', '^table']
+    const lastRow = (lines: string[]): number =>
+      lines.map((l) => l.startsWith('|')).lastIndexOf(true)
+    for (const [note, key] of tables) {
+      const text = await readFile(note, 'utf8')
+      const body = findBlock(text, key)!.body
+      const lines = body.split(/\r?\n/)
+      lines.splice(lastRow(lines) + 1, 0, ...ids)
+      await writeFile(note, text.replace(body, lines.join(text.includes('\r\n') ? '\r\n' : '\n')))
+    }
+    // nothing new, then a new scan and change
+    const passes = [
+      [[first], [change('a_1')], false],
+      [
+        [run('r_2', 'ok', [], '2026-10-15T14:05:00.000Z'), first],
+        [change('a_1'), change('a_2')],
+        true
+      ]
+    ] as const
+    for (const [runs, actions, written] of passes) {
+      const results = await write([...runs], [...actions])
+      for (const [note, key] of tables) {
+        const where = `${note}, ${written ? 'something new' : 'nothing new'}`
+        assert.equal(results.find((r) => r.notePath === note)?.written, written, where)
+        const lines = findBlock(await readFile(note, 'utf8'), key)!.body.split(/\r?\n/)
+        const at = lastRow(lines) + 1
+        assert.deepEqual(lines.slice(at, at + ids.length), ids, where)
+      }
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+    await rm(appData, { recursive: true, force: true })
+  }
+})
+
 test('the fixture source itself is never modified', async () => {
   const files = await listFiles(SOURCE)
   assert.ok(
