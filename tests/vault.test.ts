@@ -16,6 +16,7 @@ import {
   parseTasks,
   parseDatedEntries,
   searchVault,
+  shownLines,
   parseDue
 } from '../src/main/services/vault/reader.ts'
 import {
@@ -275,6 +276,97 @@ test('searchVault finds lines with context and skips hidden folders', async () =
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('the search panel shows lines as the reader does: no comment, each at its own line', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'arh-search-'))
+  try {
+    await writeFile(
+      join(dir, 'Printers.md'),
+      [
+        '---',
+        'owner: IT # ARH-P01 is with Jane Roe',
+        '---',
+        '# Printers %% for Jane Roe %%',
+        'ARH-P01 jammed %% for patient Jane Roe, MRN 445566 %%',
+        '<!-- ARH-P01 Jane Roe MRN 445566 -->',
+        '%%',
+        'ARH-P01 was used by Jane Roe',
+        '%%',
+        'Toner for ARH-P01 <!-- MRN 445566 --> ordered',
+        'Called the vendor'
+      ].join('\r\n')
+    )
+    const hits = await searchVault(dir, 'ARH-P01')
+    assert.doesNotMatch(JSON.stringify(hits), /Jane|MRN|445566/)
+    assert.deepEqual(
+      hits.map((h) => [h.line, h.text, h.before, h.after]),
+      [
+        [5, 'ARH-P01 jammed ', ['# Printers '], ['']],
+        [10, 'Toner for ARH-P01  ordered', [''], ['Called the vendor']]
+      ]
+    )
+    // a word only in a comment is not found
+    assert.deepEqual(await searchVault(dir, 'Jane Roe'), [])
+    assert.deepEqual(await searchVault(dir, 'MRN \\d+', { regex: true }), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the Open Loops and Work Log tabs show the notes as the reader does: no comment', async () => {
+  const fixture = join(import.meta.dirname, 'fixtures', 'vault', 'ARH IT')
+  const read = async (name: string, edits: Array<[string, string]>): Promise<string> => {
+    let text = await readFile(join(fixture, name), 'utf8')
+    for (const [from, to] of edits) {
+      assert.ok(text.includes(from), from)
+      text = text.replace(from, to)
+    }
+    return text
+  }
+  // as the tabs read them (ipc.ts openLoops and workLog): the lines the reader shows
+  const loops = await read('ARH Open Loops.md', [
+    ['updated: 2026-10-13', 'updated: 2026-10-13 # Jane Roe'],
+    ['battery.**', 'battery.** %% for Jane Roe, MRN 445566 %%'],
+    ['switch ports.**', 'switch ports.** <!-- MRN 445566 -->'],
+    [
+      '## 🟠 This week',
+      '%%\n## Jane Roe\n- [ ] **Call Jane Roe back, MRN 445566**\n%%\n## 🟠 This week'
+    ]
+  ])
+  const tasks = parseTasks(shownLines(loops).join('\n'), 'ARH Open Loops.md', '2026-10-14')
+  assert.doesNotMatch(JSON.stringify(tasks), /Jane|MRN|445566/)
+  assert.equal(tasks.length, 7, 'a task in a comment is none')
+  for (const t of tasks) assert.ok(loops.split('\n')[t.line - 1]?.includes(t.text.slice(0, 20)))
+  assert.deepEqual(
+    tasks.filter((t) => /switch|battery/.test(t.text)).map((t) => [t.text, t.section]),
+    [
+      ['**Label the closet switch ports.**', '🟠 This week'],
+      [
+        '**ARH-T01 — order a replacement battery.**  → [[Ticket — ARH-T01 — battery — 2026-10-09]]',
+        '🟠 This week'
+      ]
+    ]
+  )
+
+  const work = await read('ARH Work Log.md', [
+    ['tags: [arh, worklog]', 'tags: [arh, worklog]\n# 2026-10-20 visit by Jane Roe, MRN 445566'],
+    ['capacity is low.', 'capacity is low. %% Jane Roe, MRN 445566 %%'],
+    ['- Status OK.', '- Status OK. <!-- Jane Roe called -->'],
+    ['## 2026-10-13', '%%\n## 2026-10-15 Jane Roe\n- MRN 445566\n%%\n\n## 2026-10-13']
+  ])
+  const entries = parseDatedEntries(shownLines(work).join('\n'), 'ARH Work Log.md')
+  assert.doesNotMatch(JSON.stringify(entries), /Jane|MRN|445566/)
+  assert.deepEqual(
+    entries.map((e) => e.date),
+    ['2026-10-14', '2026-10-13']
+  )
+  assert.deepEqual(entries[0]?.lines.slice(0, 4), [
+    '### 08:55 MT — Backup job checked',
+    '- Status OK. ',
+    '### 10:20 MT — ARH-T01 battery check',
+    '- Battery report run; capacity is low.  → [[Ticket — ARH-T01 — battery — 2026-10-09]]'
+  ])
 })
 
 function run(overrides: Partial<ScanRun> = {}): ScanRun {

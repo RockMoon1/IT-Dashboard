@@ -33,7 +33,7 @@ import type { IndexedNote } from '../src/main/services/lookup/vaultindex.ts'
 import { evaluateHealth } from '../src/main/services/scans/health.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
 import type { Measurement } from '../src/shared/actions.ts'
-import type { ComputerProfile, ScanRun, Settings } from '../src/shared/types.ts'
+import type { ComputerProfile, LookupTarget, ScanRun, Settings } from '../src/shared/types.ts'
 import type { EnrolledDevice } from '../src/main/services/link/devices.ts'
 
 const SOURCE = join(import.meta.dirname, 'fixtures', 'vault', 'ARH IT')
@@ -1146,5 +1146,158 @@ test('the Change Log note Settings names is found as the writer finds it, and on
       ],
       typed
     )
+  }
+})
+
+test('the computer page shows no comment: tickets, mentions, Change Log, Work Log, Open Loops, history', async () => {
+  const { vault, done } = await copyVault()
+  const appData = await mkdtemp(join(tmpdir(), 'arh-lookup-appdata-'))
+  try {
+    const edit = async (rel: string, from: string, to: string): Promise<void> => {
+      const text = await readFile(join(vault, rel), 'utf8')
+      assert.ok(text.includes(from), `${rel}: ${from}`)
+      await writeFile(join(vault, rel), text.replace(from, to))
+    }
+    // a patient's details in each kind of comment: %% %%, <!-- -->, a %% block over lines and a
+    // YAML comment after a property
+    const ticket = join('Tickets', 'Ticket — ARH-T01 — battery — 2026-10-09.md')
+    await edit(ticket, 'status: open', 'status: open # for patient Jane Roe, MRN 445566')
+    await edit(ticket, '# TKT-2026-901', '%%\n# Patient Jane Roe MRN 445566\n%%\n# TKT-2026-901')
+    await edit(
+      ticket,
+      '- [ ] Order the battery',
+      '- [ ] Order the battery <!-- Jane Roe -->\n%%\n- [ ] Call Jane Roe, MRN 445566\n%%'
+    )
+    // a ticket that names the computer only in a comment is not its ticket
+    await writeFile(
+      join(vault, 'Tickets', 'T-0009 Scanner.md'),
+      '# T-0009 Scanner\n\n%% ARH-T01 lent to Jane Roe %%\n'
+    )
+    const loaner = join('Reference', 'Loaner notes.md')
+    await writeFile(
+      join(vault, loaner),
+      [
+        '---',
+        'owner: IT # ARH-T01 is with Jane Roe, MRN 445566',
+        '---',
+        '# Loaner notes %% for Jane Roe %%',
+        '',
+        '- ARH-T01 is the loaner when a front desk laptop is out. %% Jane Roe has it, MRN 445566 %%',
+        '- Every computer gets a label.',
+        '<!-- ARH-T01 lent to Jane Roe, MRN 445566 -->',
+        '%%',
+        'ARH-T01 was in room 4 with Jane Roe',
+        '%%',
+        '- ARH-T01 charger <!-- MRN 445566 --> is in the closet.'
+      ].join('\n')
+    )
+    await edit(
+      'ARH Change Log.md',
+      '| Battery drain overnight |',
+      '| Battery drain overnight %% Jane Roe asked %% |'
+    )
+    await edit('ARH Work Log.md', 'capacity is low.', 'capacity is low. %% Jane Roe, MRN 445566 %%')
+    await edit(
+      'ARH Work Log.md',
+      '## 2026-10-13 (Tuesday)',
+      '<!-- ARH-T01 back from Jane Roe -->\n%%\n### 11:00 MT — ARH-T01 lent to Jane Roe\n- MRN 445566\n%%\n\n## 2026-10-13 (Tuesday)'
+    )
+    await edit(
+      'ARH Open Loops.md',
+      'order a replacement battery.**',
+      'order a replacement battery.** <!-- for Jane Roe, MRN 445566 -->'
+    )
+    await edit(
+      'ARH Open Loops.md',
+      '- [x] ~~**Reset',
+      '%%\n- [ ] **ARH-T01 — call Jane Roe back, MRN 445566**\n%%\n- [x] ~~**Reset'
+    )
+    await edit(
+      join('Assets', 'Asset Inventory.md'),
+      '| synthetic row |',
+      '| synthetic row %% Jane Roe %% |'
+    )
+    // the Change Log note Settings names: the dashboard's block, the technician's text around it
+    const logs = join('Logs', 'Device Changes.md')
+    await mkdir(join(vault, 'Logs'))
+    await writeFile(
+      join(vault, logs),
+      '# Device changes\n\nARH-T01 PSU swapped %% for Jane Roe, MRN 445566 %%\n\n%%\nARH-T01 was in room 4 with Jane Roe\n%%\n'
+    )
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, changeLogNote: 'Logs/Device Changes' }
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const plans = await buildWritePlans({
+      settings,
+      devices: [device],
+      runs: [],
+      actions: [change('a_1', '2026-10-14T16:00:00.000Z')]
+    })
+    const results = await writer.apply(plans)
+    assert.ok(
+      results.every((r) => !r.error),
+      JSON.stringify(results)
+    )
+
+    const notes = await new VaultIndex().notes(vault)
+    const rows = inventoryRows(noteRoles(notes, settings).assets!)
+    const computers = buildComputers([device], [], rows)
+    const page = (target: LookupTarget): ComputerProfile =>
+      buildProfile({ target, computers, notes, settings, connected: () => false })
+    const p = page({ deviceId: device.id })
+    assert.doesNotMatch(JSON.stringify(p), /Jane|MRN|445566/)
+
+    // what the reader shows around the comments still shows, at its own line
+    const raw = (file: string, line: number | undefined): string =>
+      notes.find((n) => n.rel === file)!.lines[(line ?? 0) - 1] ?? ''
+    const title = 'TKT-2026-901 — Dell Latitude 3510 (ARH-T01): battery will not hold a charge'
+    assert.deepEqual(
+      p.tickets.map((t) => [t.title, t.status, t.openTasks, t.doneTasks]),
+      [[title, 'open', 1, 1]]
+    )
+    assert.deepEqual(
+      [...p.mentions]
+        .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)
+        .map((m) => [m.file, m.title, m.line, m.text]),
+      [
+        [logs, 'Device changes', 3, 'ARH-T01 PSU swapped'],
+        [loaner, 'Loaner notes', 6, '- ARH-T01 is the loaner when a front desk laptop is out.'],
+        [loaner, 'Loaner notes', 12, '- ARH-T01 charger  is in the closet.']
+      ]
+    )
+    for (const m of p.mentions) assert.ok(raw(m.file, m.line).startsWith(m.text.slice(0, 15)))
+    const root = p.changes.find((c) => c.cells['By'] === 'L.P.')!
+    assert.equal(root.cells['Why'], 'Battery drain overnight')
+    assert.match(raw(root.file, root.line), /Disabled wake timers/)
+    assert.ok(p.changes.some((c) => c.file === logs && c.cells['By'] === 'Lisandro · run a_1'))
+    const battery = p.worklog.find((w) => w.lines[0]?.includes('10:20 MT'))!
+    assert.deepEqual(battery.lines, [
+      '### 10:20 MT — ARH-T01 battery check',
+      '- Battery report run; capacity is low.  → [[Ticket — ARH-T01 — battery — 2026-10-09]]'
+    ])
+    assert.equal(raw(battery.file, battery.line), '### 10:20 MT — ARH-T01 battery check')
+    assert.deepEqual(
+      p.loops.map((l) => [l.text, raw(l.file, l.line).includes('order a replacement battery')]),
+      [
+        [
+          '**ARH-T01 — order a replacement battery.**  → [[Ticket — ARH-T01 — battery — 2026-10-09]]',
+          true
+        ]
+      ]
+    )
+    assert.equal(p.inventory[0]?.cells['Notes'], 'synthetic row')
+    assert.ok(p.timeline.some((e) => e.kind === 'ticket' && e.title === title))
+    assert.ok(p.timeline.some((e) => e.title === '10:20 MT — ARH-T01 battery check'))
+
+    // a name or serial only in a comment is no match: not on a page, nor in the lookup's count
+    const jane = page({ term: 'Jane Roe' })
+    assert.deepEqual(
+      [jane.tickets, jane.mentions, jane.loops, jane.worklog, jane.changes, jane.inventory],
+      [[], [], [], [], [], []]
+    )
+    assert.equal(lookup('Jane Roe', [], notes).vaultNotes, 0)
+    assert.ok(lookup('ARH-T01', [], notes).vaultNotes > 0)
+  } finally {
+    await done()
+    await rm(appData, { recursive: true, force: true })
   }
 })

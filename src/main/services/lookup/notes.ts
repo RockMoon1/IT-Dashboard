@@ -52,23 +52,36 @@ function titleOf(note: IndexedNote, blocks: Block[]): string {
   return (h?.t === 'heading' && h.text) || note.name
 }
 
-// a note's links as the reader shows them, its lines as it reads them (comments hidden) and its
-// title, parsed once per version (the index replaces the object when the file changes)
-type Links = Pick<ParsedNote, 'linkLines' | 'lines'> & { title: string }
-const linkCache = new WeakMap<IndexedNote, Links>()
-function linksOf(note: IndexedNote): Links {
-  let links = linkCache.get(note)
-  if (!links) {
+/**
+ * A note as the reader shows it, for every screen that shows a note's text: its links, its lines
+ * (comments and YAML comments hidden, each line where it was), its title and its properties.
+ * Parsed once per version (the index replaces the object when the file changes). The index's
+ * own text, lines, title and frontmatter are as written, comments too.
+ */
+export type Shown = Pick<ParsedNote, 'linkLines' | 'lines'> & {
+  title: string
+  frontmatter: Record<string, string>
+}
+const shownCache = new WeakMap<IndexedNote, Shown>()
+export function shownOf(note: IndexedNote): Shown {
+  let shown = shownCache.get(note)
+  if (!shown) {
     try {
-      const { linkLines, lines, blocks } = parseMarkdown(note.text)
-      links = { linkLines, lines, title: titleOf(note, blocks) }
+      const { linkLines, lines, blocks, frontmatter } = parseMarkdown(note.text)
+      shown = {
+        linkLines,
+        lines,
+        title: titleOf(note, blocks),
+        frontmatter: Object.fromEntries(frontmatter)
+      }
     } catch {
-      // one note the parser cannot read must not stop the notes it mentions opening
-      links = { linkLines: [], lines: [], title: note.name }
+      // one note the parser cannot read must not stop the notes it mentions opening; none of
+      // its text shows
+      shown = { linkLines: [], lines: [], title: note.name, frontmatter: {} }
     }
-    linkCache.set(note, links)
+    shownCache.set(note, shown)
   }
-  return links
+  return shown
 }
 
 /**
@@ -88,7 +101,7 @@ export function backlinks(
   for (const other of notes) {
     if (other.abs === note.abs || !mentions.test(other.text)) continue
     const seen = new Set<number>()
-    const { linkLines, lines, title } = linksOf(other)
+    const { linkLines, lines, title } = shownOf(other)
     for (const { target, line } of linkLines) {
       if (out.length >= limit) break
       if (seen.has(line) || resolveLink(target, other, notes)?.abs !== note.abs) continue
@@ -111,7 +124,7 @@ export function noteView(note: IndexedNote, notes: IndexedNote[]): NoteView {
   const links: Record<string, NoteLinkTarget | null> = {}
   for (const target of parsed.links) {
     const hit = resolveLink(target, note, notes)
-    links[target] = hit ? { file: hit.rel, title: hit.title } : null
+    links[target] = hit ? { file: hit.rel, title: shownOf(hit).title } : null
   }
   return {
     file: note.rel,

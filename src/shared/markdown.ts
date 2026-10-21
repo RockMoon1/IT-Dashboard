@@ -19,7 +19,8 @@ export type Inline =
   | { t: 'link'; href: string; c: Inline[] }
   | { t: 'wiki'; target: string; heading?: string; alias?: string; embed: boolean }
   | { t: 'tag'; v: string }
-  | { t: 'br' }
+  /** A line break: `html` for a <br>, which is no line of the note. */
+  | { t: 'br'; html?: true }
 
 export interface ListItem {
   line: number
@@ -962,7 +963,7 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
       continue
     }
     if (ch === '<' && /^<br\s*\/?>/i.test(rest)) {
-      out.push({ t: 'br' })
+      out.push({ t: 'br', html: true })
       i += /^<br\s*\/?>/i.exec(rest)?.[0].length ?? 4
       continue
     }
@@ -1569,12 +1570,16 @@ function stripBlockId(s: string): string {
   return s.replace(/\s\^[A-Za-z0-9-]+\s*$/, '')
 }
 
-/** Wikilinks in order with their line: a paragraph's line breaks move it down one line each. */
+/**
+ * Wikilinks in order with their line: a paragraph's line breaks move it down one line each, those
+ * in a code span too; a <br> is none.
+ */
 function collectLinks(blocks: Block[], out: Array<{ target: string; line: number }>): void {
   const inl = (c: Inline[], line: number): number => {
     for (const x of c) {
       if (x.t === 'wiki' && x.target) out.push({ target: x.target, line })
-      else if (x.t === 'br') line++
+      else if (x.t === 'br') line += x.html ? 0 : 1
+      else if (x.t === 'code') line += x.v.split('\n').length - 1
       else if (
         x.t === 'strong' ||
         x.t === 'em' ||

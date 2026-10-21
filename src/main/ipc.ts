@@ -71,7 +71,7 @@ import { loadSettings, mergeSettings, saveSettings } from './services/settings.t
 import { BLOCK_KEYS, type ActionEntry } from './services/vault/content.ts'
 import { findBlock } from './services/vault/markers.ts'
 import { buildWritePlans, notePaths } from './services/vault/plans.ts'
-import { parseDatedEntries, parseTasks, searchVault } from './services/vault/reader.ts'
+import { parseDatedEntries, parseTasks, searchVault, shownLines } from './services/vault/reader.ts'
 import { VaultWriter } from './services/vault/writer.ts'
 import { VaultIndex, type IndexedNote } from './services/lookup/vaultindex.ts'
 import { noteView } from './services/lookup/notes.ts'
@@ -759,7 +759,11 @@ export class AppContext {
     try {
       this.vaultReadable()
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
-      const tasks = parseTasks(text, await this.indexedFile('openLoops', path))
+      // as the reader shows the note: a comment is no task and shows in none
+      const tasks = parseTasks(
+        shownLines(text).join('\n'),
+        await this.indexedFile('openLoops', path)
+      )
       return {
         source: path,
         tasks,
@@ -785,7 +789,7 @@ export class AppContext {
       this.vaultReadable()
       const text = await (await import('node:fs/promises')).readFile(path, 'utf8')
       const file = await this.indexedFile('workLog', path)
-      const entries = parseDatedEntries(text, file).slice(0, limit)
+      const entries = parseDatedEntries(shownLines(text).join('\n'), file).slice(0, limit)
       return { source: path, entries }
     } catch (err) {
       return { source: path, entries: [], error: (err as Error).message }

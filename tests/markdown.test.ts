@@ -1182,6 +1182,43 @@ test("a YAML comment less indented than a block scalar's text ends it, and a key
   assert.equal(p.lines[32], 'body')
 })
 
+test("a link's line counts the note's line breaks: not a <br>, and those in a code span", () => {
+  const md = [
+    '| Date | Note |',
+    '|---|---|',
+    '| 10-14 | Fixed<br>see [[T-0001 Printer]] |',
+    '| 10-15 | Called the vendor about the scanner |',
+    '',
+    '| a<br/>b [[T-0002]] | c |',
+    '|---|---|',
+    '',
+    'Paged<BR>then [[T-0003]]',
+    '```',
+    'net stop spooler',
+    '```',
+    '',
+    'Ran `net stop',
+    'spooler` then [[T-0004]]',
+    'and **`a',
+    'b` [[T-0005]]**'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  // the line a backlink shows and the viewer jumps to holds the link
+  assert.deepEqual(
+    p.linkLines.map((l) => [l.target, l.line, p.lines[l.line - 1]]),
+    [
+      ['T-0001 Printer', 3, md.split('\n')[2]],
+      ['T-0002', 6, md.split('\n')[5]],
+      ['T-0003', 9, md.split('\n')[8]],
+      ['T-0004', 15, md.split('\n')[14]],
+      ['T-0005', 17, md.split('\n')[16]]
+    ]
+  )
+  // a <br> still breaks the line where it is drawn
+  const para = p.blocks.find((b) => b.t === 'para' && b.line === 9)
+  assert.ok(para?.t === 'para' && para.c.some((x) => x.t === 'br'))
+})
+
 test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at its end', () => {
   const heads = (md: string): Array<[number, string]> =>
     parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))
@@ -1640,19 +1677,25 @@ test('ordinary notes read as they did before the parser was made linear (cb9d5bb
     const old = (await import(
       pathToFileURL(join(dir, 'markdown.ts')).href
     )) as typeof import('../src/shared/markdown.ts')
+    // a <br> is now marked as one, and a link's line no longer counts it (checked below)
+    const plain = (x: object): unknown =>
+      JSON.parse(JSON.stringify(x, (k, v: unknown) => (k === 'html' ? undefined : v)))
     const rand = random(7)
     for (let k = 0; k < 10_000; k++) {
       const md = ordinaryNote(rand)
       const now = parseMarkdown(md)
       const was = old.parseMarkdown(md)
+      const targets = (p: typeof now): string[] => p.linkLines.map((l) => l.target)
       // a table row now holds only its own cells (the viewer draws the rest empty)
       assert.deepEqual(
-        { ...now, blocks: padded(now.blocks), lines: [] },
-        { ...was, lines: [] },
+        plain({ ...now, blocks: padded(now.blocks), lines: [], linkLines: targets(now) }),
+        plain({ ...was, lines: [], linkLines: targets(was) }),
         `reads differently:\n${md}`
       )
-      // and a backlink's line is the line as written
+      // and a backlink's line is the line as written, the one its link is on
       assert.deepEqual(now.lines, md.split('\n'))
+      for (const { target, line } of now.linkLines)
+        assert.ok(now.lines[line - 1]?.includes(target), `${target} not on line ${line}:\n${md}`)
     }
   } finally {
     await rm(dir, { recursive: true, force: true })

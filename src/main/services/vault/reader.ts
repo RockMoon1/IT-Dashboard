@@ -1,8 +1,18 @@
 import type { Dirent } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import { parseMarkdown } from '../../../shared/markdown.ts'
 
 /** Read-only parsing of vault notes: tasks with due dates, dated log entries, search. */
+
+/**
+ * A note's lines as the dashboard's reader shows them, for a screen to read: comments and YAML
+ * comments hidden (a line wholly in one is blank), each line where it was. The writer reads a
+ * note as written.
+ */
+export function shownLines(text: string): string[] {
+  return parseMarkdown(text).lines
+}
 
 export interface VaultTask {
   file: string
@@ -181,15 +191,18 @@ export async function searchVault(
   const context = opts.context ?? 1
   const hits: SearchHit[] = []
   for await (const file of walkMarkdown(vaultPath)) {
-    let text: string
+    let lines: string[]
     try {
       const s = await stat(file)
       if (s.size > 4 * 1024 * 1024) continue
-      text = await readFile(file, 'utf8')
+      const text = await readFile(file, 'utf8')
+      // lines as the reader shows them, so no comment is found or shown (only a note with a
+      // match as written is parsed)
+      if (!text.split(/\r?\n/).some((l) => re.test(l))) continue
+      lines = shownLines(text)
     } catch {
       continue
     }
-    const lines = text.split(/\r?\n/)
     for (let i = 0; i < lines.length && hits.length < limit; i++) {
       if (re.test(lines[i] ?? '')) {
         hits.push({

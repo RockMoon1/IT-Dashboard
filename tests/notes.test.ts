@@ -195,6 +195,44 @@ test("a note's title in the viewer and its backlinks is the heading the reader s
   }
 })
 
+test('the viewer shows no comment: a linked note is named by the heading the reader shows', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    await writeFile(
+      join(vault, 'Tickets', 'T-0009 Printer.md'),
+      [
+        '---',
+        'status: open # for Jane Roe, MRN 445566',
+        '---',
+        '%%',
+        '# Patient Jane Roe MRN 445566',
+        '%%',
+        '# T-0009 Printer jam %% Jane Roe %%',
+        'ARH-P01 jammed. <!-- MRN 445566 -->'
+      ].join('\n')
+    )
+    await writeFile(join(vault, 'Visit.md'), '# Visit\n\nFixed [[T-0009 Printer]]\n')
+    const notes = await new VaultIndex().notes(vault)
+    const byName = (n: string) => notes.find((x) => x.name === n)!
+    const visit = noteView(byName('Visit'), notes)
+    assert.deepEqual(visit.links['T-0009 Printer'], {
+      file: join('Tickets', 'T-0009 Printer.md'),
+      title: 'T-0009 Printer jam'
+    })
+    const ticket = noteView(byName('T-0009 Printer'), notes)
+    for (const view of [visit, ticket]) assert.doesNotMatch(JSON.stringify(view), /Jane|MRN|445566/)
+    assert.deepEqual(ticket.frontmatter, [['status', 'open']])
+    assert.deepEqual(
+      ticket.backlinks.map((b) => [b.title, b.line, b.text]),
+      [['Visit', 3, 'Fixed [[T-0009 Printer]]']]
+    )
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
 test('relative links (./, ../ and <…>) resolve from the linking note', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
   try {

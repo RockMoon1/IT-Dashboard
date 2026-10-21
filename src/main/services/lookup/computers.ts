@@ -35,6 +35,7 @@ import {
 } from '../vault/content.ts'
 import { notePaths } from '../vault/plans.ts'
 import { parseDatedEntries, parseTasks } from '../vault/reader.ts'
+import { shownOf } from './notes.ts'
 import type { IndexedNote } from './vaultindex.ts'
 
 /**
@@ -81,14 +82,15 @@ const isSeparator = (cells: string[]): boolean =>
   cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c))
 
 /**
- * Every table row in a note, with its header and 1-based line number. A cell in one of the
- * dashboard's own blocks is read back as the value it was given, its vault escaping undone.
+ * Every table row in a note as the reader shows it (comments hidden), with its header and 1-based
+ * line number. A cell in one of the dashboard's own blocks is read back as the value it was
+ * given, its vault escaping undone.
  */
 export function tableRows(note: IndexedNote): Array<VaultRow & { header: string[] }> {
   const out: Array<VaultRow & { header: string[] }> = []
   const own = dashboardLines(note)
   let header: string[] | null = null
-  note.lines.forEach((line, i) => {
+  shownOf(note).lines.forEach((line, i) => {
     if (!line.trim().startsWith('|')) {
       header = null
       return
@@ -116,7 +118,7 @@ export function inventoryRows(note: IndexedNote): VaultRow[] {
 
 /**
  * Lines inside the dashboard's own marker blocks (or only the block `key`), so its output is not
- * read back as a note.
+ * read back as a note. Its markers are comments, so the note is read as written.
  */
 function dashboardLines(note: IndexedNote, key = '[A-Z0-9_-]+'): Set<number> {
   const start = new RegExp(`<!--\\s*DASH:${key}:START\\s*-->`)
@@ -377,8 +379,9 @@ export function noteRoles(notes: IndexedNote[], settings: RoleSettings): NoteRol
 }
 
 export function ticketOf(note: IndexedNote): VaultTicket {
-  const fm = note.frontmatter
-  const tasks = parseTasks(note.text, note.rel)
+  // as the reader shows it: a comment or a property's YAML comment may hold a patient's details
+  const { frontmatter: fm, lines, title } = shownOf(note)
+  const tasks = parseTasks(lines.join('\n'), note.rel)
   const status = fm['status'] || undefined
   const date =
     (fm['date'] || fm['opened'] || '').match(/\d{4}-\d{2}-\d{2}/)?.[0] ??
@@ -386,7 +389,7 @@ export function ticketOf(note: IndexedNote): VaultTicket {
   return {
     file: note.rel,
     id: fm['id'] || undefined,
-    title: note.title,
+    title,
     date,
     status,
     priority: fm['priority'] || fm['severity'] || undefined,
@@ -658,20 +661,23 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
         SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity)
     )
 
-  // vault
+  // vault, each note as the reader shows it: a name or serial only in a comment is no match
+  // (only a note that has one as written is parsed)
+  const names = (n: IndexedNote): boolean =>
+    match.test(n.text) && shownOf(n).lines.some((l) => match.test(l))
   const inventory = computer
     ? computer.inventory
     : roles.assets
       ? inventoryRows(roles.assets).filter((r) => Object.values(r.cells).some((v) => match.test(v)))
       : []
   const tickets = roles.tickets
-    .filter((n) => match.test(n.text))
+    .filter(names)
     .map(ticketOf)
     .sort(
       (a, b) => Number(a.closed) - Number(b.closed) || (b.date ?? '').localeCompare(a.date ?? '')
     )
   const loops: ProfileLoop[] = roles.openLoops
-    ? parseTasks(roles.openLoops.text, roles.openLoops.rel)
+    ? parseTasks(shownOf(roles.openLoops).lines.join('\n'), roles.openLoops.rel)
         .filter((t) => match.test(t.raw))
         .map((t) => ({
           file: t.file,
@@ -687,17 +693,18 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   const tz = DEFAULT_CONTENT_OPTIONS.timeZone
   // where in the Work Log a part starts, so the note viewer can jump to it
   const wl = roles.workLog
+  const wlLines = wl ? shownOf(wl).lines : []
   const lineOf = (heading: string, first: string | undefined): number | undefined => {
     if (!wl) return undefined
-    const day = wl.lines.findIndex(
+    const day = wlLines.findIndex(
       (l) => /^#{1,6}\s+/.test(l) && l.replace(/^#{1,6}\s+/, '').trim() === heading.trim()
     )
     if (day === -1) return undefined
-    const at = first === undefined ? -1 : wl.lines.findIndex((l, k) => k > day && l === first)
+    const at = first === undefined ? -1 : wlLines.findIndex((l, k) => k > day && l === first)
     return (at === -1 ? day : at) + 1
   }
   const worklogParts = wl
-    ? parseDatedEntries(wl.text, wl.rel).flatMap((e) => {
+    ? parseDatedEntries(wlLines.join('\n'), wl.rel).flatMap((e) => {
         const parts = match.test(e.heading) ? [{ lines: e.lines }] : matchingParts(e.lines, match)
         return parts.map((p) => ({
           file: wl.rel,
@@ -753,11 +760,13 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   ]
   const mentions: VaultMention[] = []
   for (const n of input.notes) {
-    if (special.has(n.abs)) continue
+    if (mentions.length >= 80) break
+    if (special.has(n.abs) || !match.test(n.text)) continue
     const skip = dashboardLines(n)
-    n.lines.forEach((text, i) => {
+    const { lines, title } = shownOf(n)
+    lines.forEach((text, i) => {
       if (mentions.length >= 80 || skip.has(i + 1) || !match.test(text)) return
-      mentions.push({ file: n.rel, title: n.title, line: i + 1, text: text.trim().slice(0, 300) })
+      mentions.push({ file: n.rel, title, line: i + 1, text: text.trim().slice(0, 300) })
     })
   }
 
@@ -847,9 +856,12 @@ export function lookup(
   notes: IndexedNote[]
 ): Omit<LookupResult, 'tookMs'> {
   const re = termRegex(query)
+  // notes that show it, as the reader does: not only in a comment
+  const shows = (n: IndexedNote): boolean =>
+    !!re && re.test(n.text) && shownOf(n).lines.some((l) => re.test(l))
   return {
     query,
     computers: rankComputers(query, summaries).slice(0, 20),
-    vaultNotes: re ? notes.filter((n) => re.test(n.text)).length : 0
+    vaultNotes: notes.filter(shows).length
   }
 }

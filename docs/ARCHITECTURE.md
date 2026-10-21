@@ -102,6 +102,7 @@ reads as a paragraph. The main process (`lookup/notes.ts`) reads only notes the 
 knows, resolves each `[[link]]` the way Obsidian does (exact path, else file name; same folder
 first, then the shortest path) and lists backlinks, each shown as the reader shows its line, with
 its comments hidden.
+Every screen hides comments as the reader does (`notes.ts` `shownOf`, `reader.ts` `shownLines`).
 Opening Obsidian itself is a separate, explicit action.
 
 ## Actions (Phase 3)

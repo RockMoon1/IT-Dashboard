@@ -8,6 +8,10 @@ import { basename, join, relative, sep } from 'node:path'
  * changed; refreshes closer together than `maxAgeMs` reuse the last result.
  */
 
+/**
+ * A note as written: its text, lines, frontmatter and title keep its comments. What a screen
+ * shows of it comes from notes.ts shownOf, as the reader shows it.
+ */
 export interface IndexedNote {
   /** Path relative to the vault folder, with the platform's separator. */
   rel: string
@@ -19,7 +23,7 @@ export interface IndexedNote {
   text: string
   lines: string[]
   frontmatter: Record<string, string>
-  /** First "# " heading, else the file name. */
+  /** First line that starts with "# " (also in a comment), else the file name. */
   title: string
   mtimeMs: number
   size: number
