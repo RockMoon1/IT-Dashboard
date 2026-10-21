@@ -138,10 +138,15 @@ is not known yet because the cable was pulled, or that was applied but could not
 `· run <id> · result pending` and gets a second row, `Result of run …` ending `· result <id>`,
 when the device reports, whatever the run ended as (changed, not applied, done, failed…). The
 dashboard finds its own rows by that ending only, never by text elsewhere in a row, so a reason
-or a device value that names a run cannot add or block a row. A padded or realigned header row
-(table plugins) is still recognised. Previews, things already set, and refused requests never
-reach the vault. Every value that came from a device is cleaned first: no line breaks of any kind, and the
-characters Markdown, HTML and Obsidian give a meaning to are escaped.
+or a device value that names a run cannot add or block a row. The id in that ending is always
+one the dashboard made: a result a device reports under any other id (one with no request on
+record) is kept under an id made from the device and what it sent (`d_` and 16 hex digits). A
+padded or realigned header row (table plugins) is still recognised. Previews, things already
+set, and refused requests never reach the vault. Every value that came from a device is cleaned
+first: no line breaks of any kind, and the characters Markdown, HTML and Obsidian give a meaning
+to are escaped. Both logs list as changed only items measured before and after, so a Work Log
+entry for a run that was already set, blocked or could not measure lists none. A time no date
+reads (only in a record an older build kept) is written as `time unknown`.
 
 `ARH IT Hub.md` (CRLF kept):
 

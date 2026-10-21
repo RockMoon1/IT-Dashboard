@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { mkdir, open, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { ActionRecord } from '../../../shared/actions.ts'
 
@@ -42,8 +42,10 @@ export class ActionLog {
   private file: string
   private last = GENESIS
   private loaded = false
-  /** The file ends in a line cut short (power lost mid-write): start the next one on its own line. */
+  /** The file may end in a line cut short (power lost, a failed write): start the next on its own. */
   private torn = false
+  /** Runs whose result line is in the file: synced there by append(), or found there by load(). */
+  private resultsOnDisk = new Set<string>()
   private queue: Promise<void> = Promise.resolve()
   private records = new Map<string, ActionRecord>()
   private order: string[] = []
@@ -63,6 +65,7 @@ export class ActionLog {
           this.last = l.hash
           if (!this.records.has(l.record.runId)) this.order.push(l.record.runId)
           this.records.set(l.record.runId, l.record)
+          if (l.event === 'result' && l.record.result) this.resultsOnDisk.add(l.record.runId)
         } catch {
           /* verify() reports it */
         }
@@ -73,7 +76,7 @@ export class ActionLog {
     this.loaded = true
   }
 
-  /** Appends one line; lines are written in call order. */
+  /** Appends one line; lines are written in call order, each synced to the disk before it resolves. */
   append(
     event: ActionLogLine['event'],
     record: ActionRecord,
@@ -92,9 +95,21 @@ export class ActionLog {
       }
       const line: ActionLogLine = { ...body, hash: digest(body) }
       await mkdir(dirname(this.file), { recursive: true })
-      await appendFile(this.file, `${this.torn ? '\n' : ''}${JSON.stringify(line)}\n`, 'utf8')
+      try {
+        const fh = await open(this.file, 'a')
+        try {
+          await fh.appendFile(`${this.torn ? '\n' : ''}${JSON.stringify(line)}\n`, 'utf8')
+          await fh.datasync() // the agent drops a result once it is acknowledged
+        } finally {
+          await fh.close()
+        }
+      } catch (err) {
+        this.torn = true // part of the line may be in the file (a full disk)
+        throw err
+      }
       this.torn = false
       this.last = line.hash
+      if (event === 'result' && body.record.result) this.resultsOnDisk.add(record.runId)
     })
     this.queue = write.catch(() => undefined)
     return write
@@ -110,6 +125,11 @@ export class ActionLog {
 
   get(runId: string): ActionRecord | undefined {
     return this.records.get(runId)
+  }
+
+  /** Whether a result line of this run is on disk (get() also holds one still being written). */
+  resultOnDisk(runId: string): boolean {
+    return this.resultsOnDisk.has(runId)
   }
 
   /** Checks the chain; returns the 1-based line numbers that do not follow from the one before. */

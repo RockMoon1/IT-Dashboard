@@ -93,8 +93,14 @@ export function zoned(d: Date, timeZone: string): { date: string; time: string }
   }
 }
 
+/** Written for a time no date reads: a device's, kept unchecked by an older build. */
+const NO_TIME = 'time unknown'
+const isTime = (d: Date): boolean => Number.isFinite(d.getTime())
+
 export function stamp(iso: string, opts: ContentOptions): string {
-  const z = zoned(new Date(iso), opts.timeZone)
+  const d = new Date(iso)
+  if (!isTime(d)) return NO_TIME
+  const z = zoned(d, opts.timeZone)
   return `${z.date} ${z.time} ${opts.tzLabel}`
 }
 
@@ -632,7 +638,7 @@ function movedParts(r: ActionRecord): string[] {
   const after = new Set((r.result?.after?.items ?? []).map((i) => i.item))
   const before = new Set((r.result?.before?.items ?? []).map((i) => i.item))
   const moved = changedItems(r.result?.before, r.result?.after)
-    .filter((c) => r.status !== 'not-verified' || (before.has(c.item) && after.has(c.item)))
+    .filter((c) => before.has(c.item) && after.has(c.item))
     .map((c) => `${c.item}: ${c.before} → ${c.after}`)
   return [...moved, ...(r.result?.apply?.changes ?? [])]
 }
@@ -691,8 +697,12 @@ function rollback(e: ActionEntry): string {
 /** "2026-10-20 14:05"; in the repeated hour when daylight saving time ends, "01:30 MDT". */
 export function changeStamp(iso: string, opts: ContentOptions): string {
   const d = new Date(iso)
+  if (!isTime(d)) return NO_TIME
   const z = zoned(d, opts.timeZone)
-  const near = [-3_600_000, 3_600_000].map((ms) => zoned(new Date(d.getTime() + ms), opts.timeZone))
+  const near = [-3_600_000, 3_600_000]
+    .map((ms) => new Date(d.getTime() + ms))
+    .filter(isTime) // the last time a date can hold has no hour after it
+    .map((n) => zoned(n, opts.timeZone))
   const twice = near.some((n) => n.date === z.date && n.time === z.time)
   if (!twice) return `${z.date} ${z.time}`
   const abbr =
@@ -797,7 +807,7 @@ export function actionLogEntry(e: ActionEntry, opts: ContentOptions, late = fals
   const what =
     r.kind === 'exec'
       ? `Custom command (sha256 ${(r.scriptSha256 ?? '').slice(0, 12)}, ${r.scriptLines ?? '?'} line(s))`
-      : `Action: ${cell(r.title)} (${r.action} v${r.version})`
+      : `Action: ${cell(r.title)} (${cell(r.action ?? '')} v${r.version})`
   const status =
     r.status === 'unknown'
       ? 'outcome unknown: the result has not come back yet; it is added when the device reports'

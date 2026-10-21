@@ -62,6 +62,10 @@ function newRunId(prefix: 'a' | 'p' | 'x', now: Date): string {
   return `${prefix}_${now.getTime().toString(36)}_${randomBytes(3).toString('hex')}`
 }
 
+/** The form of every id newRunId makes. */
+const RUN_ID = /^[apx]_[0-9a-z]{1,12}_[0-9a-f]{6}$/
+const SHA256 = /^[0-9a-f]{64}$/
+
 /** The agent refuses a reason over 500 or a name over 100 UTF-8 bytes; say so before sending. */
 function checkWho(reason: string, technician: string): void {
   if (Buffer.byteLength(reason, 'utf8') > MAX_REASON)
@@ -564,40 +568,56 @@ export class ActionRunner extends EventEmitter {
    * restarted), or one this dashboard has no request on record for, which is recorded as such
    * rather than dropped. Acknowledged only once it is on disk.
    */
-  private lateResult(deviceId: string, runId: string, raw: unknown): void {
-    if (!runId || !raw || typeof raw !== 'object') return
-    const ack = (): void => void this.deps.send(deviceId, { type: 'ack', runId })
-    const known = this.live.get(runId) ?? this.deps.log.get(runId)
-    if (known && known.deviceId === deviceId && known.result && known.endedAt) {
-      if (known.status !== 'unknown') return ack() // already recorded
+  private lateResult(deviceId: string, wireId: string, raw: unknown): void {
+    if (!wireId || !raw || typeof raw !== 'object') return
+    const ack = (): void => void this.deps.send(deviceId, { type: 'ack', runId: wireId })
+    const runId = this.recordId(deviceId, wireId)
+    const known = this.get(runId)
+    // already recorded; one whose result line is not on disk yet (or failed) is written again
+    if (known?.result && known.endedAt && known.status !== 'unknown') {
+      if (this.deps.log.resultOnDisk(runId)) return ack()
     }
     let rec: ActionRecord | undefined
-    if (known && known.deviceId === deviceId) rec = this.live.get(runId) ? known : structuredClone(known)
-    else rec = this.orphan(deviceId, runId, raw, !!known)
+    if (known) rec = this.live.get(runId) ? known : structuredClone(known)
+    else rec = this.orphan(deviceId, wireId, runId, raw)
     if (!rec) return
-    this.settle(rec, raw, '', runId)
+    this.settle(rec, raw, '', wireId)
     void this.end(rec, rec.status).then(ack, () => undefined)
   }
 
   /**
-   * A record for a result the dashboard never asked for, as far as its own log says. When the id
-   * is another device's run (a re-enrolled device, or a device reporting someone else's run), the
-   * record gets an id of its own, so it can never replace or end that run.
+   * The id a reported run is kept under, never one of another device's records. The device's own
+   * only when this dashboard could have made it: the vault finds a run's rows by the id at their
+   * end, so any other text could claim another run's rows or break the note. Another device's
+   * run (a re-enrolled device, or one reporting someone else's run) gets a suffix; any other id
+   * is replaced by one made from the device and what it sent, the same each time it is sent.
    */
+  private recordId(deviceId: string, wireId: string): string {
+    const free = (id: string): boolean => (this.get(id)?.deviceId ?? deviceId) === deviceId
+    if (RUN_ID.test(wireId)) {
+      if (free(wireId)) return wireId
+      if (free(`${wireId}~${deviceId.slice(0, 8)}`)) return `${wireId}~${deviceId.slice(0, 8)}`
+    }
+    const hash = createHash('sha256').update(`${deviceId}\n${wireId}`).digest('hex')
+    return `d_${hash.slice(0, 16)}`
+  }
+
+  /** A record for a result the dashboard never asked for, as far as its own log says. */
   private orphan(
     deviceId: string,
+    wireId: string,
     runId: string,
-    raw: unknown,
-    taken: boolean
+    raw: unknown
   ): ActionRecord | undefined {
-    const result = cleanResult(raw, runId)
+    const result = cleanResult(raw, wireId)
     if (!result) return undefined
-    if (taken) result.runId = `${runId}~${deviceId.slice(0, 8)}`
     const device = this.deps.device?.(deviceId)
     const def = result.action ? this.deps.catalog.get(result.action) : undefined
     const caps = this.deps.capabilities(deviceId)
+    const exec = result.kind === 'exec'
     return {
-      runId: result.runId,
+      runId,
+      ...(RUN_ID.test(wireId) ? {} : { deviceRunId: wireId.slice(0, 100) }),
       kind: result.kind,
       mode: result.dryRun ? 'preview' : 'apply',
       deviceId,
@@ -614,7 +634,10 @@ export class ActionRunner extends EventEmitter {
       checks: [],
       ...(result.action ? { action: result.action } : {}),
       ...(result.version !== undefined ? { version: result.version } : {}),
-      ...(result.sha256 ? { sha256: result.sha256 } : {}),
+      ...(result.sha256 && !exec ? { sha256: result.sha256 } : {}),
+      // a custom command's hash and size are the script's
+      ...(exec && SHA256.test(result.sha256 ?? '') ? { scriptSha256: result.sha256 } : {}),
+      ...(exec && result.lines !== undefined ? { scriptLines: result.lines } : {}),
       ...(result.access ? { access: result.access } : {}),
       ...(def ? { impact: def.impact } : {}),
       ...(result.params ? { params: result.params } : {}),

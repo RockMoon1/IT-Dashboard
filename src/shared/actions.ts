@@ -254,6 +254,11 @@ const MAX_LIST = 64
 function text(v: unknown, max = MAX_TEXT): string | undefined {
   return typeof v === 'string' ? v.slice(0, max) : undefined
 }
+/** A time, only when it reads as one: the vault cannot show a time that does not. */
+function time(v: unknown): string | undefined {
+  const t = text(v, 64)
+  return t && Number.isFinite(Date.parse(t)) ? t : undefined
+}
 function int(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isInteger(v) ? v : undefined
 }
@@ -328,7 +333,7 @@ export function cleanResult(raw: unknown, runId: string): AgentResult | null {
     kind,
     dryRun: r['dryRun'] === true,
     applied: r['applied'] === true,
-    startedAt: text(r['startedAt'], 64) ?? ''
+    startedAt: time(r['startedAt']) ?? ''
   }
   const opt = {
     action: text(r['action'], 100),
@@ -344,8 +349,8 @@ export function cleanResult(raw: unknown, runId: string): AgentResult | null {
     error: text(r['error']),
     exitCode: int(r['exitCode']),
     lines: int(r['lines']),
-    appliedAt: text(r['appliedAt'], 64),
-    endedAt: text(r['endedAt'], 64)
+    appliedAt: time(r['appliedAt']),
+    endedAt: time(r['endedAt'])
   }
   for (const [k, x] of Object.entries(opt)) if (x !== undefined) Object.assign(out, { [k]: x })
   return out
@@ -401,6 +406,8 @@ export interface FixContext {
 /** The dashboard's record of one action or custom command (also one line of its action log). */
 export interface ActionRecord {
   runId: string
+  /** The id the device sent, when it is not one this dashboard makes (never written to the vault). */
+  deviceRunId?: string
   kind: 'action' | 'exec'
   mode: ActionMode
   deviceId: string

@@ -1,6 +1,17 @@
-import { test } from 'node:test'
+import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+  rmdir,
+  writeFile,
+  type FileHandle
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -1019,18 +1030,19 @@ test('runner: a result is never acknowledged when it could not be written', asyn
 test('runner: a result with no request on record is kept as such, not dropped', async () => {
   const h = await harness()
   try {
+    const id = 'a_mgzz0000_0a0b0c' // the form of an id this dashboard makes
     h.runner.handleMessage(device.id, {
       type: 'result',
-      runId: 'a_nobody',
-      result: result({ runId: 'a_nobody', access: 'execute', action: 'windows-dns-flush' })
+      runId: id,
+      result: result({ runId: id, access: 'execute', action: 'windows-dns-flush' })
     })
     await h.runner.flush()
     await new Promise((res) => setImmediate(res))
-    const rec = h.runner.get('a_nobody')
+    const rec = h.runner.get(id)
     assert.equal(rec?.status, 'done')
     assert.equal(rec?.title, h.c.get('windows-dns-flush')?.title)
     assert.match(rec?.reason ?? '', /no request for this run is on record/)
-    assert.ok(h.sent.some((x) => x.type === 'ack' && x['runId'] === 'a_nobody'))
+    assert.ok(h.sent.some((x) => x.type === 'ack' && x['runId'] === id))
   } finally {
     await h.done()
   }
@@ -1139,5 +1151,371 @@ test('action log: a line cut short by a power cut does not swallow the next reco
     assert.deepEqual((await three.verify()).broken, [2], 'only the torn fragment is flagged')
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/* ---------- regressions from the second Phase 3 review ---------- */
+
+const acks = (sent: LinkMessage[]): unknown[] =>
+  sent.filter((x) => x.type === 'ack').map((x) => x['runId'])
+
+test("runner: a device's run id and action cannot forge a marker, a block, a link or another run's rows", async () => {
+  const h = await harness()
+  try {
+    const opts = DEFAULT_CONTENT_OPTIONS
+    const real = 'a_mgzz0001_abc123'
+    const fence =
+      'z1\n<!-- DASH:SCAN-LOG:END -->\n<!-- DASH:CHANGES:END -->\n```dataviewjs\nalert(1)\n```'
+    const wire = [fence, `n · run ${real}`, `n · result ${real}`]
+    const sentBy = (runId: string): AgentResult =>
+      result({ runId, action: 'x) `$1+1$` [[Secret]] <b>' })
+    const orphans: ActionEntry[] = []
+    for (const runId of wire) {
+      const seen = new Set(h.runner.list().map((r) => r.runId))
+      h.runner.handleMessage(device.id, { type: 'result', runId, result: sentBy(runId) })
+      const rec = h.runner.list().find((r) => !seen.has(r.runId))!
+      assert.match(rec.runId, /^d_[0-9a-f]{16}$/, 'kept under an id the dashboard made')
+      assert.equal(rec.deviceRunId, runId, 'what the device sent stays in the action log')
+      orphans.push({ record: rec })
+    }
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    assert.deepEqual(acks(h.sent), wire, 'acknowledged by the id the device sent')
+    // the same result sent again is the same record, acknowledged again
+    h.runner.handleMessage(device.id, { type: 'result', runId: fence, result: sentBy(fence) })
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    assert.equal(h.runner.list().length, 3)
+    assert.equal(acks(h.sent).length, 4)
+    // and after the dashboard restarts
+    const log2 = new ActionLog(join(h.dir, 'actions.jsonl'))
+    await log2.load()
+    const sent2: LinkMessage[] = []
+    const fresh = new ActionRunner({
+      catalog: h.c,
+      log: log2,
+      slots: new DeviceSlots(),
+      send: (_d, msg) => (sent2.push(msg), true),
+      capabilities: () => h.caps(),
+      settings: () => ({ ...DEFAULT_SETTINGS, technician: 'Lisandro' })
+    })
+    fresh.handleMessage(device.id, { type: 'result', runId: fence, result: sentBy(fence) })
+    assert.deepEqual(acks(sent2), [fence])
+    assert.equal(fresh.list().length, 3)
+    fresh.stop()
+
+    // the real run comes later: its row, and its result row, are still added
+    const lost = entry({ runId: real, status: 'unknown', result: undefined, endedAt: undefined })
+    const settled = entry({ runId: real })
+    const c1 = mergeChanges(null, orphans, opts)
+    assert.equal(c1.added, 3)
+    const c2 = mergeChanges(c1.body, [...orphans, lost], opts)
+    assert.equal(c2.added, 1, "an orphan's row is not taken for the real run's")
+    const c3 = mergeChanges(c2.body, [...orphans, settled], opts)
+    assert.equal(c3.added, 1, "an orphan's row is not taken for the real run's result row")
+    const l1 = mergeLog(null, [], opts, orphans)
+    const l2 = mergeLog(l1.body, [], opts, [...orphans, lost])
+    assert.equal(l2.added, 1)
+    const l3 = mergeLog(l2.body, [], opts, [...orphans, settled])
+    assert.equal(l3.added, 1)
+    for (const [key, body] of [
+      ['CHANGES', c3.body],
+      ['SCAN-LOG', l3.body]
+    ] as const) {
+      const note = setBlock('# Note\n', key, body).text
+      assert.doesNotThrow(() => findBlock(note, key), 'still exactly one marker pair')
+      const lines = note.split('\n')
+      assert.equal(lines.filter((l) => l.includes('DASH:')).length, 2, note)
+      assert.ok(!lines.some((l) => l.trimStart().startsWith('```')), `no code block in ${note}`)
+      const bare = body.replace(/\\./g, '')
+      assert.ok(!bare.includes('[[Secret') && !bare.includes('`'), `no link or code in ${body}`)
+    }
+  } finally {
+    await h.done()
+  }
+})
+
+test('runner: a result whose write failed is written when the device sends it again, then acknowledged', async () => {
+  const h = await harness({ previewFirst: false })
+  try {
+    const file = join(h.dir, 'actions.jsonl')
+    const r = h.runner.run(device, {
+      deviceId: device.id,
+      action: 'windows-dns-flush',
+      params: {},
+      reason: 'stale names'
+    })
+    h.runner.handleMessage(device.id, { type: 'run-start', runId: r.runId })
+    await h.runner.flush()
+    const sent = result({ runId: r.runId, access: 'execute', action: 'windows-dns-flush' })
+    const settle = async (): Promise<void> => {
+      await h.runner.flush()
+      await new Promise((res) => setImmediate(res))
+    }
+    // the disk refuses the result line (full, or held by an antivirus scan)
+    await rename(file, `${file}.keep`)
+    await mkdir(file)
+    h.runner.handleMessage(device.id, { type: 'run-end', runId: r.runId, ok: true, result: sent })
+    await settle()
+    assert.deepEqual(acks(h.sent), [], 'not written, so not acknowledged')
+    h.runner.handleMessage(device.id, { type: 'result', runId: r.runId, result: sent })
+    await settle()
+    assert.deepEqual(acks(h.sent), [], 'sent again while the disk still refuses: still not')
+    // the disk is back: the next replay is written first, then acknowledged
+    await rmdir(file)
+    await rename(`${file}.keep`, file)
+    h.runner.handleMessage(device.id, { type: 'result', runId: r.runId, result: sent })
+    assert.deepEqual(acks(h.sent), [], 'not before its line is written')
+    await settle()
+    assert.deepEqual(acks(h.sent), [r.runId])
+    const after = new ActionLog(file)
+    await after.load()
+    assert.equal(after.get(r.runId)?.status, 'done')
+    assert.ok(after.get(r.runId)?.result, 'the result is on disk')
+    // after a restart, a result already on disk is acknowledged at once, with no new line
+    const lines = (await readFile(file, 'utf8')).split('\n').filter(Boolean).length
+    const sent2: LinkMessage[] = []
+    const fresh = new ActionRunner({
+      catalog: h.c,
+      log: after,
+      slots: new DeviceSlots(),
+      send: (_d, msg) => (sent2.push(msg), true),
+      capabilities: () => h.caps(),
+      settings: () => ({ ...DEFAULT_SETTINGS, technician: 'Lisandro' })
+    })
+    fresh.handleMessage(device.id, { type: 'result', runId: r.runId, result: sent })
+    assert.deepEqual(acks(sent2), [r.runId])
+    await fresh.flush()
+    assert.equal((await readFile(file, 'utf8')).split('\n').filter(Boolean).length, lines)
+    fresh.stop()
+  } finally {
+    await h.done()
+  }
+})
+
+test('runner: a result sent again while its first line is still being written waits for a line on disk', async () => {
+  const h = await harness({ previewFirst: false })
+  try {
+    const r = h.runner.run(device, {
+      deviceId: device.id,
+      action: 'windows-dns-flush',
+      params: {},
+      reason: 'stale names'
+    })
+    h.runner.handleMessage(device.id, { type: 'run-start', runId: r.runId })
+    await h.runner.flush()
+    const sent = result({ runId: r.runId, access: 'execute', action: 'windows-dns-flush' })
+    h.runner.handleMessage(device.id, { type: 'run-end', runId: r.runId, ok: true, result: sent })
+    h.runner.handleMessage(device.id, { type: 'result', runId: r.runId, result: sent })
+    assert.deepEqual(acks(h.sent), [], 'nothing is on disk yet')
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    assert.deepEqual(acks(h.sent), [r.runId, r.runId])
+  } finally {
+    await h.done()
+  }
+})
+
+test('runner: a device time that does not parse is dropped and can never stop a vault write', async () => {
+  const bad = cleanResult(
+    {
+      runId: 'a',
+      kind: 'action',
+      startedAt: 'yesterday',
+      appliedAt: 'not a time',
+      endedAt: '2026-13-45'
+    },
+    'a'
+  )!
+  assert.equal(bad.startedAt, '')
+  assert.equal(bad.appliedAt, undefined)
+  assert.equal(bad.endedAt, undefined)
+  const good = cleanResult(result({ appliedAt: '2026-10-20T20:05:00Z' }), 'a_1')!
+  assert.equal(good.startedAt, '2026-10-20T20:05:00Z')
+  assert.equal(good.appliedAt, '2026-10-20T20:05:00Z')
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const h = await harness()
+  try {
+    const id = 'a_mgzz0002_0a0b0c'
+    h.runner.handleMessage(device.id, {
+      type: 'result',
+      runId: id,
+      result: result({ runId: id, startedAt: 'yesterday', appliedAt: 'not a time' })
+    })
+    const rec = h.runner.get(id)!
+    assert.equal(rec.requestedAt, '2026-10-20T20:00:00.000Z', "the dashboard's clock instead")
+    assert.equal(rec.appliedAt, undefined)
+    assert.match(mergeChanges(null, [{ record: rec }], opts).body, /\| 2026-10-20 14:00 \|/)
+    assert.match(mergeLog(null, [], opts, [{ record: rec }]).body, /- 2026-10-20 14:00 MT · /)
+  } finally {
+    await h.done()
+  }
+  // a record an older build kept with such times still lets every other row be written
+  const old = entry({
+    runId: 'a_old',
+    requestedAt: 'yesterday',
+    startedAt: undefined,
+    appliedAt: 'not a time'
+  })
+  const changes = mergeChanges(null, [old, entry()], opts)
+  assert.equal(changes.added, 2)
+  assert.match(changes.body, /\| time unknown \| .* run a_old \|/)
+  const log = mergeLog(null, [], opts, [old, entry()])
+  assert.equal(log.added, 2)
+  assert.match(log.body, /- time unknown · .* run a_old$/m)
+  // the last time a date can hold reads as one, but has no hour after it
+  const edge = entry({ runId: 'a_edge', appliedAt: '+275760-09-13T00:00:00.000Z' })
+  assert.equal(
+    cleanResult(result({ appliedAt: edge.record.appliedAt }), 'a_1')?.appliedAt,
+    edge.record.appliedAt
+  )
+  assert.equal(mergeChanges(null, [edge], opts).added, 1)
+  assert.equal(mergeLog(null, [], opts, [edge]).added, 1)
+})
+
+test('action log: a write that failed part way does not glue the next record onto its fragment', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'arh-torn-'))
+  try {
+    const file = join(dir, 'actions.jsonl')
+    const log = new ActionLog(file)
+    await log.load()
+    await log.append('request', entry({ runId: 'a_1' }).record)
+    // the write fails (here the path is briefly a folder) ...
+    await rename(file, `${file}.keep`)
+    await mkdir(file)
+    await assert.rejects(log.append('result', entry({ runId: 'a_2' }).record))
+    await rmdir(file)
+    await rename(`${file}.keep`, file)
+    // ... after part of its line reached the file, as on a full disk
+    await appendFile(file, '{"ts":"2026-10-20T20:05:00Z","event":"res')
+    await log.append('result', entry({ runId: 'a_3' }).record)
+    const again = new ActionLog(file)
+    await again.load()
+    assert.ok(again.get('a_3'), 'the record after the failed write is kept')
+    assert.deepEqual((await again.verify()).broken, [2], 'only the fragment is flagged')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('runner: a result is acknowledged only after its line is synced to the disk', async () => {
+  const h = await harness({ previewFirst: false })
+  const probe = await open(join(h.dir, 'probe'), 'w')
+  const proto = Object.getPrototypeOf(probe) as FileHandle
+  await probe.close()
+  const order: string[] = []
+  const original = proto.datasync
+  const sync = mock.method(proto, 'datasync', function (this: FileHandle) {
+    order.push(acks(h.sent).length ? 'sync after the ack' : 'sync')
+    return original.call(this)
+  })
+  try {
+    const r = h.runner.run(device, {
+      deviceId: device.id,
+      action: 'windows-dns-flush',
+      params: {},
+      reason: 'stale names'
+    })
+    await h.runner.flush()
+    order.length = 0
+    h.runner.handleMessage(device.id, {
+      type: 'run-end',
+      runId: r.runId,
+      ok: true,
+      result: result({ runId: r.runId, access: 'execute', action: 'windows-dns-flush' })
+    })
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    assert.deepEqual(acks(h.sent), [r.runId])
+    assert.deepEqual(order, ['sync'], 'the result line was synced, before the ack')
+  } finally {
+    sync.mock.restore()
+    await h.done()
+  }
+})
+
+test('runner: a custom command with no request on record keeps the script hash and size it reported', async () => {
+  const h = await harness()
+  try {
+    const exec = (runId: string, sha256: string): AgentResult => ({
+      runId,
+      kind: 'exec',
+      dryRun: false,
+      applied: true,
+      exitCode: 0,
+      sha256,
+      lines: 4,
+      startedAt: '2026-10-20T20:05:00Z',
+      appliedAt: '2026-10-20T20:05:00Z'
+    })
+    const id = 'x_mgzz0003_0c0d0e'
+    h.runner.handleMessage(device.id, {
+      type: 'result',
+      runId: id,
+      result: exec(id, 'c'.repeat(64))
+    })
+    const rec = h.runner.get(id)!
+    assert.equal(rec.scriptSha256, 'c'.repeat(64))
+    assert.equal(rec.scriptLines, 4)
+    assert.equal(rec.sha256, undefined, "the action file's hash field is not the script's")
+    assert.match(whatChanged({ record: rec }), /sha256 cccccccccccc, 4 line\(s\), exit 0$/)
+    assert.match(
+      actionLogEntry({ record: rec }, DEFAULT_CONTENT_OPTIONS)[0]!,
+      /Custom command \(sha256 cccccccccccc, 4 line\(s\)\)/
+    )
+    const id2 = 'x_mgzz0004_0c0d0f'
+    h.runner.handleMessage(device.id, {
+      type: 'result',
+      runId: id2,
+      result: exec(id2, 'not a hash')
+    })
+    assert.equal(h.runner.get(id2)?.scriptSha256, undefined, 'only a SHA-256 is taken as one')
+  } finally {
+    await h.done()
+  }
+})
+
+test('vault: a real run that was skipped (already set, blocked, measure failed) lists no item as changed', () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const skipped = { applied: false, apply: undefined, after: undefined }
+  const set = entry({
+    status: 'already-set',
+    result: result({
+      ...skipped,
+      before: m(
+        [
+          ['Firewall Domain', 'on'],
+          ['Firewall Private', 'on'],
+          ['Firewall Public', 'on']
+        ],
+        { change: false }
+      )
+    })
+  })
+  const blocked = entry({
+    status: 'blocked',
+    result: result({
+      ...skipped,
+      before: m([['Service x.service', 'inactive']], { change: true, blockers: ['masked'] })
+    })
+  })
+  const failed = entry({
+    status: 'failed',
+    result: result({
+      ...skipped,
+      before: m([['Service x.service', 'inactive']], { exitCode: 1 })
+    })
+  })
+  assert.equal(actionStatus(set.record.result), 'already-set')
+  assert.equal(actionStatus(blocked.record.result), 'blocked')
+  assert.equal(actionStatus(failed.record.result), 'failed')
+  for (const [e, label] of [
+    [set, 'already set'],
+    [blocked, 'blocked'],
+    [failed, 'failed']
+  ] as const) {
+    const head = actionLogEntry(e, opts)[0]!
+    assert.ok(!head.includes('(not measured)'), head)
+    assert.match(head, new RegExp(` · ${label} · why: `))
   }
 })
