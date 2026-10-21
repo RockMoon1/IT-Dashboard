@@ -28,7 +28,9 @@ import {
   readTable,
   zoned,
   DEFAULT_CONTENT_OPTIONS,
-  countOpenLoops
+  countOpenLoops,
+  unescapeVaultText,
+  vaultText
 } from '../src/main/services/vault/content.ts'
 import type { ScanRun } from '../src/shared/types.ts'
 
@@ -620,4 +622,22 @@ test('content: a computer whose serial and name hold escaped characters keeps on
     const older = first.replaceAll('\\~', '~')
     assert.equal(readTable(devicesBlock(older, rows, DEFAULT_CONTENT_OPTIONS)).rows.length, 1)
   }
+})
+
+test('content: what vaultText escapes is undone exactly, for every character it escapes', () => {
+  const printable = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i))
+  // the set the round trip below covers ("%" is escaped as a pair, the comment mark "%%")
+  assert.equal(
+    printable.filter((c) => vaultText(`a${c}${c}b`) !== `a${c}${c}b`).join(''),
+    '#$%<>[\\]^`|~'
+  )
+  // every character next to every other, both ways round
+  for (const a of printable)
+    for (const b of printable) {
+      const t = `x${a}${b}${a}y`
+      assert.equal(unescapeVaultText(vaultText(t)), t, t)
+    }
+  // a value that already looks escaped comes back as it was, not unescaped a second time
+  for (const t of ['\\~', '\\\\', '\\%\\%', '%%%', '\\%%', 'a\\|b|c'])
+    assert.equal(unescapeVaultText(vaultText(t)), t, t)
 })

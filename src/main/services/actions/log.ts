@@ -126,7 +126,8 @@ export class ActionLog {
   /**
    * After a write that failed, reads the end of the file: when the whole line got there (with or
    * without its newline) the next line chains on from it, as load() would after a restart, and
-   * starts on a new line unless the file already ends with one. Unreadable: assume a torn line.
+   * starts on a new line unless the file already ends with one. Unreadable, or not a plain file
+   * (Windows opens a folder and calls it empty): assume a torn line.
    */
   private async afterFailedWrite(json: string, hash: string): Promise<void> {
     this.torn = true
@@ -134,7 +135,9 @@ export class ActionLog {
       const fh = await open(this.file, 'r')
       try {
         const line = Buffer.from(`${json}\n`, 'utf8')
-        const { size } = await fh.stat()
+        const stat = await fh.stat()
+        if (!stat.isFile()) return
+        const { size } = stat
         const n = Math.min(size, line.length)
         const tail = Buffer.alloc(n)
         if (n) await fh.read(tail, 0, n, size - n)

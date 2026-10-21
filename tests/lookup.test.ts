@@ -20,9 +20,13 @@ import {
 import { seriesBreach } from '../src/shared/types.ts'
 import {
   currentRuns,
+  devicesBlock,
   mergeLoops,
+  vaultText,
   DEFAULT_CONTENT_OPTIONS
 } from '../src/main/services/vault/content.ts'
+import { setBlock } from '../src/main/services/vault/markers.ts'
+import type { IndexedNote } from '../src/main/services/lookup/vaultindex.ts'
 import { evaluateHealth } from '../src/main/services/scans/health.ts'
 import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
 import type { ScanRun } from '../src/shared/types.ts'
@@ -754,5 +758,84 @@ test('trend "past the limit" uses exactly the comparison each health check uses'
         `${c.key} = ${v}: the trend card and the health check must agree`
       )
     }
+  }
+})
+
+test('a serial or name holding a character the vault escapes is one computer, as the device sent it', () => {
+  const note = (rel: string, text: string): IndexedNote => {
+    const name = rel.replace(/^.*\//, '').replace(/\.md$/, '')
+    const folder = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : ''
+    const lines = text.split('\n')
+    return {
+      rel,
+      abs: `/vault/${rel}`,
+      name,
+      folder,
+      text,
+      lines,
+      frontmatter: {},
+      title: name,
+      mtimeMs: 0,
+      size: text.length
+    }
+  }
+  for (const serial of [
+    'MXL~2041X7',
+    'MXL#2041',
+    'MXL$2041',
+    'MXL^2041',
+    'MXL[2041]',
+    'MXL|2041',
+    'MXL\\2041',
+    'MXL%%2041',
+    'MXL`2041`',
+    'MXL<2041>'
+  ]) {
+    const pc: EnrolledDevice = { ...device, serial, hostname: `PC-${serial}` }
+    const assets = note(
+      DEFAULT_SETTINGS.assetNote,
+      setBlock(
+        '# Asset Inventory\n',
+        'DEVICES',
+        devicesBlock(null, [{ device: pc, facts: {} }], DEFAULT_CONTENT_OPTIONS)
+      ).text
+    )
+    const rows = inventoryRows(assets)
+    assert.deepEqual(
+      [rows[0]?.cells['Serial'], rows[0]?.cells['Name']],
+      [serial, pc.hostname],
+      'read back as written'
+    )
+    const computers = buildComputers([pc], [], rows)
+    assert.equal(
+      computers.length,
+      1,
+      `${serial}: the device and its inventory row are one computer`
+    )
+    assert.equal(computers[0]!.inventory.length, 1)
+    // the Change Log is the dashboard's table too: a row naming only the serial is found by it
+    const changeLog = note(
+      'ARH Change Log.md',
+      setBlock(
+        '# ARH Change Log\n',
+        'CHANGES',
+        [
+          '| Timestamp (MT) | System / machine | What changed | Why | Reversible? | Rollback | By |',
+          '| --- | --- | --- | --- | --- | --- | --- |',
+          `| 2026-10-20 14:05 | ${vaultText(serial)} | Firewall on | fix | Yes | n/a | Lisandro · run a_1 |`
+        ].join('\n')
+      ).text
+    )
+    const p = buildProfile({
+      target: { deviceId: pc.id },
+      computers,
+      notes: [assets, changeLog],
+      settings: DEFAULT_SETTINGS,
+      connected: () => false
+    })
+    assert.deepEqual(
+      p.changes.map((c) => c.cells['System / machine']),
+      [serial]
+    )
   }
 })

@@ -28,6 +28,7 @@ import {
   latestPerProfile,
   findingShape,
   splitRow,
+  unescapeVaultText,
   zoned
 } from '../vault/content.ts'
 import { parseDatedEntries, parseTasks } from '../vault/reader.ts'
@@ -76,16 +77,20 @@ export const isBlank = (s: string | undefined): boolean =>
 const isSeparator = (cells: string[]): boolean =>
   cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c))
 
-/** Every table row in a note, with its header and 1-based line number. */
+/**
+ * Every table row in a note, with its header and 1-based line number. A cell in one of the
+ * dashboard's own blocks is read back as the value it was given, its vault escaping undone.
+ */
 export function tableRows(note: IndexedNote): Array<VaultRow & { header: string[] }> {
   const out: Array<VaultRow & { header: string[] }> = []
+  const own = dashboardLines(note)
   let header: string[] | null = null
   note.lines.forEach((line, i) => {
     if (!line.trim().startsWith('|')) {
       header = null
       return
     }
-    const cells = splitRow(line)
+    const cells = own.has(i + 1) ? splitRow(line).map(unescapeVaultText) : splitRow(line)
     if (!header) {
       header = cells
       return

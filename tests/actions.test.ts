@@ -1376,6 +1376,16 @@ test('runner: a device time that does not parse is dropped and can never stop a 
 
 test('action log: a write that failed part way does not glue the next record onto its fragment', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'arh-torn-'))
+  const probe = await open(join(dir, 'probe'), 'w')
+  const proto = Object.getPrototypeOf(probe) as FileHandle
+  await probe.close()
+  // Windows opens a folder and reports its size as 0, where Linux reports a size and then
+  // refuses to read it: report it as Windows does, so the test is the same where CI runs it
+  const stat = proto.stat
+  const statMock = mock.method(proto, 'stat', async function (this: FileHandle) {
+    const s = await stat.call(this)
+    return s.isDirectory() ? Object.assign(s, { size: 0 }) : s
+  })
   try {
     const file = join(dir, 'actions.jsonl')
     const log = new ActionLog(file)
@@ -1395,6 +1405,7 @@ test('action log: a write that failed part way does not glue the next record ont
     assert.ok(again.get('a_3'), 'the record after the failed write is kept')
     assert.deepEqual((await again.verify()).broken, [2], 'only the fragment is flagged')
   } finally {
+    statMock.mock.restore()
     await rm(dir, { recursive: true, force: true })
   }
 })

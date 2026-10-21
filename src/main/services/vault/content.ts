@@ -129,6 +129,15 @@ export function vaultText(text: string, max = 240): string {
   return t.replace(/[\\`~<>[\]|$#^]/g, (c) => `\\${c}`).replace(/%%/g, '\\%\\%')
 }
 
+/**
+ * The exact inverse of vaultText's escaping, for reading back what the dashboard wrote: a serial
+ * such as "MXL~2041" is then compared as itself. Line breaks made spaces and the length cap are
+ * not reversed.
+ */
+export function unescapeVaultText(text: string): string {
+  return text.replace(/\\([\\`~<>[\]|$#^%])/g, '$1')
+}
+
 function cell(text: string): string {
   return vaultText(text, 400)
 }
