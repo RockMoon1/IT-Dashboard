@@ -128,11 +128,16 @@ Rules enforced by the agent, not the host:
   (next section), with their own rules.
 - Output per check is capped at 1 MiB (then `truncated: true`); per-check timeout from the
   profile (default 90 s); the whole run is aborted on `abort` or if the socket closes.
+- Output is read as fast as the check writes it, whatever the speed of the link: a slow link
+  delays `check-end` but drops nothing under the cap.
 - A check (or action script, or custom command) whose shell exits while a process it started in
   the background still holds its output (`nohup … &` without redirecting it) keeps the shell's
-  exit status, after a 2 s wait, with `truncated: true`: what that process writes later is not
-  collected. On Linux and macOS that process is left running (a timeout or abort ends the whole
-  process group, but only while the shell runs); on Windows the Job Object ends it with the check.
+  exit status, whatever it is. Its output is read for 2 s more and then cut, with
+  `truncated: true`: what that process writes later is not collected. On Linux and macOS that
+  process is left running (a timeout or abort ends the whole process group, but only while the
+  shell runs), though a write to the cut output then ends it unless it ignores SIGPIPE; on Linux
+  systemd also ends it when the agent's service stops or restarts. On Windows the Job Object ends
+  it with the check.
 
 ## Actions and custom commands (protocol 2)
 

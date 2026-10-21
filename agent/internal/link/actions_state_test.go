@@ -16,6 +16,7 @@ import (
 	"github.com/RockMoon1/IT-Dashboard/actions"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/protocol"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/service"
+	"github.com/RockMoon1/IT-Dashboard/profiles"
 )
 
 // shAction builds a test action with its own name, flags, parameter and scripts.
@@ -367,5 +368,42 @@ func TestCustomCommandLeavingAProcessRunningKeepsItsExitStatus(t *testing.T) {
 	}
 	if r, _ := h.agent.journal.find("x7"); r.ExitCode == nil || *r.ExitCode != 0 || r.Aborted {
 		t.Fatalf("x7 in the outbox: %+v", r)
+	}
+}
+
+// A scan check goes through the same executor: one whose shell leaves a process in the
+// background holding its output keeps the shell's exit status, at any status, with the output
+// marked truncated, and no error is added to its output.
+func TestScanCheckLeavingAProcessRunningKeepsItsExitStatus(t *testing.T) {
+	h := newHarness(t, true)
+	check := func(id string, code string) profiles.Check {
+		return profiles.Check{ID: id, Title: id, Category: "Test", Shell: "sh", Format: "text", TimeoutSeconds: 10, Access: "read", Optional: true,
+			Command: []string{"sleep 3 &", "echo started", "exit " + code}}
+	}
+	p := profiles.Profile{Name: "linux-test-scan", Version: 1, OS: "linux", Checks: []profiles.Check{check("ok", "0"), check("four", "4")}}
+	ends := map[string]protocol.Message{}
+	var stderr strings.Builder
+	var runEnd protocol.Message
+	codec := protocol.NewCodec(onWrite(func(m protocol.Message) {
+		switch m.Type {
+		case "check-end":
+			ends[m.CheckID] = m
+		case "check-output":
+			if m.Stream == "stderr" {
+				stderr.WriteString(m.Data)
+			}
+		case "run-end":
+			runEnd = m
+		}
+	}))
+	h.agent.execute(h.ctx, codec, "r9", p)
+	for id, code := range map[string]int{"ok": 0, "four": 4} {
+		e := ends[id]
+		if e.ExitCode == nil || *e.ExitCode != code || e.TimedOut || !e.Truncated {
+			t.Fatalf("%s: %+v", id, e)
+		}
+	}
+	if stderr.Len() != 0 || runEnd.OK == nil || !*runEnd.OK {
+		t.Fatalf("stderr %q, run-end %+v", stderr.String(), runEnd)
 	}
 }

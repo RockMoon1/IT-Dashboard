@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RockMoon1/IT-Dashboard/profiles"
 )
@@ -143,28 +145,105 @@ func TestRunTimeoutKillsGrandchildren(t *testing.T) {
 	}
 }
 
-// A shell that exits 0 while a process it started in the background still holds its output
-// keeps that exit status, also when its timeout passes while the output is waited for. Output
-// after the shell ended is not collected, and the process is left running (a technician may
-// start a daemon on purpose).
+// A shell that exits while a process it started in the background still holds its output keeps
+// its exit status, whatever it is, also when its timeout passes while the output is waited for.
+// The output is cut 2 s after the shell ended, with truncated set at any exit status, and the
+// process is left running (a technician may start a daemon on purpose).
 func TestRunBackgroundChildKeepsTheExitStatus(t *testing.T) {
-	for _, timeout := range []int{10, 1} {
-		pidFile := filepath.Join(t.TempDir(), "pid")
+	for _, code := range []int{0, 4} {
+		for _, timeout := range []int{10, 1} {
+			pidFile := filepath.Join(t.TempDir(), "pid")
+			out, so, _ := collect()
+			res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: timeout, Command: []string{
+				"sleep 30 &", "echo $! > '" + pidFile + "'", "echo started", "exit " + strconv.Itoa(code)}}, out)
+			b, _ := os.ReadFile(pidFile)
+			pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+			if err != nil {
+				t.Fatalf("exit %d, timeout %d: no pid: %v", code, timeout, err)
+			}
+			alive := syscall.Kill(pid, 0) == nil
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			if !res.Started || res.ExitCode != code || res.TimedOut || res.Err != nil || !res.Truncated || so.String() != "started\n" {
+				t.Fatalf("exit %d, timeout %d: %+v stdout %q", code, timeout, res, so.String())
+			}
+			if res.Duration < waitDelay || res.Duration > waitDelay+3*time.Second {
+				t.Fatalf("exit %d, timeout %d: output waited for %v, want about %v", code, timeout, res.Duration, waitDelay)
+			}
+			if !alive {
+				t.Fatalf("exit %d, timeout %d: the background process was killed", code, timeout)
+			}
+		}
+	}
+}
+
+// A process left in the background that ends within the 2 s after the shell has its output
+// collected in full, and nothing is marked truncated.
+func TestRunBackgroundChildThatEndsSoonIsCollected(t *testing.T) {
+	for _, code := range []int{0, 4} {
 		out, so, _ := collect()
-		res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: timeout, Command: []string{
-			"sleep 30 &", "echo $! > '" + pidFile + "'", "echo started", "exit 0"}}, out)
-		b, _ := os.ReadFile(pidFile)
-		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil {
-			t.Fatalf("timeout %d: no pid: %v", timeout, err)
+		res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: 10, Command: []string{
+			"(sleep 1; echo late) &", "echo early", "exit " + strconv.Itoa(code)}}, out)
+		if res.ExitCode != code || res.TimedOut || res.Err != nil || res.Truncated || so.String() != "early\nlate\n" {
+			t.Fatalf("exit %d: %+v stdout %q", code, res, so.String())
 		}
-		alive := syscall.Kill(pid, 0) == nil
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		if !res.Started || res.ExitCode != 0 || res.TimedOut || res.Err != nil || !res.Truncated || so.String() != "started\n" {
-			t.Fatalf("timeout %d: %+v stdout %q", timeout, res, so.String())
+	}
+}
+
+// slowOutput collects stdout like collect, but its first call blocks for block, as a congested
+// link to the dashboard does. Every chunk is kept to check its size and encoding.
+func slowOutput(block time.Duration) (Output, func() ([][]byte, string)) {
+	var mu sync.Mutex
+	var chunks [][]byte
+	var all strings.Builder
+	first := true
+	return func(stream string, chunk []byte) {
+			mu.Lock()
+			wait := first
+			first = false
+			mu.Unlock()
+			if wait {
+				time.Sleep(block)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if stream == "stdout" {
+				chunks = append(chunks, append([]byte(nil), chunk...))
+				all.Write(chunk)
+			}
+		}, func() ([][]byte, string) {
+			mu.Lock()
+			defer mu.Unlock()
+			return chunks, all.String()
 		}
-		if !alive {
-			t.Fatalf("timeout %d: the background process was killed", timeout)
+}
+
+// Output the shell wrote before it exited is forwarded in full when the consumer is slow (a
+// congested link): a slow consumer is not a process holding the output, so nothing is cut and
+// nothing is marked truncated.
+func TestRunSlowConsumerGetsAllTheOutput(t *testing.T) {
+	out, got := slowOutput(waitDelay + time.Second)
+	res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: 20, Command: []string{
+		"echo start", "sleep 0.2", `head -c 12000 /dev/zero | tr '\0' a`, "exit 0"}}, out)
+	_, stdout := got()
+	want := "start\n" + strings.Repeat("a", 12000)
+	if res.ExitCode != 0 || res.TimedOut || res.Err != nil || res.Truncated || stdout != want {
+		t.Fatalf("%+v: got %d of %d bytes", res, len(stdout), len(want))
+	}
+}
+
+// Output that piles up behind a slow consumer is forwarded in chunks of at most maxChunk bytes
+// (each well inside one protocol line), never splitting a UTF-8 sequence.
+func TestRunForwardsBoundedWholeRuneChunks(t *testing.T) {
+	out, got := slowOutput(500 * time.Millisecond)
+	res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: 20, Command: []string{
+		"echo start", "sleep 0.2", "yes é | head -n 100000"}}, out)
+	chunks, stdout := got()
+	if res.ExitCode != 0 || res.Truncated || stdout != "start\n"+strings.Repeat("é\n", 100000) {
+		t.Fatalf("%+v: got %d bytes", res, len(stdout))
+	}
+	for i, c := range chunks {
+		if len(c) > maxChunk || !utf8.Valid(c) {
+			t.Fatalf("chunk %d of %d: %d bytes, valid UTF-8 %v", i, len(chunks), len(c), utf8.Valid(c))
 		}
 	}
 }
