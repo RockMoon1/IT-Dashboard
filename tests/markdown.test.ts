@@ -719,6 +719,71 @@ test('a backtick is a code span here only where parseInline reads one', () => {
   assert.deepEqual(textNodes(apart), ['Run `cmd', ' and'])
 })
 
+/** Every inline code span of a parsed note, in order. */
+function codeSpans(blocks: Block[]): string[] {
+  const out: string[] = []
+  const inline = (c: Inline[]): void => {
+    for (const x of c) {
+      if (x.t === 'code') out.push(x.v)
+      else if ('c' in x) inline(x.c)
+    }
+  }
+  for (const b of blocks) {
+    if (b.t === 'para' || b.t === 'heading') inline(b.c)
+    else if (b.t === 'quote') out.push(...codeSpans(b.c))
+    else if (b.t === 'callout') {
+      inline(b.title)
+      out.push(...codeSpans(b.c))
+    } else if (b.t === 'list') for (const it of b.items) out.push(...codeSpans(it.c))
+    else if (b.t === 'table') for (const row of [b.head, ...b.rows]) row.forEach(inline)
+  }
+  return out
+}
+
+test('a backtick in a link label, wikilink or URL is theirs, not the start of a code span', () => {
+  // PowerShell's `n escape in a link label: parseInline reads the label on its own, so the next
+  // line's spans are `Get-Printer` and `Restart-Service Spooler`, and the comment between them
+  // is text, so it is hidden
+  const ran = 'Ran `Get-Printer` for %% patient Jane Roe %% then `Restart-Service Spooler`'
+  for (const see of [
+    'See [the `n escape](https://learn.microsoft.com/powershell/about_special_characters)',
+    'See [[Run`book]]',
+    'See https://x.org/a`b',
+    'See [x](https://x.org/a`b)'
+  ]) {
+    for (const md of [
+      `${see}\n${ran}`,
+      `> ${see}\n> ${ran}`,
+      `- ${see}\n  ${ran}`,
+      `${see} ${ran}`
+    ]) {
+      const blocks = parseMarkdown(md).blocks
+      assert.ok(!textNodes(blocks).some((v) => v.includes('%%')), md)
+      assert.deepEqual(codeSpans(blocks), ['Get-Printer', 'Restart-Service Spooler'], md)
+    }
+  }
+  // the same on one line, which leaked before the lines were read apart too
+  const one = parseMarkdown('[a `b](https://x.org) and `c` %% secret %% `d`').blocks
+  assert.deepEqual(textNodes(one), ['a `b', ' and ', '  '])
+  // and a span after such a link keeps the %% of its command
+  const cmd = parseMarkdown('See [the `n escape](https://x.org) then `for %%f in (*) do echo %%f`')
+  assert.deepEqual(codeSpans(cmd.blocks), ['for %%f in (*) do echo %%f'])
+  // a reading only the whole paragraph shows: the emphasis that line 1 opens ends on line 2,
+  // after the span its backtick opens there, so "` e* %% patient %% `" is no span
+  const across = parseMarkdown('*a `b* c\nd` e* %% patient Jane Roe %% `f`').blocks
+  assert.ok(!textNodes(across).some((v) => v.includes('%%')), JSON.stringify(across))
+  assert.deepEqual(codeSpans(across), ['b* c\nd', 'f'])
+  // and one only the table shows: the row's pipe in the wikilink splits its cells
+  const row = parseMarkdown('| a | b |\n|---|---|\n| [[x|`y]] ` %% patient Jane Roe %% ` | z |')
+  assert.ok(!textNodes(row.blocks).some((v) => v.includes('%%')), JSON.stringify(row.blocks))
+  // the parser's own stand-ins are not taken from a note
+  const own = parseMarkdown('a \uFDD1%% x %% b `\uFDD0%% k %%`').blocks
+  assert.deepEqual(own[0]?.t === 'para' && own[0].c, [
+    { t: 'text', v: 'a \uFFFD b ' },
+    { t: 'code', v: '\uFFFD%% k %%' }
+  ])
+})
+
 test('an indented fence takes off its indent, not the first letters of a tabbed line', () => {
   // the fence is 2 spaces in; a tab is 4 columns but one character, which was cut with "f"
   const top = parseMarkdown('  ```\n\tfor %%f in (*) do echo %%f\n   x\n  ```').blocks
@@ -734,6 +799,28 @@ test('a line of 120000 quote markers parses in linear time', () => {
     assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms for ${md.length} chars`)
     const last = p.blocks.at(-1)
     assert.equal(last?.t === 'para' ? inlineText(last.c) : '', 'after')
+  }
+})
+
+test('a line read for its code spans and comments takes a few readings, not one per comment', () => {
+  const n = 10_000
+  for (const md of [
+    '`a` %% patient %% '.repeat(20_000),
+    'x ` %% patient %% '.repeat(20_000),
+    'See [the `n](https://x.org) `a` %% patient %% `b`\n'.repeat(5000),
+    '*a `b* c\nd` e* %% patient %% `f`\n\n'.repeat(2000),
+    '> '.repeat(120_000) + '`a %% kept %%` %% patient %%',
+    // past the nesting limit the label is text, so its span is too
+    '['.repeat(n) + 'a `b %% patient %%`' + '](https://x.org)'.repeat(n)
+  ]) {
+    const t0 = performance.now()
+    const p = parseMarkdown(md)
+    const ms = performance.now() - t0
+    // 100 to 800 ms here
+    assert.ok(ms < 3000, `took ${ms.toFixed(0)} ms for ${md.slice(0, 30)}`)
+    const text: string[] = []
+    textAndCode(p.blocks, text, [])
+    assert.ok(!text.some((v) => v.includes('patient')), md.slice(0, 30))
   }
 })
 
@@ -770,6 +857,38 @@ test('links nested 10000 deep parse quickly and stop nesting at a limit', () => 
   // nor does a label of 200000 parts overflow the stack
   const parts = parseInline('[' + '`a` '.repeat(200_000) + '](javascript:x)')
   assert.equal(parts.filter((x) => x.t === 'code').length, 200_000)
+  // past the limit a label is text without the comments hidden in it, and without what stood
+  // in for them
+  for (const comment of ['%% patient Jane Roe %%', '<!-- patient Jane Roe -->']) {
+    const deep = '['.repeat(40) + `a ${comment} b` + '](https://x.org)'.repeat(40)
+    const text: string[] = []
+    const all: string[] = []
+    textAndCode(parseMarkdown(deep).blocks, text, [], all)
+    assert.ok(
+      all.every((v) => !v.includes('\uFDD0') && !v.includes('patient')),
+      comment
+    )
+    assert.ok(text.join('').includes('[a  b](https://x.org)'), comment)
+  }
+})
+
+test('a bare URL with a hidden comment in it ends where it ends', () => {
+  for (const md of [
+    'Open https://x.org/abc%% patient %%def now',
+    'Open https://x.org/a<!-- x -->b<!-- y -->cdef now',
+    'Open https://x.org/abc%% patient %%def. Then'
+  ]) {
+    const para = parseMarkdown(md).blocks[0]
+    assert.ok(para?.t === 'para', md)
+    assert.deepEqual(para.c.slice(0, 2), [
+      { t: 'text', v: 'Open ' },
+      { t: 'link', href: 'https://x.org/abcdef', c: [{ t: 'text', v: 'https://x.org/abcdef' }] }
+    ])
+    assert.equal(
+      inlineText(para.c),
+      md.endsWith('now') ? 'Open https://x.org/abcdef now' : 'Open https://x.org/abcdef. Then'
+    )
+  }
 })
 
 /** A small deterministic random source (mulberry32): every run checks the same notes. */
@@ -784,9 +903,10 @@ function random(seed: number): () => number {
 
 /**
  * A random note of quotes, callouts, lists, indented code, fences, tables, commands with %% in
- * them, code spans and comments, also a comment right before what would start a block. With
- * `reshaping`, also comments that change the note's shape once hidden: lines that hold only a
- * comment, comments over several lines, and comments that hold a table row's pipes. `deep`
+ * them, code spans and comments, also a comment right before what would start a block, and
+ * backticks that a link's label, a wikilink, a URL or emphasis takes before a code span could.
+ * With `reshaping`, also comments that change the note's shape once hidden: lines that hold only
+ * a comment, comments over several lines, and comments that hold a table row's pipes. `deep`
  * nests further.
  */
 function randomNote(rand: () => number, reshaping: boolean, deep: boolean): string {
@@ -816,6 +936,16 @@ function randomNote(rand: () => number, reshaping: boolean, deep: boolean): stri
     () => pick(['Run \\`%% secret %%` now', 'a \\\\`%% kept %%` b', 'tick `a', '` %% secret %% `']),
     () => pick(['`%% kept %%` x %% secret %%', 'x `` y `%% kept %%` z', 'p `q %% kept %% r`']),
     () => pick(['a \\%% secret %% b', '`` s `` %% secret %%', 'u ` v', '**b %% secret %%**']),
+    () =>
+      pick(['See [the `n escape](https://x.org)', 'See [[Run`book]]', 'See https://x.org/a`b']) +
+      pick(['', ' `c` %% secret %% `d`', ' %% secret %% `e`', ' [x](https://x.org/a`b) `f`']),
+    () => pick(['Ran `Get-Printer` %% secret %% `Restart`', '*a `b* c', 'd` e* %% secret %% `f`']),
+    () => pick(['*x [[a`b]] y ` z* `w` %% secret %% `v`', '[[x %% secret %% y]]', '_u `v_']),
+    () =>
+      pick([
+        '[a `%% kept %%` b](https://x.org) %% secret %%',
+        '| [[a|b`]] | `c` %% secret %% `d` |'
+      ]),
     ...(reshaping
       ? [() => `%% secret ${id++} %%`, () => '%%', () => '<!--', () => '-->', () => 'x %% a|b %% y']
       : [])
@@ -830,8 +960,9 @@ function randomNote(rand: () => number, reshaping: boolean, deep: boolean): stri
 }
 
 /**
- * The text nodes and the code blocks ([line, lang, code]) of a parsed note, in order, and in
- * `all` every string the viewer could show (code spans, links and wikilinks too).
+ * The text of a parsed note that is not code (text nodes, links and wikilinks), and its code
+ * blocks ([line, lang, code]), in order, and in `all` every string the viewer could show (code
+ * spans too).
  */
 function textAndCode(
   blocks: Block[],
@@ -842,6 +973,8 @@ function textAndCode(
   const inline = (c: Inline[]): void => {
     for (const x of c) {
       if (x.t === 'text') text.push(x.v)
+      else if (x.t === 'link') text.push(x.href)
+      else if (x.t === 'wiki') text.push(x.target, x.heading ?? '', x.alias ?? '')
       if (x.t === 'text' || x.t === 'code' || x.t === 'tag') all.push(x.v)
       else if (x.t === 'link') all.push(x.href)
       else if (x.t === 'wiki') all.push(x.target, x.heading ?? '', x.alias ?? '')
@@ -873,8 +1006,8 @@ test('comments are hidden wherever the note shows text, and code keeps every byt
     textAndCode(parseMarkdown(md).blocks, text, code, all)
     const shown = text.find((v) => v.includes('%%') || v.includes('<!--'))
     assert.equal(shown, undefined, `a comment shows as text in:\n${md}`)
-    // what stands in for a hidden comment is never shown
-    assert.ok(!all.some((v) => v.includes('\uFDD0')), `a placeholder shows in:\n${md}`)
+    // what stands in for a hidden comment, or marks a kept one, is never shown
+    assert.ok(!all.some((v) => /[\uFDD0\uFDD1]/.test(v)), `a placeholder shows in:\n${md}`)
     if (reshaping) {
       // a command in a code block is whole
       for (const [, , v] of code) {

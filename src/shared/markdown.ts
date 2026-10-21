@@ -142,11 +142,15 @@ interface Level {
     | { t: 'item'; base: number; ordered: boolean; content: number; blank: boolean; inner: Level }
 }
 
-/** How one line reads: the level after it, whether it is code, and whether it goes on a paragraph. */
+/**
+ * How one line reads: the level after it, whether it is code, whether it goes on a paragraph,
+ * and its text as the innermost level sees it (past its quote and list markers).
+ */
 interface Read {
   l: Level
   code: boolean
   joins: boolean
+  text: string
 }
 
 /**
@@ -232,12 +236,13 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   const blank = !s.trim()
   // past MAX_NEST, parseBlocks reads all of a body's lines as one paragraph
   if (l.depth > MAX_NEST)
-    return { l: { ...l, fresh: l.fresh && blank }, code: false, joins: !l.fresh && !blank }
+    return { l: { ...l, fresh: l.fresh && blank }, code: false, joins: !l.fresh && !blank, text: s }
   const next = delimAt(ahead, 1)
-  const to = (open: Level['open'], code: boolean, joins = false): Read => ({
+  const to = (open: Level['open'], code: boolean, joins = false, text = s): Read => ({
     l: { depth: l.depth, fresh: blank, open },
     code,
-    joins
+    joins,
+    text
   })
   const o = l.open
   // the open block goes on
@@ -252,7 +257,7 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   const quote = QUOTE.exec(s)
   if (o.t === 'quote' && quote) {
     const r = step(o.inner, quote[1] ?? '', inQuote(ahead))
-    return to({ t: 'quote', inner: r.l }, r.code, r.joins)
+    return to({ t: 'quote', inner: r.l }, r.code, r.joins, r.text)
   }
   const ind = indentOf(s)
   const item = ITEM.exec(s)
@@ -260,14 +265,14 @@ function step(l: Level, s: string, ahead: Ahead): Read {
     const { content, first } = itemText(s, m)
     const r = step(newLevel(l.depth + 1), first, inItemAhead(ahead, ind, content, false))
     const open = { t: 'item' as const, base: ind, ordered: !!m[3], content, blank: false }
-    return to({ ...open, inner: r.l }, r.code, r.joins)
+    return to({ ...open, inner: r.l }, r.code, r.joins, r.text)
   }
   if (o.t === 'item') {
     // the item goes on with the line
     const own = inItem(o.base, o.content, o.blank, s, next)
     if (own !== null) {
       const r = step(o.inner, own, inItemAhead(ahead, o.base, o.content, blank))
-      return to({ ...o, blank, inner: r.l }, r.code, r.joins)
+      return to({ ...o, blank, inner: r.l }, r.code, r.joins, r.text)
     }
     // or the list goes on with its next item, whatever else the line could start
     if (item?.[4] !== undefined && ind === o.base && !!item[3] === o.ordered) return startItem(item)
@@ -282,9 +287,10 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   if (quote) {
     const inner = newLevel(l.depth + 1)
     // a callout's title line is not part of its body
-    if (CALLOUT.test(quote[1] ?? '')) return to({ t: 'quote', inner, title: true }, false)
+    if (CALLOUT.test(quote[1] ?? ''))
+      return to({ t: 'quote', inner, title: true }, false, false, quote[1])
     const r = step(inner, quote[1] ?? '', inQuote(ahead))
-    return to({ t: 'quote', inner: r.l }, r.code, r.joins)
+    return to({ t: 'quote', inner: r.l }, r.code, r.joins, r.text)
   }
   if (item?.[4] !== undefined) return startItem(item)
   return to({ t: 'para' }, false)
@@ -319,8 +325,17 @@ function blankInner(a: Level, b: Level): boolean {
  * of a line a fence, indented code, a heading or a table's delimiter row; it is not shown.
  */
 const HIDDEN = '\uFDD0'
+/**
+ * Goes before each %% and <!-- that stripComments keeps because it reads it in a code span. A
+ * code span drops it; anywhere else parseMarkdown finds it and reads those lines again with
+ * every comment hidden. Like HIDDEN, it changes nothing in how a line reads.
+ */
+const KEPT = '\uFDD1'
 /** `s` without HIDDEN. */
 const shown = (s: string): string => (s.includes(HIDDEN) ? s.split(HIDDEN).join('') : s)
+/** Code as written: without HIDDEN or KEPT. */
+const codeText = (s: string): string =>
+  s.includes(KEPT) ? shown(s).split(KEPT).join('') : shown(s)
 const isGap = (c: string): boolean => c === HIDDEN || /\s/.test(c)
 /** `s` trimmed of spaces and HIDDEN at both ends (by index: a regex here is quadratic). */
 function trimShown(s: string): string {
@@ -334,87 +349,159 @@ function trimShown(s: string): string {
 /** The comment a line ends in, so the next line starts in it. */
 type Open = '%%' | '-->' | null
 
+/** One line with its comments hidden: `bare` without them, `marked` with HIDDEN for each. */
+interface Hidden {
+  bare: string
+  marked: string
+  open: Open
+  /** The run of backticks the line leaves open, which a later line of its paragraph may close. */
+  tick: string | null
+}
+
+/** A line's comments, or its code spans, as [start, end) of the line in order. */
+type Ranges = Array<[number, number]>
+
 /**
- * One line of text with its comments hidden: `bare` without them, `marked` with HIDDEN for
- * each. `code spans` are copied as they are, read as parseInline reads them: \` is a backtick,
- * not a span, and a run that does not close on its line may close on a later line of the
- * paragraph (`tick`). Until it does, no span opens and every comment is hidden.
+ * Adds to `cut` the comments of `raw` from `i` on: one opens at %% or <!-- outside the code
+ * `spans` and runs to its end, or past the end of the line, and then that is returned.
+ */
+function findComments(raw: string, i: number, spans: Ranges, cut: Ranges): Open {
+  // where the next opener of each kind is from i, found again only once i has passed it
+  let pct = -2
+  let html = -2
+  let k = 0
+  while (i < raw.length) {
+    if (pct !== -1 && pct < i) pct = raw.indexOf('%%', i)
+    if (html !== -1 && html < i) html = raw.indexOf('<!--', i)
+    const at = pct === -1 ? html : html === -1 ? pct : Math.min(pct, html)
+    if (at === -1) break
+    while (k < spans.length && spans[k]![1] <= at) k++
+    const span = spans[k]
+    // a span that starts before the opener holds it (one that starts in a comment is none)
+    if (span && span[0] >= i && span[0] < at) {
+      i = span[1]
+      continue
+    }
+    const close = at === pct ? '%%' : '-->'
+    const end = raw.indexOf(close, at + (at === pct ? 2 : 4))
+    if (end === -1) {
+      cut.push([at, raw.length])
+      return close
+    }
+    cut.push([at, end + close.length])
+    i = end + close.length
+  }
+  return null
+}
+
+/** The code spans parseInline reads in `raw` from `at` on, with the comments in `cut` hidden. */
+function readSpans(raw: string, cut: Ranges, at: number): Probe {
+  // each hidden character is a HIDDEN, so the spans are where they are in raw
+  let text = ''
+  let i = 0
+  for (const [a, b] of cut) {
+    text += raw.slice(i, a) + HIDDEN.repeat(b - a)
+    i = b
+  }
+  text = (text + raw.slice(i)).slice(at)
+  // the text as parseBlocks gives it to parseInline: trimmed of spaces and hidden comments
+  let lead = 0
+  while (lead < text.length && isGap(text[lead]!)) lead++
+  const probe: Probe = { spans: [], open: null }
+  readInline(trimShown(text), 0, probe, at + lead)
+  return probe
+}
+
+/** `raw` with the comments in `cut` hidden, and KEPT before each %% and <!-- it keeps. */
+function written(raw: string, cut: Ranges, open: Open, tick: string | null): Hidden {
+  const keep = (s: string): string =>
+    s.includes('%%') || s.includes('<!--') ? s.replace(/%%|<!--/g, `${KEPT}$&`) : s
+  let bare = ''
+  let marked = ''
+  let i = 0
+  for (const [a, b] of cut) {
+    const t = keep(raw.slice(i, a))
+    bare += t
+    marked += t + HIDDEN
+    i = b
+  }
+  const t = keep(raw.slice(i))
+  return { bare: bare + t, marked: marked + t, open, tick }
+}
+
+/** How many times hideComments reads a line's code spans before it hides all its comments. */
+const MAX_READS = 4
+
+/**
+ * One line with its comments hidden. A comment opens at %% or <!-- wherever parseInline reads
+ * the line as text, so not in a code span, and the code spans are the ones parseInline reads in
+ * the line once its comments are hidden: a backtick that a link's label, a wikilink or a URL
+ * takes is theirs, \` is a backtick, and so on. So the line is read by parseInline itself, first
+ * with no comment hidden, then with the ones found hidden, until two readings agree; after
+ * MAX_READS every comment in it is hidden.
+ * `from`: where the line's text starts, past its markers (copied as they are). `open`: the
+ * comment the line starts in. `tick`: the run of backticks a line before left open, which closes
+ * the span at its next run here; until it does, every comment is hidden. `plain`: every comment
+ * is hidden, in code spans too.
  */
 function hideComments(
   raw: string,
+  from: number,
   open: Open,
-  tick: string | null
-): { bare: string; marked: string; open: Open; tick: string | null } {
-  let bare = ''
-  let marked = open ? HIDDEN : ''
+  tick: string | null,
+  plain: boolean
+): Hidden {
+  const cut: Ranges = []
   let i = 0
-  const copy = (end: number): void => {
-    const t = raw.slice(i, end)
-    bare += t
-    marked += t
-    i = end
+  if (open) {
+    const end = raw.indexOf(open)
+    if (end === -1) return written(raw, [[0, raw.length]], open, tick)
+    i = end + open.length
+    cut.push([0, i])
   }
-  // where the next comment opener, backtick (or the run waited for) and backslash are from i,
-  // found again only once i has passed them; -1 when there is none
-  let pct = -2
-  let html = -2
-  let tk = -2
-  let esc = -2
-  while (i < raw.length) {
-    if (open) {
-      const end = raw.indexOf(open, i)
-      if (end === -1) break
-      i = end + open.length
-      open = null
-      continue
-    }
-    if (pct !== -1 && pct < i) pct = raw.indexOf('%%', i)
-    if (html !== -1 && html < i) html = raw.indexOf('<!--', i)
-    if (tk !== -1 && tk < i) tk = raw.indexOf(tick ?? '`', i)
-    if (!tick && esc !== -1 && esc < i) esc = raw.indexOf('\\', i)
-    const at = Math.min(...[pct, html, tk, tick ? -1 : esc].filter((x) => x >= 0))
-    if (at === Infinity) {
-      copy(raw.length)
-      break
-    }
-    copy(at)
-    if (at === tk && tick) {
-      // the run waited for: parseInline's span from an earlier line ends here
-      copy(at + tick.length)
-      tick = null
-      tk = -2
-    } else if (at === tk) {
-      let end = at
-      while (raw[end] === '`') end++
-      const run = raw.slice(at, end)
-      const close = raw.indexOf(run, end)
-      if (close === -1) {
-        // closes on a later line of the paragraph, or never
-        copy(end)
-        tick = run
-        tk = -2
-      } else copy(close + run.length) // a code span, copied as it is
-    } else if (at === esc) {
-      // \` and \\ are escapes, as in parseInline; \%% still opens a comment
-      copy(at + (raw[at + 1] === '`' || raw[at + 1] === '\\' ? 2 : 1))
-    } else {
-      open = at === pct ? '%%' : '-->'
-      i = at + (at === pct ? 2 : 4)
-      marked += HIDDEN
-    }
+  i = Math.max(i, from)
+  if (tick && !plain) {
+    const end = raw.indexOf(tick, i)
+    if (end === -1) return written(raw, cut, findComments(raw, i, [], cut), tick)
+    i = end + tick.length
   }
-  return { bare, marked, open, tick }
+  if (plain || !raw.includes('`', i)) return written(raw, cut, findComments(raw, i, [], cut), null)
+  const comments = raw.includes('%%', i) || raw.includes('<!--', i)
+  const before = cut.length
+  let read = readSpans(raw, cut, i)
+  let last = ''
+  for (let k = 0; k < MAX_READS; k++) {
+    cut.length = before
+    const o = findComments(raw, i, read.spans, cut)
+    // a run left open in a comment is no run
+    const run = read.open
+    const left = run && !cut.some(([a, b]) => a <= run.at && run.at < b) ? run.run : null
+    const key = `${cut.join(';')} ${left}`
+    if (!comments || key === last) return written(raw, cut, o, left)
+    last = key
+    read = readSpans(raw, cut, i)
+  }
+  cut.length = before
+  return written(raw, cut, findComments(raw, i, [], cut), null)
+}
+
+/** Where in `raw` the text of it that a level sees (`view`, past the line's markers) starts. */
+function textStart(raw: string, view: string): number {
+  const t = view.trim()
+  const s = raw.trimEnd()
+  return t && s.endsWith(t) ? s.length - t.length : 0
 }
 
 /**
  * Hides <!-- --> and %% %% comments outside code, keeping every line where it was. Code is what
- * parseBlocks reads as code, followed line by line with step(), and `code spans`; comment
- * markers in it are text. Hiding a comment leaves the line's shape as written (HIDDEN stands in
- * for it), except that a line, or a quote's or list item's line, that held only a comment is
- * blank there, as in reading view. A line that starts in a comment is not read for code: the
- * comment goes on over it.
+ * parseBlocks reads as code, followed line by line with step(), and the code spans parseInline
+ * reads (hideComments); comment markers in it are text. Hiding a comment leaves the line's shape
+ * as written (HIDDEN stands in for it), except that a line, or a quote's or list item's line,
+ * that held only a comment is blank there, as in reading view. A line that starts in a comment
+ * is not read for code: the comment goes on over it. On a line `plain` names, every comment is
+ * hidden, in code spans too.
  */
-function stripComments(lines: string[]): string[] {
+function stripComments(lines: string[], plain: (k: number) => boolean): string[] {
   const out: string[] = []
   let open: Open = null
   let tick: string | null = null
@@ -429,8 +516,9 @@ function stripComments(lines: string[]): string[] {
       tick = null
       continue
     }
+    const from = read ? textStart(raw, read.text) : 0
     const hide = (wait: string | null): { s: string; r: Read; open: Open; tick: string | null } => {
-      const h = hideComments(raw, open, wait)
+      const h = hideComments(raw, from, open, wait, plain(k))
       // the lines ahead as they will be written: one that starts in this line's comment shows
       // only what follows its end
       const shownAt = (j: number): string | null => {
@@ -455,7 +543,7 @@ function stripComments(lines: string[]): string[] {
       // the next line starts in its comment
       const same = read && !h.open && raw.includes('|') === h.marked.includes('|')
       const marked = same ? read : step(at, h.marked, after)
-      if (h.marked === raw) return { s: raw, r: marked, ...rest }
+      if (h.bare === h.marked) return { s: h.marked, r: marked, ...rest }
       // a quote's or item's line that held only a comment is blank there; its bare line ends
       // in a marker then ("> ", "- [ ] ")
       if (!/[>*+\-.)\]]\s*$/.test(h.bare)) return { s: h.marked, r: marked, ...rest }
@@ -547,11 +635,30 @@ const EMPHASIS: Array<[string, Inline['t']]> = [
  */
 const MAX_INLINE_NEST = 32
 
-export function parseInline(s: string, depth = 0): Inline[] {
+/**
+ * What readInline found while it read a text, for stripComments: each code span as [start, end)
+ * of the text, and the first run of backticks at the top level with no run to close it there
+ * (in a paragraph, a later line may close it).
+ */
+interface Probe {
+  spans: Array<[number, number]>
+  open: { at: number; run: string } | null
+}
+
+export function parseInline(s: string): Inline[] {
+  return readInline(s, 0, null, 0)
+}
+
+/** parseInline at a depth; `base` is where `s` starts in the text the probe is given. */
+function readInline(s: string, depth: number, probe: Probe | null, base: number): Inline[] {
   const out: Inline[] = []
-  // a link's or emphasis's text, read one level down; past MAX_INLINE_NEST it is plain text
-  const nested = (v: string): Inline[] =>
-    depth < MAX_INLINE_NEST ? parseInline(v, depth + 1) : v ? [{ t: 'text', v }] : []
+  // the text of a link or of emphasis, read one level down; past MAX_INLINE_NEST it is text
+  const nested = (from: number, to: number): Inline[] => {
+    if (depth < MAX_INLINE_NEST) return readInline(s.slice(from, to), depth + 1, probe, base + from)
+    const text: Inline[] = []
+    pushText(text, s.slice(from, to))
+    return text
+  }
   // What one scan already showed, so a long paragraph full of unmatched openers (* _ [[ [ `)
   // costs one scan per kind instead of one per opener: delimiters with no closer, the shortest
   // backtick run with no closer, the next ]] and line break, and where each [ and ( closes.
@@ -596,10 +703,12 @@ export function parseInline(s: string, depth = 0): Inline[] {
       if (end !== -1) {
         let v = s.slice(i + run.length, end)
         if (/^ .* $/.test(v)) v = v.slice(1, -1)
-        out.push({ t: 'code', v: shown(v) })
+        out.push({ t: 'code', v: codeText(v) })
+        probe?.spans.push([base + i, base + end + run.length])
         i = end + run.length
         continue
       }
+      if (probe && depth === 0) probe.open ??= { at: base + i, run }
       noTick = Math.min(noTick, run.length)
       pushText(out, run)
       i += run.length
@@ -637,7 +746,7 @@ export function parseInline(s: string, depth = 0): Inline[] {
             const alt = shown(label)
             pushText(out, alt ? `[image: ${alt}]` : '[image]')
           } else if (href) {
-            out.push({ t: 'link', href, c: nested(label) })
+            out.push({ t: 'link', href, c: nested(textStart, close) })
           } else if (/\.md$/i.test(decodeSafe(rawUrl)) || !/^[a-z][a-z0-9+.-]*:/i.test(rawUrl)) {
             // a relative link to another note behaves like a wikilink
             const target = decodeSafe(rawUrl).replace(/\.md(#.*)?$/i, '$1')
@@ -646,7 +755,7 @@ export function parseInline(s: string, depth = 0): Inline[] {
           } else {
             // javascript:, file: and the like: text only (pushed one by one, as a spread of a
             // label with 100000 parts overflows the stack)
-            for (const x of nested(label)) out.push(x)
+            for (const x of nested(textStart, close)) out.push(x)
           }
           i = urlEnd + 1
           continue
@@ -658,11 +767,13 @@ export function parseInline(s: string, depth = 0): Inline[] {
       /^https?:\/\/[^\s<>]/i.test(rest) &&
       (i === 0 || /[\s(]/.test(s[i - 1] ?? ''))
     ) {
-      const url = shown(trimUrl(/^https?:\/\/[^\s<>]+/i.exec(rest)?.[0] ?? ''))
+      const match = trimUrl(/^https?:\/\/[^\s<>]+/i.exec(rest)?.[0] ?? '')
+      const url = shown(match)
       // "https://" alone (or "https://." at the end of a sentence) is text, not a link
       if (/^https?:\/\/./i.test(url)) {
         out.push({ t: 'link', href: url, c: [{ t: 'text', v: url }] })
-        i += url.length
+        // past the URL as written: the one shown is shorter by each hidden comment in it
+        i += match.length
         continue
       }
     }
@@ -683,7 +794,7 @@ export function parseInline(s: string, depth = 0): Inline[] {
       const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d)
       if (end === -1 && !intraword) noClose.add(d)
       if (end !== -1) {
-        const inner = nested(s.slice(i + d.length, end))
+        const inner = nested(i + d.length, end)
         if (d === '***') out.push({ t: 'strong', c: [{ t: 'em', c: inner }] })
         else out.push({ t: kind as 'strong' | 'em' | 'del' | 'mark', c: inner })
         i = end + d.length
@@ -723,14 +834,17 @@ function pairs(s: string, open: string, close: string): Map<number, number> {
   return out
 }
 
-/** A bare URL without the punctuation after it; a ) stays when it closes a ( in the URL. */
+/**
+ * A bare URL without the punctuation after it, nor a hidden comment right after it; a ) stays
+ * when it closes a ( in the URL.
+ */
 function trimUrl(url: string): string {
   let unbalanced = (url.match(/\)/g) ?? []).length - (url.match(/\(/g) ?? []).length
   let end = url.length
   while (end > 0) {
     const c = url[end - 1] ?? ''
     if (c === ')' && unbalanced > 0) unbalanced--
-    else if (!/[.,;:!?\]]/.test(c)) break
+    else if (!/[.,;:!?\]]/.test(c) && c !== HIDDEN) break
     end--
   }
   return url.slice(0, end)
@@ -876,8 +990,8 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
         body.push(t.slice(Math.min(pad, /^\s*/.exec(t)?.[0].length ?? 0)))
         i++
       }
-      const lang = shown(fence[3] ?? '')
-      out.push({ t: 'code', line: line.n, lang, v: shown(body.join('\n')) })
+      const lang = codeText(fence[3] ?? '')
+      out.push({ t: 'code', line: line.n, lang, v: codeText(body.join('\n')) })
       continue
     }
 
@@ -891,7 +1005,7 @@ function parseBlocks(lines: Line[], depth = 0): Block[] {
         i++
       }
       while (body.length && !body[body.length - 1]!.trim()) body.pop()
-      out.push({ t: 'code', line: line.n, lang: '', v: shown(body.join('\n')) })
+      out.push({ t: 'code', line: line.n, lang: '', v: codeText(body.join('\n')) })
       continue
     }
 
@@ -1054,12 +1168,74 @@ function collectLinks(blocks: Block[], out: Array<{ target: string; line: number
   }
 }
 
+/**
+ * The lines of each block whose text shows a KEPT anywhere but in a code span: from its line to
+ * the line before the next block's (`last` is the note's last line).
+ */
+function keptShown(blocks: Block[], last: number): Ranges {
+  const inline = (c: Inline[]): boolean =>
+    c.some((x) => {
+      if (x.t === 'text') return x.v.includes(KEPT)
+      if (x.t === 'wiki') return `${x.target}${x.heading ?? ''}${x.alias ?? ''}`.includes(KEPT)
+      if (x.t === 'link') return x.href.includes(KEPT) || inline(x.c)
+      return 'c' in x && inline(x.c)
+    })
+  // every block in the order of the note (each starts on or after the line of the one before)
+  const flat: Array<[number, boolean]> = []
+  const walk = (bs: Block[]): void => {
+    for (const b of bs) {
+      const shows =
+        b.t === 'para' || b.t === 'heading'
+          ? inline(b.c)
+          : b.t === 'callout'
+            ? inline(b.title)
+            : b.t === 'table' && [b.head, ...b.rows].some((row) => row.some(inline))
+      flat.push([b.line, shows])
+      if (b.t === 'quote' || b.t === 'callout') walk(b.c)
+      else if (b.t === 'list') for (const it of b.items) walk(it.c)
+    }
+  }
+  walk(blocks)
+  const out: Ranges = []
+  let next = last + 1
+  for (let j = flat.length - 1; j >= 0; j--) {
+    const [line, shows] = flat[j]!
+    const later = flat[j + 1]
+    if (later && later[0] > line) next = later[0]
+    if (shows) out.push([line, next - 1])
+  }
+  return out
+}
+
+/** How many times parseMarkdown reads a note again before it hides every comment in it. */
+const MAX_REREADS = 3
+
 export function parseMarkdown(text: string): ParsedNote {
-  const raw = text.replace(/^﻿/, '').split(/\r?\n/)
+  // HIDDEN and KEPT are the parser's own: a note's own are not taken for them
+  const raw = text
+    .replace(/^﻿/, '')
+    .replace(/[\uFDD0\uFDD1]/g, '\uFFFD')
+    .split(/\r?\n/)
   const fm = frontmatter(raw)
-  const body = stripComments(raw.slice(fm.end))
-  const lines = body.map((s, k) => ({ n: fm.end + k + 1, s }))
-  const blocks = parseBlocks(lines)
+  const src = raw.slice(fm.end)
+  const read = (plain: (k: number) => boolean): Block[] =>
+    parseBlocks(stripComments(src, plain).map((s, k) => ({ n: fm.end + k + 1, s })))
+  // stripComments reads a paragraph's code spans a line at a time, so a span parseInline reads
+  // in the whole paragraph (an emphasis from the line before, a table's cells) can differ: a
+  // comment it kept as code must not show as anything else. Where one does, those lines are
+  // read again with every comment on them hidden, until none does.
+  const plain = new Set<number>()
+  let blocks = read(() => false)
+  for (let n = 0; ; n++) {
+    const shows = keptShown(blocks, raw.length)
+    if (!shows.length) break
+    if (n === MAX_REREADS) {
+      blocks = read(() => true)
+      break
+    }
+    for (const [a, b] of shows) for (let line = a; line <= b; line++) plain.add(line - fm.end - 1)
+    blocks = read((k) => plain.has(k))
+  }
   // links in properties ("related: [[Note]]") are links too, as in Obsidian's backlinks
   const props = raw
     .slice(1, Math.max(1, fm.end - 1))
