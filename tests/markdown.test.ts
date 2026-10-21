@@ -1,5 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   headingKey,
   inlineText,
@@ -1056,6 +1061,175 @@ test('a bare URL with a hidden comment in it ends where it ends', () => {
   }
 })
 
+test('a task box that held only a comment is a plain item, as in Obsidian', () => {
+  // the placeholder of the hidden comment was taken for the task's status ("[\uFDD0]")
+  for (const md of [
+    '- [%% Jane Roe %%] Call the vendor',
+    '1. [<!-- MRN 445566 -->] Call the vendor',
+    '> - [%%x%%] Call the vendor'
+  ]) {
+    const top = parseMarkdown(md).blocks[0]
+    const list = top?.t === 'quote' ? top.c[0] : top
+    assert.ok(list?.t === 'list', md)
+    assert.equal(list.items[0]!.task, undefined, md)
+    assert.deepEqual(textNodes(list.items[0]!.c), ['[] Call the vendor'], md)
+  }
+  const done = parseMarkdown('- [x] Called back %% Jane Roe %%').blocks[0] as List
+  assert.equal(done.items[0]!.task, 'x')
+})
+
+test('a YAML comment after a property is not shown, nor is a link in it, as in Obsidian', () => {
+  const md = [
+    '---',
+    'status: open # was for Jane Roe, room 4',
+    'tags:',
+    '  - printer # Jane Roe',
+    '  - "a #b" # MRN 445566',
+    'parent:',
+    '  child: x # DOB 1970-01-02',
+    "owner: 'O''Brien #2' # Jane",
+    'color: "#fff"',
+    'url: https://x.org/a#b',
+    'note: # Jane Roe',
+    'list: [a, "b #c"] # Jane',
+    'desc: | # Jane Roe',
+    '  as written # in a block',
+    'id:#x',
+    '# Jane Roe, the whole line',
+    'related: "[[T-0001]]" # Jane Roe, see [[T-0002]]',
+    '---',
+    'body'
+  ].join('\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(p.frontmatter, [
+    ['status', 'open'],
+    ['tags', 'printer, a #b'],
+    ['parent', 'child: x'],
+    ['owner', "O'Brien #2"],
+    ['color', '#fff'],
+    ['url', 'https://x.org/a#b'],
+    ['note', ''],
+    ['list', '[a, "b #c"]'],
+    ['desc', 'as written # in a block'],
+    // no space before the #: not a comment
+    ['id', '#x'],
+    ['related', '[[T-0001]]']
+  ])
+  assert.deepEqual(p.linkLines, [{ target: 'T-0001', line: 17 }])
+  // a backlink from a property shows its line without the comment
+  assert.equal(p.lines[16]?.trim(), 'related: "[[T-0001]]"')
+  assert.ok(!p.lines.slice(0, 18).some((l) => /Jane|MRN|DOB/.test(l)))
+})
+
+test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at its end', () => {
+  const heads = (md: string): Array<[number, string]> =>
+    parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))
+  assert.deepEqual(heads('# Title ##'), [[1, 'Title']])
+  assert.deepEqual(heads('##\tTitle\t#\t'), [[2, 'Title']])
+  assert.deepEqual(heads('### a # #'), [[3, 'a #']])
+  assert.deepEqual(heads('# ##'), [[1, '##']])
+  assert.deepEqual(heads('# C# #'), [[1, 'C#']])
+  assert.deepEqual(heads('# Title\r\r\nnext'), [
+    [1, 'Title'],
+    [0, 'para']
+  ])
+  assert.deepEqual(heads('# a \u2028'), [[1, 'a']])
+  assert.deepEqual(heads('# a\u2028#'), [[1, 'a']])
+  assert.deepEqual(heads('# a\u2028b'), [[0, 'para']])
+  assert.deepEqual(heads('#Title'), [[0, 'para']])
+})
+
+/** Milliseconds parseMarkdown takes for `md`. */
+function parseTime(md: string): number {
+  const t0 = performance.now()
+  parseMarkdown(md)
+  return performance.now() - t0
+}
+
+test('a heading or near delimiter row with a long run of spaces parses in linear time', () => {
+  for (const md of [
+    // a regex for a heading's closing #s backtracked over the run (7 s for 60 KB, 20 s for 100)
+    '# Notes' + ' '.repeat(100_000) + 'end',
+    '## Notes' + '\t'.repeat(100_000) + 'end #',
+    // and one for a delimiter row, after a line with a pipe; also read for comments (9 to 19 s)
+    'Port | Use\n--' + ' '.repeat(100_000) + '| x',
+    '> Port | Use\n> --' + ' '.repeat(100_000) + '| x',
+    'Port | Use %% note %%\n--' + ' '.repeat(100_000) + '| x'
+  ]) {
+    const ms = parseTime(md)
+    // a few ms here
+    assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms for ${JSON.stringify(md.slice(0, 16))}`)
+  }
+})
+
+test('backtick runs that close nothing parse in linear time', () => {
+  // shorter and shorter runs: each was searched for to the end of the line (14 to 27 s)
+  const runs = 'a ' + Array.from({ length: 900 }, (_, k) => '`'.repeat(900 - k) + 'a').join('')
+  for (const md of [
+    runs,
+    `*${runs}*`,
+    `| a | b |\n|---|---|\n| ${runs} | c |`,
+    `| ${runs} | c |\n|---|---|`,
+    // one long run in emphasis: each of its backticks was read to the run's end (3 s)
+    '*a ' + '`'.repeat(100_000) + ' b*'
+  ]) {
+    const ms = parseTime(md)
+    // 5 to 40 ms here
+    assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms for ${JSON.stringify(md.slice(0, 16))}`)
+  }
+  // a run still closes at the next one as long, and a span in emphasis still keeps its *
+  for (const [md, spans] of [
+    ['x ```` y ``` z ` w `` v', ['w']],
+    ['a ``` b ` c `` d ``` e', ['b ` c `` d']],
+    ['*a `` x ` b* ``', ['x ` b*']],
+    ['*a ``` x ``` b*', ['x']]
+  ] as const) {
+    assert.deepEqual(codeSpans(parseMarkdown(md).blocks), spans, md)
+  }
+})
+
+test('a table has a delimiter row of as many cells as its header, as in GFM, and 256 at most', () => {
+  assert.deepEqual(kinds(parseMarkdown('| a | b |\n|---|\n| 1 | 2 |').blocks), ['para'])
+  assert.deepEqual(kinds(parseMarkdown('a | b\n---|---|---').blocks), ['para'])
+  // a comment after the last pipe is no cell, in the comment pass too
+  const md = '| a | b | %% Jane Roe %%\n|---|---|\n| 1 | `%% kept %%` |'
+  const table = parseMarkdown(md).blocks[0]
+  assert.ok(table?.t === 'table')
+  assert.deepEqual(table.head.map(inlineText), ['a', 'b'])
+  assert.deepEqual(codeSpans([table]), ['%% kept %%'])
+  const cols = (n: number): string => `${'|a'.repeat(n)}|\n${'|-'.repeat(n)}|\n${'|b'.repeat(n)}|`
+  assert.deepEqual(kinds(parseMarkdown(cols(256)).blocks), ['table'])
+  assert.deepEqual(kinds(parseMarkdown(cols(257)).blocks), ['para'])
+})
+
+test("a table's cells are its rows' own, so a wide header over short rows parses quickly", () => {
+  // each row was padded to the header's cells: 20000 columns over 2000 rows of one pipe each
+  // were 40 million cells (12 s, 120 MB to the window), and would still be 5 million at 256
+  // columns over 20000 rows; now the first two are no table (GFM, MAX_COLS)
+  for (const md of [
+    '|a'.repeat(20_000) + '|\n|-|\n' + '|\n'.repeat(2000),
+    '|a'.repeat(20_000) + '|\n' + '|-'.repeat(20_000) + '|\n' + '|\n'.repeat(2000),
+    '|a'.repeat(256) + '|\n' + '|-'.repeat(256) + '|\n' + '|\n'.repeat(20_000)
+  ]) {
+    const t0 = performance.now()
+    const p = parseMarkdown(md)
+    const ms = performance.now() - t0
+    const cells = p.blocks.reduce(
+      (n, b) => (b.t === 'table' ? n + b.head.length + b.rows.flat().length : n),
+      0
+    )
+    assert.ok(cells <= md.length, `${cells} cells for ${md.length} characters`)
+    // 10 to 50 ms here
+    assert.ok(ms < 1000, `took ${ms.toFixed(0)} ms`)
+  }
+  const table = parseMarkdown('| a | b | c |\n|---|---|---|\n| 1 |\n| 2 | 3 | 4 | 5 |').blocks[0]
+  assert.ok(table?.t === 'table')
+  assert.deepEqual(
+    table.rows.map((r) => r.map(inlineText)),
+    [['1'], ['2', '3', '4']]
+  )
+})
+
 /** A small deterministic random source (mulberry32): every run checks the same notes. */
 function random(seed: number): () => number {
   return () => {
@@ -1155,8 +1329,12 @@ function textAndCode(
     else if (b.t === 'callout') {
       inline(b.title)
       textAndCode(b.c, text, code, all)
-    } else if (b.t === 'list') for (const it of b.items) textAndCode(it.c, text, code, all)
-    else if (b.t === 'table') for (const row of [b.head, ...b.rows]) row.forEach(inline)
+    } else if (b.t === 'list') {
+      for (const it of b.items) {
+        all.push(it.task ?? '')
+        textAndCode(it.c, text, code, all)
+      }
+    } else if (b.t === 'table') for (const row of [b.head, ...b.rows]) row.forEach(inline)
   }
 }
 
@@ -1206,5 +1384,170 @@ test('comments are hidden wherever the note shows text, and code keeps every byt
         `code differs in:\n${md}`
       )
     }
+  }
+})
+
+/**
+ * A random note of what notes hold, without comments and without a pathological line: headings
+ * with closing #s, tabs and spaces, paragraphs with code spans and backtick runs, emphasis around
+ * them, links, tables whose delimiter row has the header's cells (rows short and long), lists
+ * with task boxes, quotes and callouts with tables, fences, indented code, rules, lines that
+ * almost are a delimiter row, and frontmatter.
+ */
+function ordinaryNote(rand: () => number): string {
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
+  const upTo = (n: number): number => Math.floor(rand() * (n + 1))
+  const words = [
+    'printer',
+    'ARH-P01',
+    'spooler',
+    'Jane',
+    'net stop',
+    'C:\\Temp',
+    'x',
+    '2024.',
+    '1.'
+  ]
+  const inline = [
+    () => pick(words),
+    () =>
+      pick(['`code`', '``a`b``', '` x `', '`', '``', '```', '`a|b`', '`` ` ``', '`run` `', '\\`']),
+    () => pick(['*em*', '**strong**', '_u_', '__s__', '~~del~~', '==mark==', '***both***']),
+    () => pick(['*a `b* c`', '*a `b` c*', '**x `y**` z', '_p `q_ r`', '*', '_', '**']),
+    () => pick(['[link](https://x.org)', '[[Wiki]]', '[[Wiki|alias]]', '[[Note#Head]]']),
+    () => pick(['![img](x.png)', '[rel](Tickets/T-1.md)', 'https://x.org/a#b', '<br>']),
+    () => pick(['#tag', '#1', 'a #b', '\\|', '\\*', '|', ' # ', '#', '##', ' -- ', ':--']),
+    () => '`'.repeat(1 + upTo(4)) + pick(words) + '`'.repeat(1 + upTo(4))
+  ]
+  const text = (): string => {
+    let s = ''
+    for (let k = 1 + upTo(4); k > 0; k--) s += pick(inline)() + pick([' ', '', '  '])
+    return s
+  }
+  // a line of text has a word, so it is never a delimiter row
+  const line = (): string => `${pick(words)} ${text()}`
+  // a header's cell holds no pipe and no backtick, so it has the cells it is written with
+  const headCell = (): string =>
+    pick(['', 'Port', '**Use**', '[[Wiki\\|alias]]', 'a \\| b', '_x_', '#tag', '--', ':-'])
+  const cellText = (): string => pick([text, () => '', () => pick(words), () => '`a|b`'])()
+  const row = (n: number, outer: boolean, cell = cellText): string => {
+    const cells = Array.from({ length: n }, () => pick([' ', '']) + cell() + pick([' ', '']))
+    return outer ? `|${cells.join('|')}|` : cells.join('|')
+  }
+  const blocks = [
+    () => {
+      const open = ' '.repeat(upTo(3)) + '#'.repeat(1 + upTo(6))
+      const close = pick(['', ' #', ' ##', '#', ' # ', '  ###  ', ' \\#', ' a #', '\t#'])
+      return open + pick([' ', '  ', '\t', '', ' \t']) + text() + close + pick(['', ' ', '\t'])
+    },
+    () => Array.from({ length: 1 + upTo(2) }, line).join('\n'),
+    () => {
+      const n = 1 + upTo(5)
+      const outer = rand() < 0.7 || n === 1
+      const sep = Array.from({ length: n }, () =>
+        pick(['---', '-', ' --- ', ':-', '-:', ':-:', ' :---: ', '--  '])
+      )
+      // (without outer pipes, an empty cell at an end would read as one)
+      const lines = [
+        row(n, outer, outer ? headCell : () => headCell() || 'Use'),
+        outer || rand() < 0.5 ? `|${sep.join('|')}|` : sep.join('|')
+      ]
+      for (let r = upTo(4); r > 0; r--) lines.push(row(Math.max(1, n + upTo(4) - 2), true))
+      return lines.join('\n')
+    },
+    () => {
+      const items: string[] = []
+      for (let k = 1 + upTo(3); k > 0; k--) {
+        const indent = pick(['', '', '  ', '    '])
+        const box = pick(['', '', '[ ] ', '[x] ', '[/] ', '[-] ', '[] ', '[ab] '])
+        items.push(indent + pick(['- ', '* ', '1. ', '2) ']) + box + line())
+      }
+      return items.join('\n')
+    },
+    () => {
+      const head = pick(['', '[!note] Title', '[!danger]- Fold', '[!tip]+'])
+      const body = [line(), '| a | b |', '|---|---|', '| 1 | 2 |', line()].slice(0, 1 + upTo(4))
+      return [head, ...body]
+        .filter((l, k) => k > 0 || l)
+        .map((l) => pick(['> ', '>', '>  ']) + l)
+        .join('\n')
+    },
+    () => pick(['```', '~~~', '```bat']) + '\n' + text() + '\n| a |\n' + pick(['```', '~~~']),
+    () => '    ' + text() + '\n    more',
+    // (not ---: at the top it would open frontmatter, where " #" starts a YAML comment)
+    () => pick(['***', '* * *', '___', '- - -']),
+    () => pick(['--', '-|-', '|-', ':--:', '- |'])
+  ]
+  const out: string[] = []
+  if (rand() < 0.3) {
+    const fm = ['---']
+    for (let k = 1 + upTo(4); k > 0; k--) {
+      fm.push(
+        pick([
+          'id: TKT-2026-007',
+          'time: "11:31"',
+          "owner: 'O''Brien'",
+          'color: "#fff"',
+          'url: https://x.org/a#b',
+          'tags:\n  - arh\n  - "ticket"',
+          'parent:\n  child: x',
+          'desc: |\n  multi\n  line',
+          'related: "[[Wiki]]"',
+          'list: [a, b]'
+        ])
+      )
+    }
+    out.push(fm.join('\n'), '---')
+  }
+  // blocks apart, so that no line with a pipe comes right before another block's delimiter row
+  for (let k = 1 + upTo(6); k > 0; k--) out.push(pick(blocks)(), '')
+  return out.join('\n')
+}
+
+/** `blocks` with each table row padded to its header's cells, as the parser once stored it. */
+function padded(blocks: Block[]): Block[] {
+  return blocks.map((b): Block => {
+    if (b.t === 'table') return { ...b, rows: b.rows.map((r) => b.head.map((_, j) => r[j] ?? [])) }
+    if (b.t === 'quote' || b.t === 'callout') return { ...b, c: padded(b.c) }
+    if (b.t === 'list') return { ...b, items: b.items.map((it) => ({ ...it, c: padded(it.c) })) }
+    return b
+  })
+}
+
+test('ordinary notes read as they did before the parser was made linear (cb9d5bb)', async (t) => {
+  // the parser as it was, from git; a shallow clone (as in CI) has not got it
+  let before: string
+  try {
+    before = execFileSync('git', ['show', 'cb9d5bb:src/shared/markdown.ts'], {
+      cwd: import.meta.dirname,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+  } catch {
+    t.skip('commit cb9d5bb is not in this clone')
+    return
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'arh-markdown-'))
+  try {
+    await writeFile(join(dir, 'markdown.ts'), before)
+    const old = (await import(
+      pathToFileURL(join(dir, 'markdown.ts')).href
+    )) as typeof import('../src/shared/markdown.ts')
+    const rand = random(7)
+    for (let k = 0; k < 10_000; k++) {
+      const md = ordinaryNote(rand)
+      const now = parseMarkdown(md)
+      const was = old.parseMarkdown(md)
+      // a table row now holds only its own cells (the viewer draws the rest empty)
+      assert.deepEqual(
+        { ...now, blocks: padded(now.blocks), lines: [] },
+        { ...was, lines: [] },
+        `reads differently:\n${md}`
+      )
+      // and a backlink's line is the line as written
+      assert.deepEqual(now.lines, md.split('\n'))
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })

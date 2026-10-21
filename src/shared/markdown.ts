@@ -47,6 +47,7 @@ export type Block =
       line: number
       align: Array<'left' | 'center' | 'right' | null>
       head: Inline[][]
+      /** Each row's own cells, at most the header's (the viewer draws a short row's rest empty). */
       rows: Inline[][][]
       /** Source line of each row. */
       rowLines: number[]
@@ -60,6 +61,8 @@ export interface ParsedNote {
   links: string[]
   /** Each wikilink with its source line, properties included (for backlinks). */
   linkLines: Array<{ target: string; line: number }>
+  /** Each line of the note as the viewer reads it, comments hidden (for backlinks' snippets). */
+  lines: string[]
 }
 
 interface Line {
@@ -89,9 +92,39 @@ function blockScalar(lines: string[], fold: boolean): string {
   return fold ? text.replace(/([^\n])\n(?=[^\n])/g, '$1 ').replace(/\n\n+/g, '\n') : text
 }
 
-function frontmatter(lines: string[]): { data: Array<[string, string]>; end: number } {
-  if ((lines[0] ?? '').trim() !== '---') return { data: [], end: 0 }
+/**
+ * Where the YAML comment of a frontmatter line whose value starts at `at` starts (the line's
+ * length if it has none): at a # after a space, outside quotes, as in Obsidian ("#fff" and
+ * https://x/#a are values). A quoted scalar starts the value or, in a [flow, list], an entry.
+ */
+function commentAt(line: string, at: number): number {
+  const flow = line[at] === '[' || line[at] === '{'
+  let start = true
+  for (let i = at; i < line.length; i++) {
+    const c = line[i]!
+    if (c === '#' && /\s/.test(line[i - 1] ?? ' ')) return i
+    if (start && (c === '"' || c === "'")) {
+      // on to its closing quote: \" is a quote in "...", and '' in '...'
+      for (i++; i < line.length; i++) {
+        if (c === '"' && line[i] === '\\') i++
+        else if (c === "'" && line[i] === "'" && line[i + 1] === "'") i++
+        else if (line[i] === c) break
+      }
+      start = false
+    } else if (!/\s/.test(c)) start = flow && '[{,:'.includes(c)
+  }
+  return line.length
+}
+
+/** The properties, where the frontmatter ends, and its lines without their YAML comments. */
+function frontmatter(lines: string[]): {
+  data: Array<[string, string]>
+  end: number
+  shown: string[]
+} {
+  if ((lines[0] ?? '').trim() !== '---') return { data: [], end: 0, shown: [] }
   const data: Array<[string, string]> = []
+  const shown = [lines[0] ?? '']
   // the indented lines of a "key: |" or "key: >" block being read
   let scalar: { fold: boolean; lines: string[] } | null = null
   for (let i = 1; i < lines.length && i < 400; i++) {
@@ -100,31 +133,41 @@ function frontmatter(lines: string[]): { data: Array<[string, string]>; end: num
     if (scalar && last) {
       if (!line.trim() || /^\s/.test(line)) {
         scalar.lines.push(line)
+        shown.push(line)
         continue
       }
       last[1] = blockScalar(scalar.lines, scalar.fold)
       scalar = null
     }
-    if (line.trim() === '---' || line.trim() === '...') return { data, end: i + 1 }
+    if (line.trim() === '---' || line.trim() === '...') {
+      shown.push(line)
+      return { data, end: i + 1, shown }
+    }
     const kv = /^([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    // "- item" under a key: a YAML list, shown as "a, b"; "  child: x" under a key: "child: x"
+    const item = kv ? null : /^\s*-\s+(.*)$/.exec(line)
+    const child = kv || item?.[1] ? null : /^\s+([^\s:#][^:]*):\s*(.*)$/.exec(line)
+    // the line's value without its comment; any other line is cut at its comment too (all of
+    // it, for a line of only a comment), as properties' links and backlinks read it
+    const rest = kv ? (kv[2] ?? '') : item?.[1] ? item[1] : child ? (child[2] ?? '') : line
+    const at = line.length - rest.length
+    const end = commentAt(line, at)
+    const v = line.slice(at, end).trim()
+    shown.push(line.slice(0, end))
     if (kv?.[1]) {
-      const v = (kv[2] ?? '').trim()
       const block = /^([|>])[+-]?[1-9]?$/.exec(v)
       if (block) scalar = { fold: block[1] === '>', lines: [] }
       data.push([kv[1].trim(), block ? '' : unquote(v)])
     } else if (last) {
-      // "- item" under a key: a YAML list, shown as "a, b"; "  child: x" under a key: "child: x"
-      const item = /^\s*-\s+(.*)$/.exec(line)
-      const child = /^\s+([^\s:#][^:]*):\s*(.*)$/.exec(line)
-      const v = item?.[1]
-        ? unquote(item[1].trim())
+      const value = item?.[1]
+        ? unquote(v)
         : child?.[1]
-          ? `${child[1].trim()}: ${unquote((child[2] ?? '').trim())}`.trim()
+          ? `${child[1].trim()}: ${unquote(v)}`.trim()
           : ''
-      if (v) last[1] = last[1] ? `${last[1]}, ${v}` : v
+      if (value) last[1] = last[1] ? `${last[1]}, ${value}` : value
     }
   }
-  return { data: [], end: 0 } // no closing line: not frontmatter
+  return { data: [], end: 0, shown: [] } // no closing line: not frontmatter
 }
 
 const FENCE = /^(\s*)(`{3,}|~{3,})\s*([^`\s]*)/
@@ -173,7 +216,7 @@ const newLevel = (depth: number): Level => ({ depth, fresh: true, open: { t: 'no
  * worked out (for a list item that can mean looking a line further, and so on down the levels).
  */
 const delimAt = (ahead: Ahead, j: number) => (): string =>
-  TABLE_SEP.test((ahead.raw(j) ?? '').replace(/^[\s>]+/, '')) ? (ahead.at(j) ?? '') : ''
+  tableSep((ahead.raw(j) ?? '').replace(/^[\s>]+/, '')) ? (ahead.at(j) ?? '') : ''
 
 /**
  * The lines ahead as a level inside another sees them, each worked out once and only when asked
@@ -289,7 +332,7 @@ function step(l: Level, s: string, ahead: Ahead): Read {
   const fence = FENCE.exec(s)
   if (fence?.[2]) return to({ t: 'fence', mark: fence[2] }, true)
   if (l.fresh && ind >= 4 && item?.[4] === undefined) return to({ t: 'indented' }, true)
-  if (HEADING.test(s) || HR.test(s)) return to({ t: 'none' }, false)
+  if (heading(s) || HR.test(s)) return to({ t: 'none' }, false)
   if (tableStart(s, next, o.t === 'para')) return to({ t: 'table' }, false)
   if (quote) {
     const inner = newLevel(l.depth + 1)
@@ -662,9 +705,12 @@ function stripComments(
         const s = raw.trim() ? '' : raw
         return { s, r: s === raw && read ? read : step(at, s, after), ...rest }
       }
-      // HIDDEN keeps the line's shape, unless a comment held its only pipes (a table row) or
-      // the next line starts in its comment
-      const same = read && !h.open && raw.includes('|') === h.marked.includes('|')
+      // HIDDEN keeps the line's shape, unless a comment held its only pipes (a table row) or,
+      // over a delimiter row, any of its cells (a table's head has as many), or the next line
+      // starts in its comment
+      const piped = raw.includes('|')
+      const head = piped && tableSep((lines[k + 1] ?? '').replace(/^[\s>]+/, ''))
+      const same = read && !h.open && !head && piped === h.marked.includes('|')
       const marked = same ? read : step(at, h.marked, after)
       if (h.bare === h.marked) return { s: h.marked, r: marked, ...rest }
       // a quote's or item's line that held only a comment is blank there; its bare line ends
@@ -712,18 +758,40 @@ function wiki(text: string, embed: boolean): Inline {
   return { t: 'wiki', target: (target ?? '').trim(), heading, alias, embed }
 }
 
-/** Finds the closing delimiter for an emphasis run: not escaped, not preceded by a space. */
-function findClose(s: string, from: number, delim: string): number {
+/**
+ * For each position of `s`, the longest run of backticks at or after it, so that a run is looked
+ * for only where one as long comes after it (looked for after each run, a line of shorter and
+ * shorter runs that close nothing took 14 s for 400 KB).
+ */
+function longestRuns(s: string): Int32Array {
+  const out = new Int32Array(s.length + 1)
+  for (let p = s.length - 1, run = 0; p >= 0; p--) {
+    run = s[p] === '`' ? run + 1 : 0
+    out[p] = Math.max(out[p + 1]!, run)
+  }
+  return out
+}
+
+/**
+ * Finds the closing delimiter for an emphasis run: not escaped, not preceded by a space. `runs`
+ * gives longestRuns(s).
+ */
+function findClose(s: string, from: number, delim: string, runs: () => Int32Array): number {
   const c = delim[0]!
+  // where the run of backticks the loop is in ends
+  let tickEnd = -1
   for (let i = from; i <= s.length - delim.length; i++) {
     if (s[i] === '\\') {
       i++
       continue
     }
     if (s[i] === '`') {
-      const run = /^`+/.exec(s.slice(i))?.[0] ?? '`'
-      const end = s.indexOf(run, i + run.length)
-      if (end !== -1) i = end + run.length - 1
+      // the run from here, or what is left of it (by index: a regex at each backtick of a long
+      // run that closes nothing read it to its end, 3 s for 100000)
+      if (tickEnd <= i) for (tickEnd = i; s[tickEnd] === '`'; ) tickEnd++
+      const n = tickEnd - i
+      const end = runs()[tickEnd]! >= n ? s.indexOf('`'.repeat(n), tickEnd) : -1
+      if (end !== -1) i = end + n - 1
       continue
     }
     if ((c === '*' || c === '_') && s[i] === c) {
@@ -783,10 +851,11 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
     return text
   }
   // What one scan already showed, so a long paragraph full of unmatched openers (* _ [[ [ `)
-  // costs one scan per kind instead of one per opener: delimiters with no closer, the shortest
-  // backtick run with no closer, the next ]] and line break, and where each [ and ( closes.
+  // costs one scan per kind instead of one per opener: delimiters with no closer, the longest
+  // backtick run after each position, the next ]] and line break, and where each [ and ( closes.
   const noClose = new Set<string>()
-  let noTick = Infinity
+  let longest: Int32Array | null = null
+  const runs = (): Int32Array => (longest ??= longestRuns(s))
   let wikiEnd = -2
   let lineEnd = -2
   let brackets: Map<number, number> | null = null
@@ -821,8 +890,9 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
     }
     if (ch === '`') {
       const run = /^`+/.exec(rest)?.[0] ?? '`'
-      // no run of n backticks after here means none of n or more either
-      const end = run.length < noTick ? s.indexOf(run, i + run.length) : -1
+      // searched for only where a run as long comes after it
+      const after = i + run.length
+      const end = runs()[after]! >= run.length ? s.indexOf(run, after) : -1
       if (end !== -1) {
         let v = s.slice(i + run.length, end)
         if (/^ .* $/.test(v)) v = v.slice(1, -1)
@@ -832,7 +902,6 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
         continue
       }
       if (probe && depth === 0) probe.open ??= { at: base + i, run }
-      noTick = Math.min(noTick, run.length)
       pushText(out, run)
       i += run.length
       continue
@@ -914,7 +983,7 @@ function readInline(s: string, depth: number, probe: Probe | null, base: number)
       const kind = emph[1]
       const intraword = (d === '_' || d === '__') && /[A-Za-z0-9]/.test(s[i - 1] ?? '')
       // a delimiter that found no closer from an earlier opener finds none from a later one
-      const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d)
+      const end = intraword || noClose.has(d) ? -1 : findClose(s, i + d.length, d, runs)
       if (end === -1 && !intraword) noClose.add(d)
       if (end !== -1) {
         const inner = nested(i + d.length, end)
@@ -996,12 +1065,38 @@ export function inlineText(c: Inline[]): string {
 
 /* ---------- blocks ---------- */
 
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/
+/** A heading's #s and the spaces after them; its text is the rest of the line. */
+const HEADING = /^\s{0,3}(#{1,6})\s+/
 const HR = /^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/
 const QUOTE = /^\s{0,3}>\s?(.*)$/
 const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/
 const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+(.*))?$/
-const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
+
+/**
+ * A heading line's level and text, without the closing #s after a space and the spaces at its
+ * end (by index: a regex for them backtracks over a run of spaces, 100 KB took 20 s); null for
+ * any other line. The text is one line: a \r or U+2028 in it, not at its end, makes no heading.
+ */
+function heading(s: string): { level: number; text: string } | null {
+  const m = HEADING.exec(s)
+  if (!m?.[1]) return null
+  const t = s.slice(m[0].length).trimEnd()
+  let j = t.length
+  while (j > 0 && t[j - 1] === '#') j--
+  const text = j > 0 && j < t.length && /\s/.test(t[j - 1]!) ? t.slice(0, j).trimEnd() : t
+  return /[\n\r\u2028\u2029]/.test(text) ? null : { level: m[1].length, text }
+}
+
+/**
+ * Whether a line is cells of :?-+:? between pipes, as a table's delimiter row is (cell by cell:
+ * one regex for the row backtracks over a run of spaces, 100 KB took 9 s).
+ */
+function tableSep(s: string): boolean {
+  let t = s.trim()
+  if (t.startsWith('|')) t = t.slice(1)
+  if (t.endsWith('|')) t = t.slice(0, -1)
+  return t.split('|').every((c) => /^\s*:?-+:?\s*$/.test(c))
+}
 
 const expandTabs = (s: string): string =>
   s[0] === '\t' ? s.replace(/^\t+/, (t) => '    '.repeat(t.length)) : s
@@ -1027,7 +1122,8 @@ function itemText(
       .slice(base)
       .match(/^([-*+]|\d{1,9}[.)])\s+/)?.[0] ?? '- '
   const text = m[5] ?? ''
-  const tm = /^\[(.)\](?:\s+|$)(.*)$/.exec(text)
+  // a box that held only a comment is no task box: its placeholder is never a status
+  const tm = /^\[([^\uFDD0\uFDD1])\](?:\s+|$)(.*)$/.exec(text)
   return { content: base + marker.length, task: tm?.[1], first: tm ? (tm[2] ?? '') : text }
 }
 
@@ -1039,7 +1135,7 @@ function itemText(
 function otherStart(s: string, para: boolean): boolean {
   const item = ITEM.exec(s)
   return (
-    HEADING.test(s) ||
+    !!heading(s) ||
     FENCE.test(s) ||
     QUOTE.test(s) ||
     HR.test(s) ||
@@ -1050,22 +1146,38 @@ function otherStart(s: string, para: boolean): boolean {
 /**
  * Whether a line heads a table: it has a pipe, would be a paragraph's line there (as in GFM, a
  * quote or a list item heads no table, and ends one), and `next()`, the line after it, is a
- * delimiter row. `para`: the line comes right after a paragraph's line.
+ * delimiter row of its cells (heads). `para`: the line comes right after a paragraph's line.
  */
 function tableStart(s: string, next: () => string, para = false): boolean {
-  return s.includes('|') && !otherStart(s, para) && delimiterRow(next())
+  return s.includes('|') && !otherStart(s, para) && heads(s, next())
 }
 
 /** Whether a line is a table's delimiter row, and starts no other block ("- |---|" is an item). */
 const delimiterRow = (b: string): boolean =>
-  b.includes('|') && b.includes('-') && TABLE_SEP.test(b) && !otherStart(b, true)
+  b.includes('|') && b.includes('-') && tableSep(b) && !otherStart(b, true)
+
+/**
+ * The columns a table can have; a wider one reads as a paragraph, so that the window lays out no
+ * wider table (it draws each row as wide as the header).
+ */
+const MAX_COLS = 256
+
+/**
+ * Whether a line with a pipe heads a table over `b`, the line after it: `b` is a delimiter row
+ * with as many cells as the line, as in GFM, and at most MAX_COLS.
+ */
+function heads(s: string, b: string): boolean {
+  if (!delimiterRow(b)) return false
+  const n = splitCells(b).length
+  return n <= MAX_COLS && splitCells(trimShown(s)).length === n
+}
 
 /**
  * Whether a line starts a new block (`next()` gives the line after it, read only for a table),
  * `para` as for otherStart.
  */
 function blockStart(s: string, next: () => string, para = false): boolean {
-  return otherStart(s, para) || (s.includes('|') && delimiterRow(next()))
+  return otherStart(s, para) || (s.includes('|') && heads(s, next()))
 }
 
 /** The line after line i, for tableStart and blockStart. */
@@ -1076,6 +1188,7 @@ function splitCells(row: string): string[] {
   if (s.startsWith('|')) s = s.slice(1)
   if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1)
   const cells: string[] = []
+  let longest: Int32Array | null = null
   let cur = ''
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]
@@ -1086,7 +1199,9 @@ function splitCells(row: string): string[] {
     } else if (ch === '`') {
       // a `code span` keeps its pipes; a lone backtick is text
       const run = /^`+/.exec(s.slice(i))?.[0] ?? '`'
-      const end = s.indexOf(run, i + run.length)
+      longest ??= longestRuns(s)
+      const after = i + run.length
+      const end = longest[after]! >= run.length ? s.indexOf(run, after) : -1
       const stop = end === -1 ? i + run.length : end + run.length
       cur += s.slice(i, stop).replace(/\\\|/g, '|')
       i = stop - 1
@@ -1226,10 +1341,10 @@ function parseBlocks(
       continue
     }
 
-    const h = HEADING.exec(s)
-    if (h?.[1]) {
-      const c = parseInline(stripBlockId(trimShown(h[2] ?? '')))
-      out.push({ t: 'heading', line: line.n, level: h[1].length, c, text: inlineText(c).trim() })
+    const h = heading(s)
+    if (h) {
+      const c = parseInline(stripBlockId(trimShown(h.text)))
+      out.push({ t: 'heading', line: line.n, level: h.level, c, text: inlineText(c).trim() })
       i++
       continue
     }
@@ -1257,8 +1372,10 @@ function parseBlocks(
         lines[i]!.s.trim() &&
         !otherStart(lines[i]!.s, false)
       ) {
-        const cells = splitCells(trimShown(lines[i]!.s))
-        rows.push(head.map((_, j) => parseInline(cells[j] ?? '')))
+        // its own cells, at most the head's (padded to the head's, rows of one pipe under 256
+        // columns were 128 cells for each character of the note)
+        const cells = splitCells(trimShown(lines[i]!.s)).slice(0, head.length)
+        rows.push(cells.map((c) => parseInline(c)))
         rowLines.push(lines[i]!.n)
         i++
       }
@@ -1454,6 +1571,8 @@ export function parseMarkdown(text: string): ParsedNote {
     return { blocks: parseBlocks(lines.map(lineAt), 0, undefined, { starts, again }), starts }
   }
   let blocks: Block[]
+  // its lines as read (code as written), for backlinks' snippets
+  let body = src
   // a note with no comment marker is read as it is (stripComments would give it back unchanged)
   if (!src.some(hasMarker)) blocks = parseBlocks(src.map(lineAt))
   else {
@@ -1469,7 +1588,8 @@ export function parseMarkdown(text: string): ParsedNote {
       const shows = keptShown(top.blocks, raw.length)
       if (!shows.length) break
       if (n === MAX_REREADS) {
-        top = readTop(stripComments(src, () => true).out)
+        stripped = stripComments(src, () => true)
+        top = readTop(stripped.out)
         break
       }
       let first = src.length
@@ -1493,9 +1613,10 @@ export function parseMarkdown(text: string): ParsedNote {
       stripped = next
     }
     blocks = top.blocks
+    body = stripped.out.map(codeText)
   }
   // links in properties ("related: [[Note]]") are links too, as in Obsidian's backlinks
-  const props = raw
+  const props = fm.shown
     .slice(1, Math.max(1, fm.end - 1))
     .map((s, k): Block => ({ t: 'para', line: k + 2, c: parseInline(s) }))
   const linkLines: ParsedNote['linkLines'] = []
@@ -1503,7 +1624,13 @@ export function parseMarkdown(text: string): ParsedNote {
   const inProps = linkLines.length
   collectLinks(blocks, linkLines)
   const links = new Set(linkLines.slice(inProps).map((l) => l.target))
-  return { frontmatter: fm.data, blocks, links: [...links], linkLines }
+  return {
+    frontmatter: fm.data,
+    blocks,
+    links: [...links],
+    linkLines,
+    lines: [...fm.shown, ...body]
+  }
 }
 
 /**

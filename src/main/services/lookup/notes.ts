@@ -42,16 +42,19 @@ export function resolveLink(
   })[0]!
 }
 
-// a note's links as the reader shows them, parsed once per version (the index replaces the
-// object when the file changes)
-const linkCache = new WeakMap<IndexedNote, ParsedNote['linkLines']>()
-function linksOf(note: IndexedNote): ParsedNote['linkLines'] {
+// a note's links as the reader shows them, and its lines as it reads them (comments hidden),
+// parsed once per version (the index replaces the object when the file changes)
+type Links = Pick<ParsedNote, 'linkLines' | 'lines'>
+const linkCache = new WeakMap<IndexedNote, Links>()
+function linksOf(note: IndexedNote): Links {
   let links = linkCache.get(note)
   if (!links) {
     try {
-      links = parseMarkdown(note.text).linkLines
+      const { linkLines, lines } = parseMarkdown(note.text)
+      links = { linkLines, lines }
     } catch {
-      links = [] // one note the parser cannot read must not stop the notes it mentions opening
+      // one note the parser cannot read must not stop the notes it mentions opening
+      links = { linkLines: [], lines: [] }
     }
     linkCache.set(note, links)
   }
@@ -75,7 +78,8 @@ export function backlinks(
   for (const other of notes) {
     if (other.abs === note.abs || !mentions.test(other.text)) continue
     const seen = new Set<number>()
-    for (const { target, line } of linksOf(other)) {
+    const { linkLines, lines } = linksOf(other)
+    for (const { target, line } of linkLines) {
       if (out.length >= limit) break
       if (seen.has(line) || resolveLink(target, other, notes)?.abs !== note.abs) continue
       seen.add(line)
@@ -83,7 +87,8 @@ export function backlinks(
         file: other.rel,
         title: other.title,
         line,
-        text: (other.lines[line - 1] ?? '').trim().slice(0, 300)
+        // the line as the reader shows it: a comment on it may hold a patient's details
+        text: (lines[line - 1] ?? '').trim().slice(0, 300)
       })
     }
     if (out.length >= limit) break

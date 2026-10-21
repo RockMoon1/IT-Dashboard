@@ -6,7 +6,8 @@ import MdInline from './MdInline.vue'
 /*
   Block Markdown for the note viewer. Every block carries data-line (its line in the file) so the
   viewer can jump to and mark the line a click came from; lists and quotes leave it to their
-  first item or block (same line), and tables carry it on each row. Headings carry
+  first item or block (same line), and tables carry it on each row (a short row's missing cells
+  are one empty cell, so a row costs its own cells, not the header's). Headings carry
   data-heading for [[Note#Heading]] links. `tight` drops paragraph spacing inside list items.
 */
 withDefaults(defineProps<{ blocks: Block[]; tight?: boolean }>(), { tight: false })
@@ -121,6 +122,11 @@ const done = (task: string | undefined): boolean => task === 'x' || task === 'X'
             <td v-for="(cell, j) in row" :key="j" class="px-2 py-1.5" :class="align(b.align[j])">
               <MdInline :c="cell" />
             </td>
+            <td
+              v-if="row.length < b.head.length"
+              :colspan="b.head.length - row.length"
+              class="px-2 py-1.5"
+            />
           </tr>
         </tbody>
       </table>

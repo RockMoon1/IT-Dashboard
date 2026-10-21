@@ -103,6 +103,47 @@ test('backlinks are the links the reader shows: tables, Markdown links, not code
   }
 })
 
+test("a backlink shows its line as the reader does: none of the line's comments", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const link = '[[T-0001 Front desk printer]]'
+    await writeFile(
+      join(vault, 'Visit.md'),
+      [
+        '---',
+        `related: "${link}" # Jane Roe, room 4`,
+        '---',
+        '# Visit',
+        '',
+        `Fixed ${link} %% patient Jane Roe, DOB 1970-01-02 %%`,
+        `Also ${link} <!-- MRN 445566 -->`,
+        '',
+        'Called back %% patient Jane',
+        `Roe, MRN 445566 %% re ${link}`,
+        '',
+        `Ran \`%% kept %%\` for ${link}`
+      ].join('\n')
+    )
+    const notes = await new VaultIndex().notes(vault)
+    const ticket = notes.find((n) => n.name === 'T-0001 Front desk printer')!
+    const back = backlinks(ticket, notes)
+      .filter((b) => b.title === 'Visit')
+      .map((b) => [b.line, b.text])
+    assert.deepEqual(back, [
+      [2, `related: "${link}"`],
+      [6, `Fixed ${link}`],
+      [7, `Also ${link}`],
+      [10, `re ${link}`],
+      // a %% in code is code, and shows
+      [12, `Ran \`%% kept %%\` for ${link}`]
+    ])
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
 test('relative links (./, ../ and <…>) resolve from the linking note', async () => {
   const tmp = await mkdtemp(join(tmpdir(), 'arh-notes-'))
   try {
