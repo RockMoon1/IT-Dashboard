@@ -299,3 +299,73 @@ func TestCustomCommandAbortedBeforeItStartsIsNotApplied(t *testing.T) {
 		t.Fatalf("x4: %+v", r)
 	}
 }
+
+// onWrite stands in for the dashboard and hands fn each message the agent sends.
+type onWrite func(protocol.Message)
+
+func (f onWrite) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (f onWrite) Write(b []byte) (int, error) {
+	var m protocol.Message
+	if json.Unmarshal(b, &m) == nil {
+		f(m)
+	}
+	return len(b), nil
+}
+
+// A custom command that cannot start (the agent is stopping, or it was aborted first) is not
+// noted as applied even before Run says so: an agent that exits then leaves that note for the
+// next start to report, and the dashboard writes a Change Log row for an applied command.
+func TestCustomCommandThatCannotStartIsNotNotedApplied(t *testing.T) {
+	for _, stopping := range []bool{true, false} {
+		h := newHarness(t, true)
+		if stopping {
+			h.cancel() // what SIGTERM does
+		}
+		ran := filepath.Join(h.dir, "ran")
+		m := protocol.Message{Type: "exec", RunID: "x6", Shell: "sh", Script: "echo ran > '" + ran + "'", Technician: "Lisandro", Reason: "test"}
+		ctx, release, _ := h.agent.takeSlot(m.RunID, "exec")
+		if !stopping {
+			h.agent.abort(nil, m.RunID)
+		}
+		// what the next start would report had the agent exited once the run was noted
+		var next []actions.Result
+		h.agent.attach(protocol.NewCodec(onWrite(func(msg protocol.Message) {
+			if msg.Type == "check-start" {
+				dir := t.TempDir()
+				b, _ := os.ReadFile(filepath.Join(h.dir, runsFile))
+				_ = os.WriteFile(filepath.Join(dir, runsFile), b, 0o600)
+				next = openJournal(dir).recover(now())
+			}
+		})))
+		h.agent.runExec(ctx, m, 30, "cable")
+		release()
+		if _, err := os.Stat(ran); err == nil {
+			t.Fatal("a custom command that could not start ran")
+		}
+		want := "not started: it was aborted"
+		if stopping {
+			want = "not started: the agent was stopping"
+		}
+		if len(next) != 1 || next[0].Applied || next[0].AppliedAt != "" || next[0].Skipped != want {
+			t.Fatalf("stopping %v: the next start would report %+v", stopping, next)
+		}
+	}
+}
+
+// A custom command whose shell exits 0 but leaves a process in the background holding its
+// output keeps that exit status in its result, which the dashboard writes to the vault.
+func TestCustomCommandLeavingAProcessRunningKeepsItsExitStatus(t *testing.T) {
+	h := newHarness(t, true)
+	h.setPolicy("full")
+	c, _, closeFn := h.connect()
+	defer closeFn()
+	_ = c.Write(protocol.Message{Type: "exec", RunID: "x7", Shell: "sh", Script: "sleep 5 &\necho started\nexit 0", Technician: "Lisandro", Reason: "test"})
+	end, _ := until(t, c, "run-end")
+	if end.OK == nil || !*end.OK || end.Result == nil || !end.Result.Applied || end.Result.ExitCode == nil || *end.Result.ExitCode != 0 {
+		t.Fatalf("x7: %+v", end.Result)
+	}
+	if r, _ := h.agent.journal.find("x7"); r.ExitCode == nil || *r.ExitCode != 0 || r.Aborted {
+		t.Fatalf("x7 in the outbox: %+v", r)
+	}
+}

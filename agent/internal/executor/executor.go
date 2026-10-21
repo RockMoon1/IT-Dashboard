@@ -93,16 +93,24 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 
 	runErr := cmd.Start()
 	res := Result{Started: runErr == nil}
+	exitedFirst := false
 	if res.Started {
 		h.afterStart()
 		runErr = cmd.Wait()
+		// Wait gives ErrWaitDelay only for a shell that exited 0 on its own (no timeout or abort
+		// stopped it) while a process it started in the background still held its output. That
+		// exit status stands; what was written after the shell ended is not collected.
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			runErr, exitedFirst = nil, true
+			truncated.Store(true)
+		}
 	}
 	h.done()
 	stdout.flush()
 	stderr.flush()
 
 	res.Duration, res.Truncated = time.Since(started), truncated.Load()
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && !exitedFirst {
 		res.TimedOut = true
 	}
 	if runErr != nil {
@@ -114,7 +122,7 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 			res.Err = runErr
 		}
 	}
-	if (res.TimedOut || errors.Is(ctx.Err(), context.Canceled)) && res.ExitCode == 0 {
+	if (res.TimedOut || errors.Is(ctx.Err(), context.Canceled)) && res.ExitCode == 0 && !exitedFirst {
 		res.ExitCode = -1
 	}
 	return res

@@ -128,6 +128,11 @@ Rules enforced by the agent, not the host:
   (next section), with their own rules.
 - Output per check is capped at 1 MiB (then `truncated: true`); per-check timeout from the
   profile (default 90 s); the whole run is aborted on `abort` or if the socket closes.
+- A check (or action script, or custom command) whose shell exits while a process it started in
+  the background still holds its output (`nohup … &` without redirecting it) keeps the shell's
+  exit status, after a 2 s wait, with `truncated: true`: what that process writes later is not
+  collected. On Linux and macOS that process is left running (a timeout or abort ends the whole
+  process group, but only while the shell runs); on Windows the Job Object ends it with the check.
 
 ## Actions and custom commands (protocol 2)
 

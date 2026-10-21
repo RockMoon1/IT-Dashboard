@@ -449,6 +449,15 @@ func (a *Agent) startExec(codec *protocol.Codec, link string, m protocol.Message
 	}()
 }
 
+// stoppedFirst says why a custom command whose run was stopped before its process started did
+// not run.
+func (a *Agent) stoppedFirst() string {
+	if a.root().Err() != nil {
+		return "not started: the agent was stopping"
+	}
+	return "not started: it was aborted"
+}
+
 // runExec runs a custom command. Nothing about its effect is measured; the record keeps the
 // script's hash and line count (and, on the device only, the text), never its output.
 func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, link string) {
@@ -456,8 +465,13 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	sum := sha256.Sum256([]byte(m.Script))
 	digest := hex.EncodeToString(sum[:])
 	lines := strings.Count(strings.TrimRight(m.Script, "\n"), "\n") + 1
-	// noted as applied until Run says it did not start: an agent that dies first cannot tell
+	// noted as applied until Run says it did not start: an agent that dies first cannot tell. A
+	// run stopped already (the agent stopping, or aborted first) cannot start, since Start
+	// refuses a done context, so it is noted as not applied.
 	res := actions.Result{RunID: m.RunID, Kind: "exec", SHA256: digest, Lines: lines, StartedAt: now(), Applied: true, AppliedAt: now()}
+	if ctx.Err() != nil {
+		res.Applied, res.AppliedAt, res.Skipped = false, "", a.stoppedFirst()
+	}
 	a.send(protocol.Message{Type: "run-start", RunID: m.RunID, Shell: m.Shell, SHA256: digest, TimeoutSeconds: timeout, Checks: 1, Title: "Custom command", Mode: "apply", Link: link})
 	_ = a.audit.Record("intent", map[string]any{"runId": m.RunID, "kind": "exec", "shell": m.Shell, "scriptSha256": digest, "script": m.Script,
 		"technician": m.Technician, "reason": m.Reason, "link": link})
@@ -480,13 +494,10 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	if !r.Started {
 		// nothing ran, so nothing was applied (and the dashboard adds no Change Log row)
 		res.Applied, res.AppliedAt = false, ""
-		switch {
-		case !res.Aborted:
+		if res.Aborted {
+			res.Skipped = a.stoppedFirst()
+		} else {
 			res.Skipped = fmt.Sprintf("not started: %v", r.Err)
-		case a.root().Err() != nil:
-			res.Skipped = "not started: the agent was stopping"
-		default:
-			res.Skipped = "not started: it was aborted"
 		}
 	}
 	if r.TimedOut {

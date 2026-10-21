@@ -5,7 +5,10 @@ package executor
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -137,5 +140,31 @@ func TestRunTimeoutKillsGrandchildren(t *testing.T) {
 	time.Sleep(3500 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a grandchild survived the timeout")
+	}
+}
+
+// A shell that exits 0 while a process it started in the background still holds its output
+// keeps that exit status, also when its timeout passes while the output is waited for. Output
+// after the shell ended is not collected, and the process is left running (a technician may
+// start a daemon on purpose).
+func TestRunBackgroundChildKeepsTheExitStatus(t *testing.T) {
+	for _, timeout := range []int{10, 1} {
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		out, so, _ := collect()
+		res := Run(context.Background(), profiles.Check{ID: "t", Shell: "sh", TimeoutSeconds: timeout, Command: []string{
+			"sleep 30 &", "echo $! > '" + pidFile + "'", "echo started", "exit 0"}}, out)
+		b, _ := os.ReadFile(pidFile)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil {
+			t.Fatalf("timeout %d: no pid: %v", timeout, err)
+		}
+		alive := syscall.Kill(pid, 0) == nil
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		if !res.Started || res.ExitCode != 0 || res.TimedOut || res.Err != nil || !res.Truncated || so.String() != "started\n" {
+			t.Fatalf("timeout %d: %+v stdout %q", timeout, res, so.String())
+		}
+		if !alive {
+			t.Fatalf("timeout %d: the background process was killed", timeout)
+		}
 	}
 }
