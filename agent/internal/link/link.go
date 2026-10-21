@@ -42,7 +42,8 @@ const (
 	dialTimeout    = 10 * time.Second
 	readTimeout    = 60 * time.Second
 	pingEvery      = 20 * time.Second
-	drainWait      = 15 * time.Second // launchd allows 20 s after SIGTERM, systemd 90 s
+	drainWait      = 15 * time.Second // systemd and launchd wait service.StopSeconds after SIGTERM
+	drainEnd       = 5 * time.Second  // then for a custom command that was ended to report
 	retryPause     = 3 * time.Second
 )
 
@@ -99,6 +100,8 @@ type Agent struct {
 	catalog func(osName string) []actions.Action // actions.ForOS; tests supply their own
 }
 
+// New reports the runs a previous agent left running as interrupted, so the caller must hold the
+// data folder's lock (datalock.Acquire) first: another agent's live run is not interrupted.
 func New(cfg Config) *Agent {
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)
@@ -179,8 +182,9 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 // drain gives running actions and custom commands a short time to finish when the agent is
-// stopped: a started change is not cancelled, and its result should reach the outbox. What is
-// still running after that is reported as interrupted by the next agent start.
+// stopped: a started change is not cancelled, and its result should reach the outbox. A custom
+// command still running after that is ended, so it does not outlive the agent, and reports as
+// aborted. What is still running then is reported as interrupted by the next agent start.
 func (a *Agent) drain(limit time.Duration) {
 	done := make(chan struct{})
 	go func() {
@@ -189,9 +193,24 @@ func (a *Agent) drain(limit time.Duration) {
 	}()
 	select {
 	case <-done:
+		return
 	case <-time.After(limit):
-		a.cfg.Logger.Printf("stopping with a run still in progress; the next start reports it as interrupted")
 	}
+	a.runMu.Lock()
+	ended, id := a.runKind == "exec" && a.runCancel != nil, a.runID
+	if ended {
+		a.runCancel()
+	}
+	a.runMu.Unlock()
+	if ended {
+		a.cfg.Logger.Printf("run %s: custom command still running %s after the agent was stopped; ended it", id, limit)
+		select {
+		case <-done:
+			return
+		case <-time.After(drainEnd):
+		}
+	}
+	a.cfg.Logger.Printf("stopping with a run still in progress; the next start reports it as interrupted")
 }
 
 func readBeacons(ctx context.Context, conn *net.UDPConn, out chan<- datagram) {

@@ -112,9 +112,11 @@ Design, threat model and the critique it went through: [PHASE3-DESIGN.md](PHASE3
 - **Agent** (`agent/internal/link/actions.go`): checks the device policy (`agent/internal/policy`)
   and the cable on every request, runs measure → apply → measure with a result file it owns,
   keeps results in an outbox until acknowledged, refuses repeated run ids, and writes
-  `actions.log` plus the OS log (`agent/internal/audit`). The executor gives actions a clean
-  environment and system PATH, sends long scripts on stdin (Windows) or fd 3 (macOS/Linux), and
-  ends the whole process tree on timeout (Job Objects, process groups).
+  `actions.log` plus the OS log (`agent/internal/audit`). One agent process uses the data folder
+  at a time (`agent/internal/datalock`), so a second one cannot report the first one's live run
+  as interrupted. The executor gives actions a clean environment and system PATH, sends long
+  scripts on stdin (Windows) or fd 3 (macOS/Linux), and ends the whole process tree on timeout
+  (Job Objects, process groups).
 - **Dashboard** (`src/main/services/actions/`): `ActionCatalog`, `ActionRunner` (every gate in
   main: Settings, policy, cable, agent copy, preview ticket, reason, technician, typed name),
   `ActionLog` (hash-chained JSONL), `DeviceSlots` (one run per device, shared with scans).

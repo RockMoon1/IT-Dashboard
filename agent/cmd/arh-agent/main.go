@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 
 	"github.com/RockMoon1/IT-Dashboard/actions"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/datalock"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/identity"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/keystore"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/link"
@@ -158,6 +160,15 @@ func cmdRun(args []string) error {
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		return err
 	}
+	// One agent per data folder, held until this process ends, and taken before anything in it is
+	// read or written: a second one would report the first one's running change as interrupted.
+	release, err := datalock.Acquire(*dataDir)
+	if errors.Is(err, datalock.ErrHeld) {
+		return fmt.Errorf("another arh-agent (the service, or a run started by hand) is already using the data folder %s; stop it first", *dataDir)
+	} else if err != nil {
+		return fmt.Errorf("locking the data folder %s: %w", *dataDir, err)
+	}
+	defer release()
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	if f, err := os.OpenFile(filepath.Join(*dataDir, "agent.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		defer f.Close()

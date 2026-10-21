@@ -97,14 +97,20 @@ func checkWho(m protocol.Message) error {
 	return nil
 }
 
-// takeSlot claims the single run slot for an action or custom command.
+// takeSlot claims the single run slot for an action or custom command. The agent stopping does
+// not cancel a custom command that has started: drain gives it time to finish and ends it after
+// that; abort still stops it at once. One that arrives once the agent is stopping never starts.
 func (a *Agent) takeSlot(runID, kind string) (context.Context, func(), string) {
 	a.runMu.Lock()
 	defer a.runMu.Unlock()
 	if a.runCancel != nil {
 		return nil, nil, a.runID
 	}
-	ctx, cancel := context.WithCancel(a.root())
+	parent := a.root()
+	if kind == "exec" && parent.Err() == nil {
+		parent = context.WithoutCancel(parent)
+	}
+	ctx, cancel := context.WithCancel(parent)
 	a.runCancel, a.runID, a.runKind, a.runPhase, a.runAbortable = cancel, runID, kind, actions.PhaseMeasure, true
 	return ctx, func() {
 		cancel()

@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -11,6 +12,9 @@ func defaultLayout() Layout {
 	return Layout{InstallDir: "/usr/local/sbin", ExePath: "/usr/local/sbin/arh-agent", DataDir: "/var/lib/arh-agent", LogPath: "/var/lib/arh-agent/agent.log"}
 }
 
+// unit is the systemd service. KillMode=mixed sends SIGTERM to the agent alone (by default every
+// process in the unit gets it, so a running change or custom command would stop with the agent
+// instead of getting its drain); what is still running when the agent exits is killed then.
 func unit(l Layout) string {
 	return `[Unit]
 Description=ARH Agent (read-only diagnostics for the ARH IT Dashboard)
@@ -21,6 +25,8 @@ ExecStart=` + l.ExePath + ` run
 Restart=always
 RestartSec=5
 ProtectHome=read-only
+KillMode=mixed
+TimeoutStopSec=` + strconv.Itoa(StopSeconds) + `
 
 [Install]
 WantedBy=multi-user.target

@@ -172,8 +172,10 @@ Rules enforced by the agent:
 - A run the agent itself was stopped in the middle of (shutdown, restart, the agent stopped or
   killed) is sent on the next connection as a result with `aborted: true`, the error "the agent
   stopped before this run finished …", what was measured before, and `applied` saying whether the
-  change had started. When the agent is stopped on Linux or macOS, a running change gets 15
-  seconds to finish and report normally first.
+  change had started. When the agent is stopped on Linux or macOS, a running change or custom
+  command gets 15 seconds to finish and report normally first; a custom command still running
+  then is ended and reported as aborted. On Windows the Job Object ends what the agent started
+  when the agent ends.
 - Every action and custom command is recorded on the device (`actions.log`, intent before the
   process starts and outcome after, never output) and in the OS log.
 
@@ -228,3 +230,10 @@ Security event log and SMART data; the allowlist above is what keeps that power 
 actions run in the same context, with a cleared environment, the system PATH and a fixed
 working folder; on Windows every run is in a Job Object so a timeout ends the whole process tree.
 `arh-agent policy` on the device says what the dashboard may do there.
+
+The systemd unit sends SIGTERM to the agent alone (`KillMode=mixed`), and it and the
+LaunchDaemon wait 30 s before SIGKILL, longer than the agent's drain. One agent process uses a
+data folder at a time: it holds a lock on `agent.lock` there while it runs (the operating system
+releases it when the process ends), so an `arh-agent run` started by hand while the service runs
+exits with an error and leaves the service's runs and `actions.log` alone. `status` and `policy`
+do not take it.

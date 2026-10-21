@@ -40,7 +40,8 @@ func openJournal(dataDir string) *runJournal {
 }
 
 // recover turns every run a previous agent process left running into an interrupted result in
-// the outbox. Only a new process calls it: nothing of the old one is still running then.
+// the outbox. Only a new process calls it, holding the data folder's lock (datalock, taken by
+// cmdRun before New), so nothing of another agent is still running then.
 func (j *runJournal) recover(endedAt string) []actions.Result {
 	j.mu.Lock()
 	defer j.mu.Unlock()

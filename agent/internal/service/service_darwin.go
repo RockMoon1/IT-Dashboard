@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 const label = "com.arh.agent"
@@ -13,6 +14,9 @@ func defaultLayout() Layout {
 	return Layout{InstallDir: base, ExePath: filepath.Join(base, "arh-agent"), DataDir: filepath.Join(base, "data"), LogPath: "/Library/Logs/ARH Agent/agent.log"}
 }
 
+// plist is the LaunchDaemon. launchd sends SIGTERM to the agent alone (a running command has its
+// own process group, which the agent ends itself after its drain) and SIGKILL after ExitTimeOut,
+// 20 s unless set.
 func plist(l Layout) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,6 +27,7 @@ func plist(l Layout) string {
   <array><string>` + l.ExePath + `</string><string>run</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ExitTimeOut</key><integer>` + strconv.Itoa(StopSeconds) + `</integer>
   <key>StandardOutPath</key><string>` + l.LogPath + `</string>
   <key>StandardErrorPath</key><string>` + l.LogPath + `</string>
 </dict>

@@ -19,6 +19,9 @@ const (
 	DisplayName = "ARH Agent"
 	BeaconPort  = 47911
 	tokenFile   = "enroll.token"
+	// StopSeconds is how long systemd and launchd wait after SIGTERM before they kill the agent:
+	// longer than its drain (link.go), so a running change or custom command can finish and report.
+	StopSeconds = 30
 )
 
 type Layout struct {

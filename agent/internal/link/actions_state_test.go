@@ -15,6 +15,7 @@ import (
 
 	"github.com/RockMoon1/IT-Dashboard/actions"
 	"github.com/RockMoon1/IT-Dashboard/agent/internal/protocol"
+	"github.com/RockMoon1/IT-Dashboard/agent/internal/service"
 )
 
 // shAction builds a test action with its own name, flags, parameter and scripts.
@@ -188,5 +189,89 @@ func TestDrainWaitsForARunningChange(t *testing.T) {
 	a.drain(200 * time.Millisecond)
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("drain ignored its limit: %s", d)
+	}
+}
+
+// A real custom command: stopping the agent (SIGTERM cancels the root context) lets it finish
+// and report within the drain, abort still stops it at once, and one that outlasts the drain is
+// ended and reported as aborted, not left running.
+func TestDrainLetsACustomCommandFinish(t *testing.T) {
+	sendExec := func(c *protocol.Codec, runID, script string) {
+		t.Helper()
+		_ = c.Write(protocol.Message{Type: "exec", RunID: runID, Shell: "sh", Script: script, Technician: "Lisandro", Reason: "test"})
+		until(t, c, "check-start")
+	}
+	h := newHarness(t, true)
+	h.setPolicy("full")
+	c, _, closeFn := h.connect()
+	defer closeFn()
+	sendExec(c, "x0", "sleep 5")
+	start := time.Now()
+	_ = c.Write(protocol.Message{Type: "abort", RunID: "x0"})
+	if end, _ := until(t, c, "run-end"); end.Result == nil || !end.Result.Aborted || time.Since(start) > 3*time.Second {
+		t.Fatalf("abort of a custom command: %+v after %s", end.Result, time.Since(start))
+	}
+
+	finished := filepath.Join(h.dir, "finished")
+	sendExec(c, "x1", "sleep 1\necho ok > '"+finished+"'")
+	h.cancel() // what SIGTERM does
+	start = time.Now()
+	h.agent.drain(15 * time.Second)
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("drain took %s", d)
+	}
+	if _, err := os.Stat(finished); err != nil {
+		t.Fatalf("the agent stopping killed the custom command: %v", err)
+	}
+	if r, ok := h.agent.journal.find("x1"); !ok || r.Aborted || r.ExitCode == nil || *r.ExitCode != 0 {
+		t.Fatalf("x1 result %+v", r)
+	}
+
+	h2 := newHarness(t, true)
+	h2.setPolicy("full")
+	c2, _, closeFn2 := h2.connect()
+	defer closeFn2()
+	late := filepath.Join(h2.dir, "late")
+	sendExec(c2, "x2", "sleep 1\necho late > '"+late+"'")
+	started := time.Now()
+	h2.cancel()
+	h2.agent.drain(200 * time.Millisecond)
+	if d := time.Since(started); d > 8*time.Second {
+		t.Fatalf("drain past its limit took %s", d)
+	}
+	if r, ok := h2.agent.journal.find("x2"); !ok || !r.Aborted {
+		t.Fatalf("x2 result %+v", r)
+	}
+	time.Sleep(time.Until(started.Add(1500 * time.Millisecond)))
+	if _, err := os.Stat(late); err == nil {
+		t.Fatal("a custom command outlived the drain")
+	}
+}
+
+// The whole drain fits in the time systemd and launchd give the agent before SIGKILL.
+func TestDrainFitsTheServiceStopTimeout(t *testing.T) {
+	if drainWait+drainEnd >= service.StopSeconds*time.Second {
+		t.Fatalf("the drain (%s, then %s) does not fit in the %d s the service waits after SIGTERM", drainWait, drainEnd, service.StopSeconds)
+	}
+}
+
+// A custom command that arrives once the agent is stopping is not started.
+func TestNoCustomCommandStartsWhileStopping(t *testing.T) {
+	h := newHarness(t, true)
+	h.setPolicy("full")
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	h.agent.rootMu.Lock()
+	h.agent.rootCtx = stopped
+	h.agent.rootMu.Unlock()
+	c, _, closeFn := h.connect()
+	defer closeFn()
+	ran := filepath.Join(h.dir, "ran")
+	_ = c.Write(protocol.Message{Type: "exec", RunID: "x3", Shell: "sh", Script: "echo ran > '" + ran + "'", Technician: "Lisandro", Reason: "test"})
+	if end, _ := until(t, c, "run-end"); end.Result == nil || !end.Result.Aborted {
+		t.Fatalf("x3: %+v", end.Result)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("a custom command started while the agent was stopping")
 	}
 }
