@@ -142,6 +142,15 @@ function cell(text: string): string {
   return vaultText(text, 400)
 }
 
+/**
+ * A value as a table cell the dashboard writes reads back: its spacing made single, its control
+ * and zero-width characters spaces, its length capped. Compare a device's value with its own
+ * cell in this form.
+ */
+export function cellText(text: string): string {
+  return unescapeVaultText(cell(text))
+}
+
 /** Text as Markdown shows it: every backslash escape of a punctuation character undone. */
 function unescapeMd(text: string): string {
   return text.replace(/\\([!-/:-@[-`{-~])/g, '$1')

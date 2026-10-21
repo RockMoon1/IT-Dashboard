@@ -23,6 +23,7 @@ import { purposeLabel } from '../../../shared/types.ts'
 import type { EnrolledDevice } from '../link/devices.ts'
 import { THRESHOLDS } from '../scans/health.ts'
 import {
+  cellText,
   DEFAULT_CONTENT_OPTIONS,
   deviceFacts,
   latestPerProfile,
@@ -179,6 +180,14 @@ export function buildComputers(
   inventory: VaultRow[]
 ): Computer[] {
   const list: Computer[] = []
+  // a serial or name compared as the Asset Inventory cell the dashboard writes for it, so a
+  // device's value meets its own row however the cell respaced or shortened it
+  const ids = new Map<string, string>()
+  const id = (s: string): string => {
+    let v = ids.get(s)
+    if (v === undefined) ids.set(s, (v = norm(cellText(s))))
+    return v
+  }
   // In order of certainty: the enrolled device, then an exact serial, then the name, and the name
   // only when the serials cannot disagree (two different serials are two machines).
   const find = (serial: string, name: string, deviceId?: string): Computer | undefined => {
@@ -186,20 +195,18 @@ export function buildComputers(
       const byDevice = list.find((c) => c.device?.id === deviceId)
       if (byDevice) return byDevice
     }
-    const s = isBlank(serial) ? '' : norm(serial)
+    const s = isBlank(serial) ? '' : id(serial)
     if (s) {
-      const bySerial = list.find((c) => c.serials.some((x) => norm(x) === s))
+      const bySerial = list.find((c) => c.serials.some((x) => id(x) === s))
       if (bySerial) return bySerial
     }
     if (isBlank(name)) return undefined
-    return list.find(
-      (c) => (!s || !c.serials.length) && c.names.some((n) => norm(n) === norm(name))
-    )
+    return list.find((c) => (!s || !c.serials.length) && c.names.some((n) => id(n) === id(name)))
   }
   const remember = (c: Computer, serial: string, name: string): void => {
-    if (!isBlank(serial) && !c.serials.some((x) => norm(x) === norm(serial)))
+    if (!isBlank(serial) && !c.serials.some((x) => id(x) === id(serial)))
       c.serials.push(serial.trim())
-    if (!isBlank(name) && !c.names.some((x) => norm(x) === norm(name))) c.names.push(name.trim())
+    if (!isBlank(name) && !c.names.some((x) => id(x) === id(name))) c.names.push(name.trim())
   }
   const create = (): Computer => {
     const c: Computer = { key: '', names: [], serials: [], runs: [], inventory: [] }
@@ -535,7 +542,8 @@ export function buildProfile(input: ProfileInput): ComputerProfile {
   const match = computer
     ? matcher([
         ...computer.names.map((n) => ({ text: n, exactCase: /^[A-Za-z]+$/.test(n) })),
-        ...computer.serials.map((s) => ({ text: s }))
+        // a serial also as the dashboard's cells write it
+        ...computer.serials.flatMap((s) => [...new Set([s, cellText(s)])].map((text) => ({ text })))
       ])
     : matcher([{ text: term }])
   const runs = computer?.runs ?? []

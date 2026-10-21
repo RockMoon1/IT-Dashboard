@@ -761,24 +761,26 @@ test('trend "past the limit" uses exactly the comparison each health check uses'
   }
 })
 
-test('a serial or name holding a character the vault escapes is one computer, as the device sent it', () => {
-  const note = (rel: string, text: string): IndexedNote => {
-    const name = rel.replace(/^.*\//, '').replace(/\.md$/, '')
-    const folder = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : ''
-    const lines = text.split('\n')
-    return {
-      rel,
-      abs: `/vault/${rel}`,
-      name,
-      folder,
-      text,
-      lines,
-      frontmatter: {},
-      title: name,
-      mtimeMs: 0,
-      size: text.length
-    }
+/** A note as the vault index reads it, for a vault that lives only in the test. */
+function note(rel: string, text: string): IndexedNote {
+  const name = rel.replace(/^.*\//, '').replace(/\.md$/, '')
+  const folder = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : ''
+  const lines = text.split('\n')
+  return {
+    rel,
+    abs: `/vault/${rel}`,
+    name,
+    folder,
+    text,
+    lines,
+    frontmatter: {},
+    title: name,
+    mtimeMs: 0,
+    size: text.length
   }
+}
+
+test('a serial or name holding a character the vault escapes is one computer, as the device sent it', () => {
   for (const serial of [
     'MXL~2041X7',
     'MXL#2041',
@@ -837,5 +839,54 @@ test('a serial or name holding a character the vault escapes is one computer, as
       p.changes.map((c) => c.cells['System / machine']),
       [serial]
     )
+  }
+})
+
+test('a serial or name the vault writes respaced or cut short is still one computer', () => {
+  // a cell turns tabs, zero-width characters and runs of spaces into one space and caps the
+  // length at 400; the device's own row must still be found by the value the device sent
+  for (const [serial, hostname] of [
+    ['MXL  2041', 'PC-1'],
+    ['MXL\t2041', 'PC-1'],
+    ['MXL\u200b2041', 'PC-1'],
+    ['x'.repeat(401), 'PC-1'],
+    ['', 'FRONT  DESK']
+  ] as const) {
+    const pc: EnrolledDevice = { ...device, serial, hostname }
+    const assets = note(
+      DEFAULT_SETTINGS.assetNote,
+      setBlock(
+        '# Asset Inventory\n',
+        'DEVICES',
+        devicesBlock(null, [{ device: pc, facts: {} }], DEFAULT_CONTENT_OPTIONS)
+      ).text
+    )
+    const rows = inventoryRows(assets)
+    const what = `${JSON.stringify(serial || hostname).slice(0, 20)} (cell ${JSON.stringify(rows[0]?.cells[serial ? 'Serial' : 'Name']).slice(0, 20)})`
+    const computers = buildComputers([pc], [], rows)
+    assert.equal(computers.length, 1, `${what}: the device and its inventory row are one computer`)
+    assert.equal(computers[0]!.inventory.length, 1)
+    if (!serial) continue
+    // a Change Log row that names only the serial, as a cell writes it, is found by it too
+    const changeLog = note(
+      'ARH Change Log.md',
+      setBlock(
+        '# ARH Change Log\n',
+        'CHANGES',
+        [
+          '| Timestamp (MT) | System / machine | What changed | Why | Reversible? | Rollback | By |',
+          '| --- | --- | --- | --- | --- | --- | --- |',
+          `| 2026-10-20 14:05 | ${vaultText(serial, 400)} | Firewall on | fix | Yes | n/a | Lisandro · run a_1 |`
+        ].join('\n')
+      ).text
+    )
+    const p = buildProfile({
+      target: { deviceId: pc.id },
+      computers,
+      notes: [assets, changeLog],
+      settings: DEFAULT_SETTINGS,
+      connected: () => false
+    })
+    assert.equal(p.changes.length, 1, `${what}: the Change Log row is found by the serial`)
   }
 })
