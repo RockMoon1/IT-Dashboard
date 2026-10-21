@@ -64,6 +64,37 @@ func TestShippedActionsMeasureHere(t *testing.T) {
 			}
 		})
 	}
+	// windows-restart lists who is signed in from the owners of every process in sessions above
+	// 0; when this test runs in such a session, its own account must be on the list
+	if runtime.GOOS == "windows" {
+		t.Run("windows-restart-sessions", func(t *testing.T) {
+			m, stderr := measureLive(t, a, "windows-restart", nil)
+			if strings.Contains(stderr, "FullyQualifiedErrorId") {
+				t.Errorf("measure wrote errors:\n%s", stderr)
+			}
+			for _, w := range m.Warnings {
+				if strings.HasPrefix(w, "Who is signed in could not be read") {
+					t.Error(w)
+				}
+			}
+			signed := ""
+			for _, x := range m.Info {
+				if x.Item == "Signed in" {
+					signed = x.Value
+				}
+			}
+			me := strings.SplitN(sh(t, `$i = [Security.Principal.WindowsIdentity]::GetCurrent(); '{0}|{1}|{2}' -f $i.User.Value, (Get-Process -Id $PID).SessionId, $i.Name`), "|", 3)
+			t.Logf("signed in %q; this test runs as %q", signed, me)
+			if signed == "" || signed == "unknown" {
+				t.Fatalf("Signed in %q", signed)
+			}
+			if len(me) == 3 && me[1] != "0" && (strings.HasPrefix(me[0], "S-1-5-21-") || strings.HasPrefix(me[0], "S-1-12-1-")) {
+				if want := strings.ToLower(me[2] + " (session " + me[1]); !strings.Contains(strings.ToLower(signed), want) {
+					t.Errorf("Signed in %q does not list %s", signed, want)
+				}
+			}
+		})
+	}
 }
 
 func deref(b *bool) any {
@@ -88,7 +119,8 @@ func sh(t *testing.T, script string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func runLive(t *testing.T, a *Agent, name string, params map[string]string) actions.Result {
+// liveAction finds the shipped action and fills in the defaults of the parameters not given.
+func liveAction(t *testing.T, name string, params map[string]string) (actions.Action, map[string]string) {
 	t.Helper()
 	var act actions.Action
 	for _, x := range actions.ForOS(liveOS()) {
@@ -106,6 +138,26 @@ func runLive(t *testing.T, a *Agent, name string, params map[string]string) acti
 			full[p.Name] = v
 		}
 	}
+	return act, full
+}
+
+// measureLive runs the measure step alone, as a preview does, and returns what the script wrote
+// to stderr with it.
+func measureLive(t *testing.T, a *Agent, name string, params map[string]string) (actions.Measurement, string) {
+	t.Helper()
+	act, full := liveAction(t, name, params)
+	clock := &phaseClock{}
+	codec := protocol.NewCodec(clock)
+	a.attach(codec)
+	m := a.phase(context.Background(), act, full, actions.PhaseMeasure, name+"-"+time.Now().Format("150405.000"), actions.MeasureTimeout)
+	a.detach(codec)
+	t.Logf("%s measure: items %v info %v plan %v %q blockers %v warnings %v", name, m.Items, m.Info, deref(m.Change), m.Plan, m.Blockers, m.Warnings)
+	return m, clock.Stderr()
+}
+
+func runLive(t *testing.T, a *Agent, name string, params map[string]string) actions.Result {
+	t.Helper()
+	act, full := liveAction(t, name, params)
 	id := name + "-" + time.Now().Format("150405.000")
 	clock := &phaseClock{}
 	codec := protocol.NewCodec(clock)
@@ -126,10 +178,12 @@ func runLive(t *testing.T, a *Agent, name string, params map[string]string) acti
 }
 
 // phaseClock stands in for the dashboard and keeps how long each phase's process ran, from the
-// agent's own check-end messages, so a slow run in CI shows which phase took the time.
+// agent's own check-end messages, so a slow run in CI shows which phase took the time. It also
+// keeps what the scripts wrote to stderr.
 type phaseClock struct {
-	mu    sync.Mutex
-	lines []string
+	mu     sync.Mutex
+	lines  []string
+	stderr strings.Builder
 }
 
 func (c *phaseClock) Read([]byte) (int, error) { return 0, io.EOF }
@@ -139,8 +193,13 @@ func (c *phaseClock) Write(b []byte) (int, error) {
 	defer c.mu.Unlock()
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		var m protocol.Message
-		if json.Unmarshal([]byte(line), &m) == nil && m.Type == "check-end" {
+		if json.Unmarshal([]byte(line), &m) != nil {
+			continue
+		}
+		if m.Type == "check-end" {
 			c.lines = append(c.lines, fmt.Sprintf("%s %dms", m.CheckID, m.DurationMs))
+		} else if m.Type == "check-output" && m.Stream == "stderr" {
+			c.stderr.WriteString(m.Data)
 		}
 	}
 	return len(b), nil
@@ -150,6 +209,12 @@ func (c *phaseClock) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return strings.Join(c.lines, ", ")
+}
+
+func (c *phaseClock) Stderr() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.TrimSpace(c.stderr.String())
 }
 
 func items(m *actions.Measurement) []actions.Item {
@@ -316,7 +381,9 @@ func TestShippedActionsApplyHere(t *testing.T) {
 				t.Fatal("started a service that is not enabled")
 			}
 		})
-		// a one-shot service that failed: started, it runs and finishes ("inactive"), which is done
+		// a one-shot service never started, or failed and cleared with reset-failed, still needs a
+		// start (systemd says inactive, Result=success both times); one that failed and is started
+		// runs and finishes ("inactive"), which is done
 		t.Run("service-start-oneshot", func(t *testing.T) {
 			const name = "arh-test-oneshot.service"
 			unit := "/etc/systemd/system/" + name
@@ -332,11 +399,26 @@ func TestShippedActionsApplyHere(t *testing.T) {
 				_ = os.Remove(unit)
 				sh(t, "systemctl daemon-reload")
 			})
+			wantStart := func(state string) {
+				t.Helper()
+				m, _ := measureLive(t, a, "linux-service-start", map[string]string{"name": name})
+				if m.Change == nil || !*m.Change || value(&m, "Service "+name) != "inactive" {
+					t.Fatalf("%s: items %v plan %v %q, want a plan to start it", state, m.Items, deref(m.Change), m.Plan)
+				}
+			}
 			write("/bin/false")
-			sh(t, "systemctl enable "+name+"; systemctl start "+name)
+			sh(t, "systemctl enable "+name)
+			if got := sh(t, "systemctl is-enabled "+name); got != "enabled" {
+				t.Skipf("the test unit is %q, not enabled", got)
+			}
+			wantStart("enabled, never started")
+			sh(t, "systemctl start "+name)
 			if got := sh(t, "systemctl is-active "+name); got != "failed" {
 				t.Skipf("the test unit is %q, not failed", got)
 			}
+			sh(t, "systemctl reset-failed "+name)
+			wantStart("failed, then reset-failed")
+			sh(t, "systemctl start "+name)
 			write("/bin/true")
 			r := runLive(t, a, "linux-service-start", map[string]string{"name": name})
 			wantApplied(t, r)
