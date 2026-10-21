@@ -168,7 +168,9 @@ Rules enforced by the agent:
 - Once apply has started, the run is no longer tied to the session: it finishes if the cable is
   pulled, and its result waits in the outbox until acknowledged. Abort stops a measure, an
   abortable apply or a custom command; otherwise `not-abortable`. A stop that arrives before
-  apply starts is honoured: the change is not started.
+  apply starts is honoured: the change is not started. A custom command whose process never
+  started (aborted first, sent while the agent is stopping, or the shell could not start) comes
+  back with `applied: false`, no `appliedAt`, and `skipped` saying why.
 - A run the agent itself was stopped in the middle of (shutdown, restart, the agent stopped or
   killed) is sent on the next connection as a result with `aborted: true`, the error "the agent
   stopped before this run finished …", what was measured before, and `applied` saying whether the

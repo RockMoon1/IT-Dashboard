@@ -293,7 +293,9 @@ func TestCustomCommandNeedsFullPolicy(t *testing.T) {
 			out += m.Data
 		}
 	}
-	if end.Result == nil || end.Result.Kind != "exec" || *end.Result.ExitCode != 4 || end.Result.Lines != 4 || len(end.Result.SHA256) != 64 {
+	// it started, so it was applied whatever its exit code
+	if end.Result == nil || end.Result.Kind != "exec" || *end.Result.ExitCode != 4 || end.Result.Lines != 4 || len(end.Result.SHA256) != 64 ||
+		!end.Result.Applied || end.Result.AppliedAt == "" || end.Result.Skipped != "" {
 		t.Fatalf("exec result %+v", end.Result)
 	}
 	if out != "param=[]\nafter\n" {

@@ -26,6 +26,7 @@ type hooks struct {
 }
 
 type Result struct {
+	Started   bool // the process started; false means nothing ran (refused, or ctx was done first)
 	ExitCode  int
 	TimedOut  bool
 	Truncated bool
@@ -91,7 +92,8 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 	cmd.WaitDelay = waitDelay
 
 	runErr := cmd.Start()
-	if runErr == nil {
+	res := Result{Started: runErr == nil}
+	if res.Started {
 		h.afterStart()
 		runErr = cmd.Wait()
 	}
@@ -99,7 +101,7 @@ func Run(ctx context.Context, check profiles.Check, out Output) Result {
 	stdout.flush()
 	stderr.flush()
 
-	res := Result{Duration: time.Since(started), Truncated: truncated.Load()}
+	res.Duration, res.Truncated = time.Since(started), truncated.Load()
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		res.TimedOut = true
 	}

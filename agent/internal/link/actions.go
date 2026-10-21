@@ -456,6 +456,7 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	sum := sha256.Sum256([]byte(m.Script))
 	digest := hex.EncodeToString(sum[:])
 	lines := strings.Count(strings.TrimRight(m.Script, "\n"), "\n") + 1
+	// noted as applied until Run says it did not start: an agent that dies first cannot tell
 	res := actions.Result{RunID: m.RunID, Kind: "exec", SHA256: digest, Lines: lines, StartedAt: now(), Applied: true, AppliedAt: now()}
 	a.send(protocol.Message{Type: "run-start", RunID: m.RunID, Shell: m.Shell, SHA256: digest, TimeoutSeconds: timeout, Checks: 1, Title: "Custom command", Mode: "apply", Link: link})
 	_ = a.audit.Record("intent", map[string]any{"runId": m.RunID, "kind": "exec", "shell": m.Shell, "scriptSha256": digest, "script": m.Script,
@@ -476,6 +477,18 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	a.send(protocol.Message{Type: "check-end", RunID: m.RunID, CheckID: "exec", ExitCode: protocol.IntPtr(r.ExitCode), DurationMs: r.Duration.Milliseconds(), TimedOut: r.TimedOut, Truncated: r.Truncated})
 	res.ExitCode = protocol.IntPtr(r.ExitCode)
 	res.Aborted = ctx.Err() != nil
+	if !r.Started {
+		// nothing ran, so nothing was applied (and the dashboard adds no Change Log row)
+		res.Applied, res.AppliedAt = false, ""
+		switch {
+		case !res.Aborted:
+			res.Skipped = fmt.Sprintf("not started: %v", r.Err)
+		case a.root().Err() != nil:
+			res.Skipped = "not started: the agent was stopping"
+		default:
+			res.Skipped = "not started: it was aborted"
+		}
+	}
 	if r.TimedOut {
 		res.Error = "timed out"
 	}
@@ -483,7 +496,8 @@ func (a *Agent) runExec(ctx context.Context, m protocol.Message, timeout int, li
 	if err := a.journal.put(res); err != nil {
 		a.cfg.Logger.Printf("run %s: cannot keep the result in the outbox: %v", m.RunID, err)
 	}
-	_ = a.audit.Record("outcome", map[string]any{"runId": m.RunID, "kind": "exec", "scriptSha256": digest, "exitCode": r.ExitCode, "timedOut": r.TimedOut, "aborted": res.Aborted})
+	_ = a.audit.Record("outcome", map[string]any{"runId": m.RunID, "kind": "exec", "scriptSha256": digest, "applied": res.Applied, "skipped": res.Skipped,
+		"exitCode": r.ExitCode, "timedOut": r.TimedOut, "aborted": res.Aborted})
 	ok := r.ExitCode == 0 && !r.TimedOut && !res.Aborted
 	a.send(protocol.Message{Type: "run-end", RunID: m.RunID, OK: protocol.BoolPtr(ok), DurationMs: time.Since(started).Milliseconds(), Result: &res})
 }

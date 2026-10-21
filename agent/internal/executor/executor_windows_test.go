@@ -42,6 +42,19 @@ func TestPowerShellTimeout(t *testing.T) {
 	}
 }
 
+// Started says whether powershell.exe ran at all (and so was put in its Job Object).
+func TestPowerShellReportsWhetherItStarted(t *testing.T) {
+	check := profiles.Check{ID: "t", Shell: "powershell", TimeoutSeconds: 60, LongScript: true, Command: []string{"exit 3"}}
+	if res := Run(context.Background(), check, func(string, []byte) {}); !res.Started || res.ExitCode != 3 {
+		t.Fatalf("normal run: %+v", res)
+	}
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if res := Run(stopped, check, func(string, []byte) {}); res.Started || res.ExitCode != -1 || res.Err == nil {
+		t.Fatalf("cancelled run: %+v", res)
+	}
+}
+
 func TestEncodeCommandIsUTF16LE(t *testing.T) {
 	if got := EncodeCommand("A✓"); got != "QQATJw==" {
 		t.Fatalf("EncodeCommand = %s", got)

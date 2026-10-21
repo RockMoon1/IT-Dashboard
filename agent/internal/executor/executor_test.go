@@ -65,6 +65,24 @@ func TestRunRejectsWrongShell(t *testing.T) {
 	}
 }
 
+// Started says whether the process ran at all: a cancelled run or a refused shell never starts.
+func TestRunReportsWhetherItStarted(t *testing.T) {
+	out, _, _ := collect()
+	check := profiles.Check{ID: "t", Shell: "sh", Command: []string{"exit 3"}, TimeoutSeconds: 10}
+	if res := Run(context.Background(), check, out); !res.Started || res.ExitCode != 3 {
+		t.Fatalf("normal run: %+v", res)
+	}
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+	if res := Run(stopped, check, out); res.Started || res.ExitCode != -1 || res.Err == nil {
+		t.Fatalf("cancelled run: %+v", res)
+	}
+	check.Shell = "powershell"
+	if res := Run(context.Background(), check, out); res.Started {
+		t.Fatalf("refused shell: %+v", res)
+	}
+}
+
 // A command that reads standard input must get end of file, not the rest of the script.
 func TestRunScriptIsNotSwallowedByCommandsReadingStdin(t *testing.T) {
 	out, so, _ := collect()

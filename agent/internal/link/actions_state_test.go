@@ -255,7 +255,8 @@ func TestDrainFitsTheServiceStopTimeout(t *testing.T) {
 	}
 }
 
-// A custom command that arrives once the agent is stopping is not started.
+// A custom command that arrives once the agent is stopping is not started, and its result says
+// it was not applied (the dashboard writes a Change Log row for every applied custom command).
 func TestNoCustomCommandStartsWhileStopping(t *testing.T) {
 	h := newHarness(t, true)
 	h.setPolicy("full")
@@ -268,10 +269,33 @@ func TestNoCustomCommandStartsWhileStopping(t *testing.T) {
 	defer closeFn()
 	ran := filepath.Join(h.dir, "ran")
 	_ = c.Write(protocol.Message{Type: "exec", RunID: "x3", Shell: "sh", Script: "echo ran > '" + ran + "'", Technician: "Lisandro", Reason: "test"})
-	if end, _ := until(t, c, "run-end"); end.Result == nil || !end.Result.Aborted {
+	end, _ := until(t, c, "run-end")
+	if end.Result == nil || !end.Result.Aborted || end.Result.Applied || end.Result.AppliedAt != "" || !strings.Contains(end.Result.Skipped, "stopping") {
 		t.Fatalf("x3: %+v", end.Result)
 	}
 	if _, err := os.Stat(ran); err == nil {
 		t.Fatal("a custom command started while the agent was stopping")
+	}
+	// the outbox copy, sent again on the next connection, says the same
+	if r, _ := h.agent.journal.find("x3"); r.Applied || r.AppliedAt != "" || r.Skipped != end.Result.Skipped {
+		t.Fatalf("x3 in the outbox: %+v", r)
+	}
+}
+
+// An abort that lands after the run slot is taken and before the process starts: nothing runs,
+// and the result says it was not applied.
+func TestCustomCommandAbortedBeforeItStartsIsNotApplied(t *testing.T) {
+	h := newHarness(t, true)
+	ran := filepath.Join(h.dir, "ran")
+	m := protocol.Message{Type: "exec", RunID: "x4", Shell: "sh", Script: "echo ran > '" + ran + "'", Technician: "Lisandro", Reason: "test"}
+	ctx, release, _ := h.agent.takeSlot(m.RunID, "exec")
+	h.agent.abort(nil, m.RunID)
+	h.agent.runExec(ctx, m, 30, "cable")
+	release()
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("an aborted custom command started")
+	}
+	if r, ok := h.agent.journal.find("x4"); !ok || !r.Aborted || r.Applied || r.AppliedAt != "" || !strings.Contains(r.Skipped, "aborted") {
+		t.Fatalf("x4: %+v", r)
 	}
 }
