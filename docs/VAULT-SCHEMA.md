@@ -99,8 +99,9 @@ _Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a 
 <!-- DASH:HEALTH-LOOPS:END -->
 ```
 
-`ARH Work Log.md`:
+`ARH Work Log.md` (each entry's first line ends with its run id; findings are indented below):
 
+<!-- prettier-ignore -->
 ```markdown
 <!-- DASH:SCAN-LOG:START -->
 
@@ -109,7 +110,9 @@ _Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a 
 _One entry per scan, action or custom command, newest first (MT). Written by the ARH IT Dashboard; findings that need action go to [[ARH Open Loops]], changes to [[ARH Change Log]]._
 
 - 2026-10-14 14:40 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Action: Turn on firewall profiles that are off (windows-firewall-on v1) · changed · Firewall Public: off → on · why: Fix: Firewall profile "Public" is disabled · Lisandro · run a_mgx8f0q1_0b12aa
-- 2026-10-14 14:32 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Security Check · windows-security-check v2 · ok · 1 min 12 s · 3 findings · Lisandro · run r_mgx81k2a_3f9c1d - 🔴 Defender real-time protection is off - 🟠 No Windows update installed for 41 days (latest KB5044284)
+- 2026-10-14 14:32 MT · **ARH-CEN-FD1** · serial 5CG1234XYZ · Security Check · windows-security-check v2 · ok · 1 min 12 s · 3 findings · Lisandro · run r_mgx81k2a_3f9c1d
+    - 🔴 Defender real-time protection is off
+    - 🟠 No Windows update installed for 41 days (latest KB5044284)
 <!-- DASH:SCAN-LOG:END -->
 ```
 
@@ -138,7 +141,8 @@ is not known yet because the cable was pulled, or that was applied but could not
 `· run <id> · result pending` and gets a second row, `Result of run …` ending `· result <id>`,
 when the device reports, whatever the run ended as (changed, not applied, done, failed…). The
 dashboard finds its own rows by that ending only, never by text elsewhere in a row, so a reason
-or a device value that names a run cannot add or block a row. The id in that ending is always
+or a device value that names a run cannot add or block a row. Work Log entries, scans included,
+are found the same way, by the end of their first line. The id in that ending is always
 one the dashboard made: a result a device reports under any other id (one with no request on
 record) is kept under an id made from the device and what it sent (`d_` and 16 hex digits). A
 padded or realigned header row (table plugins) is still recognised. Previews, things already

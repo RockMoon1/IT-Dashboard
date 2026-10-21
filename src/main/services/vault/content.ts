@@ -586,7 +586,8 @@ const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * Which line is a run's own. Only the dashboard writes the end of a row or an entry's first line
  * (the By cell, the last segment), and device text, reasons and names never reach it, so a run's
  * lines are found there and nowhere else: "· run <id>", "· run <id> · result pending" while the
- * outcome is unknown, and "· result <id>" for the row added when the device reports.
+ * outcome is unknown, and "· result <id>" for the row added when the device reports. A scan's
+ * Work Log entry ends "· run <id>" too, so a device value naming a scan cannot hide its entry.
  */
 type Own = 'run' | 'pending' | 'result'
 function ownLine(line: string, runId: string, table: boolean): Own | null {
@@ -859,7 +860,7 @@ export function mergeLog(
   const lines = bodyLines(existingBody, HEADINGS.log)
   const fresh: Array<{ at: string; lines: string[] }> = []
   for (const run of runs.filter((r) => r.status !== 'running')) {
-    if (lines.some((l) => mentionsRun(l, run.runId))) continue
+    if (lines.some((l) => ownLine(l, run.runId, false) === 'run')) continue
     fresh.push({ at: runTime(run), lines: logEntry(run, opts) })
   }
   for (const e of actions) {

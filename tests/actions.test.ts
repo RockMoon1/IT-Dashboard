@@ -24,7 +24,7 @@ import {
   type AgentResult
 } from '../src/shared/actions.ts'
 import { DEFAULT_SETTINGS } from '../src/shared/settings-defaults.ts'
-import type { DeviceCapabilities, Settings } from '../src/shared/types.ts'
+import type { DeviceCapabilities, ScanRun, Settings } from '../src/shared/types.ts'
 import { ActionCatalog } from '../src/main/services/actions/catalog.ts'
 import { ActionLog } from '../src/main/services/actions/log.ts'
 import { ActionRunner, policyBlocks } from '../src/main/services/actions/runner.ts'
@@ -1517,5 +1517,123 @@ test('vault: a real run that was skipped (already set, blocked, measure failed) 
     const head = actionLogEntry(e, opts)[0]!
     assert.ok(!head.includes('(not measured)'), head)
     assert.match(head, new RegExp(` · ${label} · why: `))
+  }
+})
+
+/* ---------- regressions from verifying the second review's fixes ---------- */
+
+function scan(over: Partial<ScanRun> = {}): ScanRun {
+  return {
+    runId: 'r_mgzz0000_abcdef',
+    deviceId: device.id,
+    serial: device.serial,
+    hostname: device.hostname,
+    os: 'windows',
+    purpose: 'security-check',
+    profile: 'windows-security-check',
+    version: 1,
+    title: 'Security Check',
+    technician: 'Lisandro',
+    startedAt: '2026-10-20T20:10:00.000Z',
+    finishedAt: '2026-10-20T20:15:00.000Z',
+    status: 'ok',
+    checks: [],
+    durationMs: 300_000,
+    health: { score: 'healthy', metrics: {}, findings: [] },
+    ...over
+  }
+}
+
+test('vault: a device value that names a scan run cannot keep that scan out of the Work Log', async () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const target = scan()
+  const named = `run ${target.runId}`
+  const own = (body: string): string[] =>
+    body.split('\n').filter((l) => l.startsWith('- ') && l.endsWith(` · ${named}`))
+  const h = await harness()
+  try {
+    // the device was sent scan r_…; before it ends, it reports a run nobody asked for that
+    // names the scan in every value it controls
+    const id = 'a_mgzz0001_0a0b0c'
+    h.runner.handleMessage(device.id, {
+      type: 'result',
+      runId: id,
+      result: result({
+        runId: id,
+        action: named,
+        before: m([[`x · ${named}`, 'off']], { change: true }),
+        apply: { items: null, exitCode: 0, changes: [`· ${named}`], warnings: [named] },
+        after: m([[`x · ${named}`, 'on']])
+      })
+    })
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    const orphan: ActionEntry = { record: h.runner.get(id)! }
+    // so does another scan's device text (its name, and the error it ended with)
+    const other = scan({
+      runId: 'r_mgzz0002_fedcba',
+      hostname: `x · ${named}`,
+      status: 'failed',
+      error: `· ${named}`
+    })
+    const first = mergeLog(null, [other], opts, [orphan])
+    assert.equal(first.added, 2)
+    assert.ok(first.body.split('\n').filter((l) => l.includes(named)).length >= 3, first.body)
+    assert.deepEqual(own(first.body), [], first.body)
+    const second = mergeLog(first.body, [other, target], opts, [orphan])
+    assert.equal(second.added, 1, 'the scan is still logged')
+    assert.equal(own(second.body).length, 1, second.body)
+    assert.equal(mergeLog(second.body, [other, target], opts, [orphan]).added, 0, 'and once')
+  } finally {
+    await h.done()
+  }
+})
+
+test('action log: a line written whole whose sync or close failed still chains the next line', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'arh-syncfail-'))
+  const probe = await open(join(dir, 'probe'), 'w')
+  const proto = Object.getPrototypeOf(probe) as FileHandle
+  await probe.close()
+  const eio = (call: string): Error =>
+    Object.assign(new Error(`EIO: i/o error, ${call}`), { code: 'EIO' })
+  const fail = { sync: false, close: false }
+  const datasync = proto.datasync
+  const syncMock = mock.method(proto, 'datasync', async function (this: FileHandle) {
+    if (fail.sync) {
+      fail.sync = false
+      throw eio('fdatasync')
+    }
+    await datasync.call(this)
+    if (!fail.close) return
+    fail.close = false
+    const close = this.close // each handle has its own
+    this.close = async () => {
+      await close.call(this)
+      throw eio('close')
+    }
+  })
+  try {
+    const file = join(dir, 'actions.jsonl')
+    const log = new ActionLog(file)
+    await log.load()
+    await log.append('request', entry({ runId: 'a_1' }).record)
+    // the whole line reaches the file, but the sync after it fails: not known to be on disk
+    fail.sync = true
+    await assert.rejects(log.append('result', entry({ runId: 'a_2' }).record), { code: 'EIO' })
+    assert.equal(log.resultOnDisk('a_2'), false, 'written again when the device sends it again')
+    // synced, but closing the file fails: on disk
+    fail.close = true
+    await assert.rejects(log.append('result', entry({ runId: 'a_3' }).record), { code: 'EIO' })
+    assert.equal(log.resultOnDisk('a_3'), true)
+    await log.append('result', entry({ runId: 'a_4' }).record)
+    const text = await readFile(file, 'utf8')
+    assert.ok(!text.includes('\n\n'), 'no blank line: nothing was cut short')
+    const again = new ActionLog(file)
+    await again.load()
+    for (const id of ['a_1', 'a_2', 'a_3', 'a_4']) assert.ok(again.get(id), id)
+    assert.deepEqual(await again.verify(), { lines: 4, broken: [] }, 'no false sign of tampering')
+  } finally {
+    syncMock.mock.restore()
+    await rm(dir, { recursive: true, force: true })
   }
 })

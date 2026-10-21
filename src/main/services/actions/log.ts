@@ -95,21 +95,25 @@ export class ActionLog {
       }
       const line: ActionLogLine = { ...body, hash: digest(body) }
       await mkdir(dirname(this.file), { recursive: true })
+      let written = false
+      let synced = false
       try {
         const fh = await open(this.file, 'a')
         try {
           await fh.appendFile(`${this.torn ? '\n' : ''}${JSON.stringify(line)}\n`, 'utf8')
+          written = true
           await fh.datasync() // the agent drops a result once it is acknowledged
+          synced = true
         } finally {
           await fh.close()
         }
-      } catch (err) {
-        this.torn = true // part of the line may be in the file (a full disk)
-        throw err
+      } finally {
+        // a whole line is in the file even when only the sync or the close failed: the next
+        // line chains on from it. A write that failed may have left part of one (a full disk).
+        this.torn = !written
+        if (written) this.last = line.hash
+        if (synced && event === 'result' && body.record.result) this.resultsOnDisk.add(record.runId)
       }
-      this.torn = false
-      this.last = line.hash
-      if (event === 'result' && body.record.result) this.resultsOnDisk.add(record.runId)
     })
     this.queue = write.catch(() => undefined)
     return write
