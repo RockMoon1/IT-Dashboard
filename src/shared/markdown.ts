@@ -204,7 +204,7 @@ const inQuote = (ahead: Ahead): Ahead =>
 function inItemAhead(ahead: Ahead, base: number, content: number, blank: boolean): Ahead {
   let lastBlank = blank
   return within(ahead, (s, j) => {
-    const own = inItem(base, content, lastBlank, s, delimAt(ahead, j + 1))
+    const own = inItem(base, content, lastBlank, s, indentOf(s), delimAt(ahead, j + 1))
     lastBlank = !s.trim()
     return own
   })
@@ -212,18 +212,19 @@ function inItemAhead(ahead: Ahead, base: number, content: number, blank: boolean
 
 /**
  * A line as a list item's body holds it, as parseBlocks collects the body: blank, indented past
- * the item's marker, or a lazy line right after text; null when the item ends before it.
- * `next` gives the line after `s`, read only when a table start could end the item there.
+ * the item's marker, or a lazy line right after text (not past `base`); null when the item ends
+ * before it. `ind` is the line's indent. `next` gives the line after `s`, read only when a table
+ * start could end the item there.
  */
 function inItem(
   base: number,
   content: number,
   lastBlank: boolean,
   s: string,
+  ind: number,
   next: () => string
 ): string | null {
   if (!s.trim()) return ''
-  const ind = indentOf(s)
   if (ind > base) return expandTabs(s).slice(Math.min(ind, content))
   return !lastBlank && !blockStart(s, next) ? s.trim() : null
 }
@@ -262,6 +263,17 @@ function step(l: Level, s: string, ahead: Ahead): Read {
     return to({ t: 'quote', inner: r.l }, r.code, r.joins, r.text)
   }
   const ind = indentOf(s)
+  if (o.t === 'item') {
+    // the item goes on with the line, unless its fence is open and the line is lazy: a fence
+    // takes no lazy line, so the item ends there (CommonMark)
+    const fenced = !blank && ind <= o.base && o.inner.open.t === 'fence'
+    const own = fenced ? null : inItem(o.base, o.content, o.blank, s, ind, next)
+    if (own !== null) {
+      const r = step(o.inner, own, inItemAhead(ahead, o.base, o.content, blank))
+      return to({ ...o, blank, inner: r.l }, r.code, r.joins, r.text)
+    }
+  }
+  // matched only now: a list d deep reads each of its lines at every level, most going on an item
   const item = ITEM.exec(s)
   const startItem = (m: RegExpExecArray): Read => {
     const { content, first } = itemText(s, m)
@@ -269,18 +281,9 @@ function step(l: Level, s: string, ahead: Ahead): Read {
     const open = { t: 'item' as const, base: ind, ordered: !!m[3], content, blank: false }
     return to({ ...open, inner: r.l }, r.code, r.joins, r.text)
   }
-  if (o.t === 'item') {
-    // the item goes on with the line, unless its fence is open and the line is lazy: a fence
-    // takes no lazy line, so the item ends there (CommonMark)
-    const fenced = !blank && ind <= o.base && o.inner.open.t === 'fence'
-    const own = fenced ? null : inItem(o.base, o.content, o.blank, s, next)
-    if (own !== null) {
-      const r = step(o.inner, own, inItemAhead(ahead, o.base, o.content, blank))
-      return to({ ...o, blank, inner: r.l }, r.code, r.joins, r.text)
-    }
-    // or the list goes on with its next item, whatever else the line could start
-    if (item?.[4] !== undefined && ind === o.base && !!item[3] === o.ordered) return startItem(item)
-  }
+  // or the list goes on with its next item, whatever else the line could start
+  if (o.t === 'item' && item?.[4] !== undefined && ind === o.base && !!item[3] === o.ordered)
+    return startItem(item)
   if (blank) return to({ t: 'none' }, false)
   // a new block
   const fence = FENCE.exec(s)
@@ -465,12 +468,29 @@ function leftOpen(read: Probe, cut: Ranges): string | null {
 }
 
 /**
+ * Whether hiding the comments in `cut` from its k-th on leaves the code spans parseInline reads
+ * in `raw` from `i`, and the run of backticks it leaves open, as they are: none of them holds a
+ * backtick, an emphasis delimiter or a \, nor comes right before a # (hidden where the text
+ * starts, it would make that # a tag, which can take a _), and the text has no link, wikilink or
+ * URL one could be part of. The rest of what parseInline reads takes no backtick, and a comment,
+ * like HIDDEN, starts and ends with neither a space nor a letter.
+ */
+function spansKept(raw: string, i: number, cut: Ranges, k: number): boolean {
+  if (raw.includes('[', i) || raw.includes('://', i)) return false
+  for (; k < cut.length; k++) {
+    const [a, b] = cut[k]!
+    if (/[`*_~=\\]/.test(raw.slice(a, b)) || raw[b] === '#') return false
+  }
+  return true
+}
+
+/**
  * One line with its comments hidden. A comment opens at %% or <!-- wherever parseInline reads
  * the line as text, so not in a code span, and the code spans are the ones parseInline reads in
  * the line once its comments are hidden: a backtick that a link's label, a wikilink or a URL
  * takes is theirs, \` is a backtick, and so on. So the line is read by parseInline itself, first
- * with no comment hidden, then with the ones found hidden, until two readings agree; after
- * MAX_READS every comment in it is hidden.
+ * with no comment hidden, then with the ones found hidden, until two readings agree (or hiding
+ * them cannot change the first); after MAX_READS every comment in it is hidden.
  * `from`: where the line's text starts, past its markers (copied as they are). `open`: the
  * comment the line starts in. `tick`: the run of backticks a line before left open, which closes
  * the span at its next run here; until it does, every comment is hidden. `plain`: every comment
@@ -518,6 +538,9 @@ function hideComments(
     cut.length = before
     const o = findComments(raw, i, read.spans, cut)
     const left = leftOpen(read, cut)
+    // the next reading would find what this one did (with each line read twice, 1.8 MB of table
+    // rows with comments took 40% longer)
+    if (k === 0 && spansKept(raw, i, cut, before)) return written(raw, cut, o, left)
     const found = cut.join(';')
     const key = `${found} ${left}`
     if (key === last) return written(raw, cut, o, left)
@@ -980,8 +1003,18 @@ const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/
 const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+(.*))?$/
 const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 
-const expandTabs = (s: string): string => s.replace(/^\t+/, (t) => '    '.repeat(t.length))
-const indentOf = (s: string): number => /^ */.exec(expandTabs(s))?.[0].length ?? 0
+const expandTabs = (s: string): string =>
+  s[0] === '\t' ? s.replace(/^\t+/, (t) => '    '.repeat(t.length)) : s
+
+/** The columns before a line's text: 4 for each tab it starts with, 1 for each space after them. */
+function indentOf(s: string): number {
+  // by index: a list nested d deep reads each of its lines d times
+  let i = 0
+  while (s[i] === '\t') i++
+  let n = i * 4
+  while (s[i++] === ' ') n++
+  return n
+}
 
 /** A list item line (`m` is its ITEM match): where its text starts, its task box, its text. */
 function itemText(
@@ -1278,11 +1311,12 @@ function parseBlocks(
         let lastBlank = false
         while (i < lines.length) {
           const t = lines[i]!
-          const own = inItem(base, contentOffset, lastBlank, t.s, lineAfter(lines, i))
+          const ind = indentOf(t.s)
+          const own = inItem(base, contentOffset, lastBlank, t.s, ind, lineAfter(lines, i))
           if (own === null) break
-          const lazy = !!t.s.trim() && indentOf(t.s) <= base
-          body.push(lazy ? { n: t.n, s: own, lazy } : { n: t.n, s: own })
-          lastBlank = !t.s.trim()
+          // held lazily: not blank (that is held as '') and not indented past the marker
+          body.push(own && ind <= base ? { n: t.n, s: own, lazy: true } : { n: t.n, s: own })
+          lastBlank = !own
           i++
         }
         // trailing blank lines belong to the gap, not the item

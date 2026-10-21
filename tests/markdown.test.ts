@@ -946,6 +946,62 @@ test('a list item looks at the line after next only for a delimiter row', () => 
   assert.ok(!textNodes(p.blocks).some((v) => v.includes('%%')))
 })
 
+test('a list nested deep reads its lines about as fast as a quote nested as deep', () => {
+  // every level of a list reads each line of its body again, and so does the comment pass: with
+  // a line's indent worked out by regex, and twice, at each level (and an item match where the
+  // item goes on), a list 16 deep took 2 to 4 times as long as the quote, and 5 times with one
+  // comment when 64 deep; now about 1 and 2
+  const best = (md: string): number => {
+    let ms = Infinity
+    for (let k = 0; k < 5; k++) {
+      const t0 = performance.now()
+      parseMarkdown(md)
+      ms = Math.min(ms, performance.now() - t0)
+    }
+    return ms
+  }
+  const nest = (d: number): string =>
+    Array.from({ length: d }, (_, k) => '  '.repeat(k) + '- x').join('\n')
+  const quote = (d: number, n: number): string => ('> '.repeat(d) + 'a step b\n').repeat(n)
+  const lazy = `${nest(64)}\n${'a step b\n'.repeat(5000)}`
+  for (const [md, q, most] of [
+    [`${nest(16)}\n${('  '.repeat(16) + 'a step b\n').repeat(20_000)}`, quote(16, 20_000), 1.75],
+    [lazy, quote(64, 5000), 1.5],
+    [`${lazy}end %% patient Jane Roe %%`, quote(64, 5000), 3.25]
+  ] as const) {
+    const ms = best(md)
+    const alone = best(q)
+    assert.ok(ms < alone * most + 10, `${ms.toFixed(0)} ms, ${alone.toFixed(0)} ms for the quote`)
+  }
+  assert.ok(
+    !textNodes(parseMarkdown(`${lazy}end %% patient Jane Roe %%`).blocks).some((v) =>
+      v.includes('patient')
+    )
+  )
+})
+
+test('a line is read once for its code spans only where hiding its comments cannot change them', () => {
+  // hidden where the text starts, the comment makes the # after it a tag, which takes the _ an
+  // emphasis would have closed at; the code span then goes on into the next line, comment and
+  // all. A comment that holds an emphasis delimiter changes them too
+  for (const [md, span] of [
+    ['%% printer %%#_`net stop spooler_ x\ny %% kept %%` z', 'net stop spooler_ x\ny %% kept %%'],
+    ['%% *x %% `a*\ny %% kept %%` z', 'a*\ny %% kept %%']
+  ] as const) {
+    assert.deepEqual(codeSpans(parseMarkdown(md).blocks), [span], md)
+  }
+  // where it cannot, the line is as it was: quoted tasks and table rows with a comment before
+  // their code
+  const tasks = parseMarkdown('> - [ ] Step 1 %% patient Jane Roe %% `net stop spooler`').blocks
+  assert.deepEqual(codeSpans(tasks), ['net stop spooler'])
+  assert.ok(!textNodes(tasks).some((v) => v.includes('patient')))
+  const row = parseMarkdown(
+    '| a | b |\n|---|---|\n| r %% patient Jane Roe %% | `ipconfig` |'
+  ).blocks
+  assert.deepEqual(codeSpans(row), ['ipconfig'])
+  assert.ok(!textNodes(row).some((v) => v.includes('patient')))
+})
+
 test('links nested 10000 deep parse quickly and stop nesting at a limit', () => {
   const n = 10_000
   const md = '['.repeat(n) + 'a' + '](https://x.org)'.repeat(n)
