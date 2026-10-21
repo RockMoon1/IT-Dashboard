@@ -108,8 +108,9 @@ export function stamp(iso: string, opts: ContentOptions): string {
  * Makes text that came from a device, a script or a finding safe to put in a note: every kind of
  * line break and control character becomes a space (so nothing can start a new line, close a
  * block or forge a marker), and the characters Markdown, HTML, Obsidian and its plugins give a
- * meaning to are escaped (code spans, tags, links and embeds, comments, math, block ids, table
- * cells). Length is capped before escaping so an escape is never cut in half.
+ * meaning to are escaped (code spans and fences of backticks or tildes, strikethrough, tags,
+ * links and embeds, comments, math, block ids, table cells). Length is capped before escaping so
+ * an escape is never cut in half.
  */
 export function vaultText(text: string, max = 240): string {
   let t = String(text ?? '')
@@ -125,11 +126,16 @@ export function vaultText(text: string, max = 240): string {
       .slice(0, max - 1)
       .join('')
       .trimEnd()}…`
-  return t.replace(/[\\`<>[\]|$#^]/g, (c) => `\\${c}`).replace(/%%/g, '\\%\\%')
+  return t.replace(/[\\`~<>[\]|$#^]/g, (c) => `\\${c}`).replace(/%%/g, '\\%\\%')
 }
 
 function cell(text: string): string {
   return vaultText(text, 400)
+}
+
+/** Text as Markdown shows it: every backslash escape of a punctuation character undone. */
+function unescapeMd(text: string): string {
+  return text.replace(/\\([!-/:-@[-`{-~])/g, '$1')
 }
 
 function sentence(text: string): string {
@@ -339,15 +345,17 @@ export function devicesBlock(
   const kept = existing.rows.filter((r) => (r['Name'] ?? '') !== PLACEHOLDER_ROW)
   const used = new Set<Record<string, string>>()
   const out: Array<Record<string, string>> = []
-  const norm = (s: string | undefined): string => (s ?? '').trim().toLowerCase()
+  // a cell holds the value as vaultText wrote it (by this build or an older one that escaped
+  // fewer characters) or as typed: compare both sides in the form this build writes
+  const same = (typed: string | undefined, value: string): boolean =>
+    cell(unescapeMd(typed ?? '')).toLowerCase() === cell(value).toLowerCase()
 
   for (const { device, facts } of [...rows].sort((a, b) =>
     a.device.hostname.localeCompare(b.device.hostname)
   )) {
     const prior =
-      kept.find(
-        (r) => !used.has(r) && device.serial && norm(r['Serial']) === norm(device.serial)
-      ) ?? kept.find((r) => !used.has(r) && norm(r['Name']) === norm(device.hostname))
+      kept.find((r) => !used.has(r) && device.serial && same(r['Serial'], device.serial)) ??
+      kept.find((r) => !used.has(r) && same(r['Name'], device.hostname))
     if (prior) used.add(prior)
     const row: Record<string, string> = { ...(prior ?? {}) }
     const set = (col: string, value: string | undefined): void => {
@@ -588,13 +596,16 @@ const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * lines are found there and nowhere else: "· run <id>", "· run <id> · result pending" while the
  * outcome is unknown, and "· result <id>" for the row added when the device reports. A scan's
  * Work Log entry ends "· run <id>" too, so a device value naming a scan cannot hide its entry.
+ * A Work Log entry may also end with the block id Obsidian adds when the technician copies a link
+ * to it (" ^a1b2c3"); device text cannot end that way, since vaultText escapes "^".
  */
 type Own = 'run' | 'pending' | 'result'
+const BLOCK_ID_END = '(?:\\s+\\^[A-Za-z0-9-]+)?$'
 function ownLine(line: string, runId: string, table: boolean): Own | null {
   const t = line.trimEnd()
   if (table ? !t.trimStart().startsWith('|') : !t.startsWith('- ')) return null
   const id = escapeRe(runId)
-  const end = table ? '\\s*\\|$' : '$'
+  const end = table ? '\\s*\\|$' : BLOCK_ID_END
   if (new RegExp(`· run ${id} · ${pendingMark}${end}`).test(t)) return 'pending'
   if (new RegExp(`· run ${id}${end}`).test(t)) return 'run'
   if (new RegExp(`· result ${id}${end}`).test(t)) return 'result'

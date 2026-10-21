@@ -142,7 +142,8 @@ is not known yet because the cable was pulled, or that was applied but could not
 when the device reports, whatever the run ended as (changed, not applied, done, failed…). The
 dashboard finds its own rows by that ending only, never by text elsewhere in a row, so a reason
 or a device value that names a run cannot add or block a row. Work Log entries, scans included,
-are found the same way, by the end of their first line. The id in that ending is always
+are found the same way, by the end of their first line; the block id Obsidian adds there when
+a technician copies a link to an entry (` ^a1b2c3`) is allowed. The id in that ending is always
 one the dashboard made: a result a device reports under any other id (one with no request on
 record) is kept under an id made from the device and what it sent (`d_` and 16 hex digits). A
 padded or realigned header row (table plugins) is still recognised. Previews, things already

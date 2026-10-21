@@ -94,13 +94,14 @@ export class ActionLog {
         prev: this.last
       }
       const line: ActionLogLine = { ...body, hash: digest(body) }
+      const json = JSON.stringify(line)
       await mkdir(dirname(this.file), { recursive: true })
       let written = false
       let synced = false
       try {
         const fh = await open(this.file, 'a')
         try {
-          await fh.appendFile(`${this.torn ? '\n' : ''}${JSON.stringify(line)}\n`, 'utf8')
+          await fh.appendFile(`${this.torn ? '\n' : ''}${json}\n`, 'utf8')
           written = true
           await fh.datasync() // the agent drops a result once it is acknowledged
           synced = true
@@ -109,14 +110,43 @@ export class ActionLog {
         }
       } finally {
         // a whole line is in the file even when only the sync or the close failed: the next
-        // line chains on from it. A write that failed may have left part of one (a full disk).
-        this.torn = !written
-        if (written) this.last = line.hash
+        // line chains on from it. A write that failed may have left part of one (a full disk),
+        // all of it but the newline, or nothing: the file says which.
+        if (written) {
+          this.torn = false
+          this.last = line.hash
+        } else await this.afterFailedWrite(json, line.hash)
         if (synced && event === 'result' && body.record.result) this.resultsOnDisk.add(record.runId)
       }
     })
     this.queue = write.catch(() => undefined)
     return write
+  }
+
+  /**
+   * After a write that failed, reads the end of the file: when the whole line got there (with or
+   * without its newline) the next line chains on from it, as load() would after a restart, and
+   * starts on a new line unless the file already ends with one. Unreadable: assume a torn line.
+   */
+  private async afterFailedWrite(json: string, hash: string): Promise<void> {
+    this.torn = true
+    try {
+      const fh = await open(this.file, 'r')
+      try {
+        const line = Buffer.from(`${json}\n`, 'utf8')
+        const { size } = await fh.stat()
+        const n = Math.min(size, line.length)
+        const tail = Buffer.alloc(n)
+        if (n) await fh.read(tail, 0, n, size - n)
+        const endsWith = (b: Buffer): boolean => n >= b.length && tail.subarray(n - b.length).equals(b)
+        if (endsWith(line) || endsWith(line.subarray(0, -1))) this.last = hash
+        this.torn = n > 0 && tail[n - 1] !== 0x0a
+      } finally {
+        await fh.close()
+      }
+    } catch {
+      /* keep it torn: an extra blank line is harmless */
+    }
   }
 
   /** Latest state of each run, newest request first. */

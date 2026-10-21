@@ -42,6 +42,7 @@ import {
   type ActionEntry
 } from '../src/main/services/vault/content.ts'
 import { findBlock, setBlock } from '../src/main/services/vault/markers.ts'
+import { parseMarkdown, type Block } from '../src/shared/markdown.ts'
 
 const root = join(import.meta.dirname, '..')
 
@@ -1634,6 +1635,140 @@ test('action log: a line written whole whose sync or close failed still chains t
     assert.deepEqual(await again.verify(), { lines: 4, broken: [] }, 'no false sign of tampering')
   } finally {
     syncMock.mock.restore()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/* ---------- regressions from verifying the fixes to those regressions ---------- */
+
+test('vault: a Work Log entry the technician linked to in Obsidian is still found as its own', () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const target = scan()
+  const id = 'a_mgzz0003_0d0e0f'
+  const lost = entry({ runId: id, status: 'unknown', result: undefined, endedAt: undefined })
+  const settled = entry({ runId: id })
+  const done = entry({ runId: 'a_mgzz0004_101112' })
+  // "Copy link to block" in Obsidian ends the entry's first line with " ^" and a block id
+  let n = 0
+  const link = (body: string): string =>
+    body
+      .split('\n')
+      .map((l) => (l.startsWith('- ') && !/\^[\w-]+$/.test(l) ? `${l} ^b${++n}-x` : l))
+      .join('\n')
+  const first = mergeLog(null, [target], opts, [lost, done])
+  assert.equal(first.added, 3)
+  const second = mergeLog(link(first.body), [target], opts, [settled, done])
+  assert.equal(
+    second.added,
+    1,
+    `only the result of the run whose outcome was unknown: ${second.body}`
+  )
+  const third = mergeLog(link(second.body), [target], opts, [settled, done])
+  assert.equal(third.added, 0, third.body)
+  assert.equal(third.body.split('\n').filter((l) => l.startsWith('- ')).length, 4)
+  assert.equal(third.body.split('\n').filter((l) => / \^b\d-x$/.test(l)).length, 4, 'links kept')
+})
+
+test('vault: a device value cannot open a code block with tildes or strike text through', async () => {
+  const opts = DEFAULT_CONTENT_OPTIONS
+  const fenced = ['~~~dataviewjs', '~~~tasks', '~~~~']
+  const normal = entry({
+    runId: 'a_mgzz0005_aaaaaa',
+    result: result({
+      apply: { items: null, exitCode: 0, changes: fenced, warnings: ['~~struck~~'] }
+    })
+  })
+  const failed = entry({ runId: 'a_mgzz0006_bbbbbb', status: 'failed', error: '~~~tasks' })
+  const h = await harness()
+  try {
+    // and one no request is on record for
+    h.runner.handleMessage(device.id, {
+      type: 'result',
+      runId: '~~~dataviewjs',
+      result: result({
+        runId: '~~~dataviewjs',
+        action: '~~~tasks',
+        apply: { items: null, exitCode: 0, changes: fenced }
+      })
+    })
+    await h.runner.flush()
+    await new Promise((res) => setImmediate(res))
+    const orphan: ActionEntry = { record: h.runner.list().find((r) => r.runId.startsWith('d_'))! }
+    const entries = [normal, failed, orphan]
+    for (const [key, body] of [
+      ['SCAN-LOG', mergeLog(null, [], opts, entries).body],
+      ['CHANGES', mergeChanges(null, entries, opts).body]
+    ] as const) {
+      assert.ok(body.includes('\\~\\~\\~dataviewjs'), body)
+      assert.ok(!/(^|[^\\])~/.test(body), `every tilde escaped in ${body}`)
+      const note = setBlock('# Note\n', key, body).text + '\n## After\n\nNotes.\n'
+      const code: Block[] = []
+      const walk = (bs: Block[]): void => {
+        for (const b of bs) {
+          if (b.t === 'code') code.push(b)
+          if (b.t === 'list') for (const it of b.items) walk(it.c)
+          if (b.t === 'quote' || b.t === 'callout') walk(b.c)
+        }
+      }
+      walk(parseMarkdown(note).blocks)
+      assert.deepEqual(code, [], `no code block in ${note}`)
+      assert.ok(note.includes('## After'))
+    }
+    assert.equal(vaultText('~~~tasks ~~x~~'), '\\~\\~\\~tasks \\~\\~x\\~\\~')
+  } finally {
+    await h.done()
+  }
+})
+
+test('action log: a failed write that left its whole line but not the newline still chains the next', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'arh-torn-exact-'))
+  const probe = await open(join(dir, 'probe'), 'w')
+  const proto = Object.getPrototypeOf(probe) as FileHandle
+  await probe.close()
+  // what reaches the file before the disk fills: all but the newline, nothing, or part of the line
+  let fail: 'newline' | 'nothing' | 'part' | null = null
+  const appendFile = proto.appendFile
+  const enospc = (): Error =>
+    Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+  const writeMock = mock.method(
+    proto,
+    'appendFile',
+    async function (this: FileHandle, data: string, options: BufferEncoding) {
+      const how = fail
+      fail = null
+      if (!how) return appendFile.call(this, data, options)
+      if (how === 'newline') await appendFile.call(this, data.slice(0, -1), options)
+      if (how === 'part') await appendFile.call(this, data.slice(0, data.length >> 1), options)
+      throw enospc()
+    }
+  )
+  try {
+    const file = join(dir, 'actions.jsonl')
+    const log = new ActionLog(file)
+    await log.load()
+    await log.append('request', entry({ runId: 'a_1' }).record)
+    fail = 'newline'
+    await assert.rejects(log.append('result', entry({ runId: 'a_2' }).record), { code: 'ENOSPC' })
+    assert.equal(log.resultOnDisk('a_2'), false, 'not synced: written again when sent again')
+    await log.append('result', entry({ runId: 'a_3' }).record)
+    fail = 'nothing'
+    await assert.rejects(log.append('result', entry({ runId: 'a_4' }).record), { code: 'ENOSPC' })
+    await log.append('result', entry({ runId: 'a_5' }).record)
+    fail = 'part'
+    await assert.rejects(log.append('result', entry({ runId: 'a_6' }).record), { code: 'ENOSPC' })
+    await log.append('result', entry({ runId: 'a_7' }).record)
+    const again = new ActionLog(file)
+    await again.load()
+    for (const id of ['a_1', 'a_2', 'a_3', 'a_5', 'a_7']) assert.ok(again.get(id), id)
+    assert.deepEqual(
+      await again.verify(),
+      { lines: 6, broken: [5] },
+      'only the fragment is flagged, not the whole lines after a failed write'
+    )
+    const text = await readFile(file, 'utf8')
+    assert.ok(!text.includes('\n\n'), 'a line starts on its own line, with no blank line before it')
+  } finally {
+    writeMock.mock.restore()
     await rm(dir, { recursive: true, force: true })
   }
 })

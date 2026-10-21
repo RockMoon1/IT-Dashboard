@@ -603,3 +603,21 @@ test('content: Asset Inventory computers table keeps the technician columns and 
   )
   assert.ok(hub.includes('[[Asset Inventory]]'))
 })
+
+test('content: a computer whose serial and name hold escaped characters keeps one inventory row', () => {
+  for (const [serial, hostname] of [
+    ['SER~1', 'PC~1'],
+    ['SER#1', 'PC[1]'],
+    ['SER\\1', 'PC$1%%'],
+    ['', 'PC^1']
+  ] as const) {
+    const rows = [{ device: { ...device, serial, hostname }, facts: { ip: '10.1.20.45' } }]
+    const first = devicesBlock(null, rows, DEFAULT_CONTENT_OPTIONS)
+    const second = devicesBlock(first, rows, DEFAULT_CONTENT_OPTIONS)
+    assert.equal(readTable(second).rows.length, 1, second)
+    assert.equal(devicesBlock(second, rows, DEFAULT_CONTENT_OPTIONS), second, 'stable on rerun')
+    // a row an older build wrote with a character it did not escape yet is still the same computer
+    const older = first.replaceAll('\\~', '~')
+    assert.equal(readTable(devicesBlock(older, rows, DEFAULT_CONTENT_OPTIONS)).rows.length, 1)
+  }
+})
