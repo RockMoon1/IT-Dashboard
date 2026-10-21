@@ -426,6 +426,55 @@ func TestShippedActionsApplyHere(t *testing.T) {
 				t.Fatalf("before %v after %v change %v", r.Before.Items, r.After.Items, r.After.Change)
 			}
 		})
+		// a one-shot whose exit systemd counts a success although it is not 0 (listed in
+		// SuccessExitStatus=, or a command marked ExecStart=-) is done; an exit not listed, failed
+		// and cleared with reset-failed, still needs a start
+		t.Run("service-start-oneshot-exit-codes", func(t *testing.T) {
+			cases := []struct {
+				name, service string
+				ok            bool
+			}{
+				{"arh-test-okexit.service", "ExecStart=/bin/sh -c \"exit 65\"\nSuccessExitStatus=65", true},
+				{"arh-test-ignored.service", "ExecStart=-/bin/false", true},
+				{"arh-test-badexit.service", "ExecStart=/bin/sh -c \"exit 66\"\nSuccessExitStatus=65", false},
+			}
+			for _, c := range cases {
+				unit := "/etc/systemd/system/" + c.name
+				body := "[Unit]\nDescription=ARH live test\n[Service]\nType=oneshot\n" + c.service + "\n[Install]\nWantedBy=multi-user.target\n"
+				if err := os.WriteFile(unit, []byte(body), 0o644); err != nil {
+					t.Skipf("cannot write a unit here: %v", err)
+				}
+				name := c.name
+				t.Cleanup(func() {
+					sh(t, "systemctl disable "+name+"; systemctl reset-failed "+name)
+					_ = os.Remove(unit)
+					sh(t, "systemctl daemon-reload")
+				})
+			}
+			sh(t, "systemctl daemon-reload")
+			for _, c := range cases {
+				sh(t, "systemctl enable "+c.name)
+				if got := sh(t, "systemctl is-enabled "+c.name); got != "enabled" {
+					t.Skipf("the test unit %s is %q, not enabled", c.name, got)
+				}
+				sh(t, "systemctl start "+c.name)
+				state := sh(t, "systemctl is-active "+c.name)
+				t.Logf("%s is %s: %s", c.name, state, sh(t, "systemctl show -p Result -p ExecMainCode -p ExecMainStatus -p SuccessExitStatus -p ExecStart -- "+c.name))
+				if c.ok && state != "inactive" {
+					t.Fatalf("%s is %q after it ran, not inactive", c.name, state)
+				}
+				if !c.ok {
+					if state != "failed" {
+						t.Fatalf("%s is %q after it ran, not failed", c.name, state)
+					}
+					sh(t, "systemctl reset-failed "+c.name)
+				}
+				m, _ := measureLive(t, a, "linux-service-start", map[string]string{"name": c.name})
+				if m.Change == nil || *m.Change == c.ok || value(&m, "Service "+c.name) != "inactive" {
+					t.Errorf("%s: items %v plan %v %q, want inactive and a plan to change %v", c.name, m.Items, deref(m.Change), m.Plan, !c.ok)
+				}
+			}
+		})
 		t.Run("time-resync", func(t *testing.T) { runLive(t, a, "linux-time-resync", nil) })
 		t.Run("restart-and-cancel", func(t *testing.T) { restart(t, "linux") })
 	}
