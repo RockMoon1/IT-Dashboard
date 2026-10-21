@@ -513,26 +513,59 @@ const PLACEHOLDERS: ReadonlySet<string> = new Set([NO_LOOPS, NO_SCANS, '_No open
 const ownItalic = (line: string): boolean =>
   /^_.*_$/.test(line) && (PLACEHOLDERS.has(line) || line.includes('ARH IT Dashboard'))
 
-/** The block's lines without its heading, intro and blank lines, but the blank before an id. */
+/**
+ * The list's block id on the empty list's placeholder: "Copy link to block" puts a paragraph's id
+ * at the end of its line (`_No open device findings._ ^a1b2c3`).
+ */
+const placeholderId = (line: string): string | undefined => {
+  const m = /^(_.*_)\s+(\^[A-Za-z0-9-]+)$/.exec(line.trim())
+  return m && PLACEHOLDERS.has(m[1]!) ? m[2] : undefined
+}
+
+/** A block id on a line of its own, or on the empty list's placeholder. */
+const idLine = (line: string): boolean => BLOCK_ID_LINE.test(line) || !!placeholderId(line)
+
+/**
+ * The block's lines without its heading, intro and blank lines, but the blank before an id. A
+ * placeholder with the list's id on it goes last, a blank line before it.
+ */
 function bodyLines(existingBody: string | null, heading: string): string[] {
   const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
   const all = (existingBody ?? '').split(/\r?\n/)
   const out: string[] = []
+  const linked: string[] = []
   all.forEach((l, i) => {
+    if (placeholderId(l)) {
+      linked.push('', l)
+      return
+    }
     if (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim())) return
-    // a list's block id stays apart from its last item
-    if (BLOCK_ID_LINE.test(l) && out.length && !all[i - 1]?.trim()) out.push('')
+    // a list's block id stays apart from its last item, or from the placeholder dropped above it
+    if (BLOCK_ID_LINE.test(l) && !all[i - 1]?.trim()) out.push('')
     out.push(l)
   })
-  return out
+  return [...out, ...linked]
 }
 
 /** Where the block ids after a list start, a blank line before them; the end if there are none. */
 function listEnd(lines: string[]): number {
   let i = lines.length
-  while (i > 0 && (lines[i - 1] === '' || BLOCK_ID_LINE.test(lines[i - 1]!))) i--
+  while (i > 0 && (lines[i - 1] === '' || idLine(lines[i - 1]!))) i--
   const blank = lines.indexOf('', i)
   return blank < 0 ? lines.length : blank
+}
+
+/**
+ * The list, or its placeholder while it has no items. An id on the placeholder stays on its line
+ * until then; after that it is the list's, on a line of its own.
+ */
+function listOr(all: string[], placeholder: string): string[] {
+  const id = placeholderId(all[all.length - 1] ?? '')
+  if (!all.some((l) => l.trim() && !idLine(l)))
+    return id ? [`${placeholder} ${id}`, ...all.slice(0, -2)] : [placeholder, ...all]
+  const list = id ? [...all.slice(0, -1), id] : all
+  // an id above the items needs no second blank line under the intro
+  return list[0] === '' ? list.slice(1) : list
 }
 
 /**
@@ -567,7 +600,7 @@ export function mergeLoops(
   // new tasks join the list, above an id the list is linked by
   const all = [...lines.slice(0, end), ...lines.slice(kept), ...lines.slice(end, kept)]
   return {
-    body: [HEADINGS.loops, '', intro, '', ...(all.length ? all : [NO_LOOPS])].join('\n'),
+    body: [HEADINGS.loops, '', intro, '', ...listOr(all, NO_LOOPS)].join('\n'),
     added
   }
 }
@@ -989,7 +1022,7 @@ export function mergeLog(
   const all = [...fresh.flatMap((f) => f.lines), ...lines]
   const intro = `_One entry per scan, action or custom command, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]], changes to [[${opts.changeLogNoteName}]]._`
   return {
-    body: [HEADINGS.log, '', intro, '', ...(all.length ? all : [NO_SCANS])].join('\n'),
+    body: [HEADINGS.log, '', intro, '', ...listOr(all, NO_SCANS)].join('\n'),
     added: fresh.length
   }
 }

@@ -517,6 +517,91 @@ test('two block ids after a table, a blank line before each, stay two ids on eve
   }
 })
 
+/**
+ * Links the still empty Work Log and Open Loops lists (`link` turns the placeholder line into the
+ * linked form), then checks with real writes: nothing new writes nothing; once the list has items
+ * the placeholder is gone and the id is last, after the items, a blank line before it.
+ */
+async function linkEmptyLists(link: (placeholder: string, eol: string) => string, id: string) {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-vault-ids-'))
+  const appData = await mkdtemp(join(tmpdir(), 'arh-appdata-'))
+  try {
+    const vault = join(tmp, 'ARH IT')
+    await cp(SOURCE, vault, { recursive: true })
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault, schemaApproved: true }
+    const paths = notePaths(settings)
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const write = async (runs: ScanRun[]) => {
+      const results = await writer.apply(
+        await buildWritePlans({ settings, devices: [device], runs, actions: [] })
+      )
+      assert.ok(
+        results.every((r) => !r.error),
+        JSON.stringify(results)
+      )
+      return results
+    }
+    await write([])
+    const lists = [
+      [paths.workLog, BLOCK_KEYS.log, '_No scans logged yet._'],
+      [paths.openLoops, BLOCK_KEYS.loops, '_No open device findings._']
+    ] as const
+    for (const [note, key, placeholder] of lists) {
+      const text = await readFile(note, 'utf8')
+      const body = findBlock(text, key)!.body
+      assert.ok(body.includes(placeholder), note)
+      const eol = text.includes('\r\n') ? '\r\n' : '\n'
+      await writeFile(note, text.replace(body, body.replace(placeholder, link(placeholder, eol))))
+    }
+    const item = (l: string): boolean => /^\s*- /.test(l)
+    const finding = (fid: string, message: string): HealthFinding => ({
+      id: fid,
+      severity: 'critical',
+      category: 'Antivirus',
+      message,
+      loop: true
+    })
+    const first = run('r_1', 'ok', [finding('av', 'Defender is off')], '2026-10-14T14:05:00.000Z')
+    const second = run('r_2', 'ok', [finding('fw', 'Firewall is off')], '2026-10-15T14:05:00.000Z')
+    // nothing new while the list is empty, the first items, more items, then nothing new again
+    const passes = [
+      [[], false],
+      [[first], true],
+      [[first, second], true],
+      [[first, second], false]
+    ] as const
+    for (const [runs, written] of passes) {
+      const before = await Promise.all(lists.map(([note]) => readFile(note, 'utf8')))
+      const results = await write([...runs])
+      for (const [n, [note, key, placeholder]] of lists.entries()) {
+        const where = `${note}, ${runs.length} run(s)`
+        const text = await readFile(note, 'utf8')
+        assert.equal(results.find((r) => r.notePath === note)?.written, written, where)
+        if (!written) assert.equal(text, before[n], `${where}: byte for byte as it was`)
+        if (!runs.length) continue
+        const body = findBlock(text, key)!.body.split(/\r?\n/)
+        assert.ok(!body.some((l) => l.includes(placeholder)), `${where}: no placeholder`)
+        assert.equal(body.filter((l) => l.includes(id)).length, 1, `${where}: the id once`)
+        assert.equal(body.at(-1), id, `${where}: the id last in the block`)
+        assert.equal(body.at(-2), '', `${where}: a blank line before it`)
+        assert.equal(body.length - 3, body.map(item).lastIndexOf(true), `${where}: after the list`)
+      }
+      const loops = findBlock(await readFile(paths.openLoops, 'utf8'), BLOCK_KEYS.loops)!.body
+      assert.equal(loops.split(/\r?\n/).filter(item).length, runs.length, 'one task per finding')
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+    await rm(appData, { recursive: true, force: true })
+  }
+}
+
+test('a block id on its own line after the empty Work Log or Open Loops list stays after it', () =>
+  linkEmptyLists((placeholder, eol) => `${placeholder}${eol}${eol}^mylist`, '^mylist'))
+
+test('"Copy link to block" on the empty Work Log or Open Loops list: its id is the list id', () =>
+  // Obsidian puts a paragraph's block id at the end of its line
+  linkEmptyLists((placeholder) => `${placeholder} ^a1b2c3`, '^a1b2c3'))
+
 test('the fixture source itself is never modified', async () => {
   const files = await listFiles(SOURCE)
   assert.ok(
