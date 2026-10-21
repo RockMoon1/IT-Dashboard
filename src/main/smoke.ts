@@ -92,11 +92,25 @@ const RENDERER_SCRIPT = String.raw`(async () => {
   out.viewer.back = true
   await closeViewer()
 
-  // the page's Refresh sends the open computer back to main (a store object must cross plain)
-  const refresh = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Refresh')
-  refresh?.click()
-  await sleep(1500)
-  out.refresh = refresh ? document.querySelector('.bg-bad-400\\/10')?.textContent?.trim() ?? 'ok' : 'no Refresh button'
+  // the computer page's own Refresh (the header's reloads only the link and devices) sends the
+  // open computer back to main (a store object must cross plain): wait for that load to start and
+  // end, or for the banner of a request that failed at once
+  const banner = () => document.querySelector('.bg-bad-400\\/10')?.textContent?.trim()
+  const refresh = document.querySelector('button[aria-label="Refresh this computer"]')
+  const page = refresh?.closest('[aria-busy]')
+  if (page) {
+    let loaded = false
+    const busy = new MutationObserver((changes) => (loaded ||= changes.some((c) => c.oldValue === 'true')))
+    busy.observe(page, { attributeFilter: ['aria-busy'], attributeOldValue: true })
+    refresh.click()
+    await until('the computer page to load again after Refresh', () => loaded || banner())
+    busy.disconnect()
+  }
+  out.refresh = page
+    ? banner() ?? 'ok'
+    : refresh
+      ? 'the computer page does not say when it is loading (aria-busy)'
+      : 'no Refresh button on the computer page'
 
   // Phase 3: the shipped actions reach the page, and Settings shows Access and control with one
   // switch per action (nothing runs: there is no device in the launch test)

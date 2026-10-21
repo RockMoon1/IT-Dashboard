@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { checkParam } from '@shared/actions'
 import type { Purpose } from '@shared/types'
 import { MAX_REASON_BYTES, useActions, utf8Length } from '../actions'
@@ -25,6 +25,15 @@ const preview = computed(() =>
 const run = computed(() => (d.value.runId ? acts.astate.records[d.value.runId] : undefined))
 const impact = computed(() => (def.value ? impactBadge(def.value.impact) : null))
 const settings = computed(() => dash.state.settings)
+// a clock the footer can follow: Date.now() alone never makes it check the preview's age again
+const now = ref(Date.now())
+let timer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  timer = setInterval(() => (now.value = Date.now()), 15_000)
+})
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer)
+})
 
 const paramErrors = computed(() =>
   Object.fromEntries(
@@ -55,12 +64,12 @@ const why = computed((): string | null => {
     return 'Set your name in Settings first: every change records who made it.'
   if (Object.values(paramErrors.value).some(Boolean)) return 'Fix the values above.'
   if (!preview.value || !preview.value.endedAt)
-    return d.value.busy ? 'Waiting for the preview.' : 'Preview first.'
+    return d.value.busy || preview.value ? 'Waiting for the preview.' : 'Preview first.'
   if (paramsChanged.value) return 'The values changed since the preview: preview again.'
   if (preview.value.status !== 'would-change')
     return `The preview says "${preview.value.status.replace(/-/g, ' ')}".`
   // main refuses a preview older than 10 minutes, and one already used for a run
-  if (Date.now() - Date.parse(preview.value.endedAt) > 10 * 60_000)
+  if (now.value - Date.parse(preview.value.endedAt) > 10 * 60_000)
     return 'The preview is more than 10 minutes old: preview again.'
   if (!d.value.reason.trim()) return 'Say why: it goes to the Change Log.'
   if (utf8Length(d.value.reason.trim()) > MAX_REASON_BYTES)
@@ -197,7 +206,12 @@ function scanAgain(): void {
         <section v-if="!d.runId">
           <div class="mb-2 flex items-center justify-between">
             <h3 class="eyebrow">Preview</h3>
-            <button class="btn-ghost px-3 py-1 text-xs" :disabled="d.busy" @click="acts.preview()">
+            <!-- not while one is measuring: the device is busy with it and refuses another -->
+            <button
+              class="btn-ghost px-3 py-1 text-xs"
+              :disabled="d.busy || (!!preview && !preview.endedAt)"
+              @click="acts.preview()"
+            >
               Preview again
             </button>
           </div>

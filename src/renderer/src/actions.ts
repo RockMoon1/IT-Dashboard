@@ -1,4 +1,4 @@
-import { reactive, watch } from 'vue'
+import { effectScope, reactive, watch } from 'vue'
 import type {
   ActionDef,
   ActionEvent,
@@ -121,10 +121,14 @@ async function ensure(): Promise<void> {
   if (subscribed || typeof window.arh === 'undefined') return
   subscribed = true
   window.arh.actions.onEvent(onEvent)
-  // what Settings allow is part of each offer: ask main again once they change
-  watch(
-    () => useDashboard().state.settings,
-    () => Object.keys(astate.offers).forEach((id) => void loadOffers(id))
+  // what Settings allow is part of each offer: ask main again once they change. The watch has a
+  // scope of its own: the first call may come from a page's onMounted, whose scope would stop it
+  // when the page closes
+  effectScope(true).run(() =>
+    watch(
+      () => useDashboard().state.settings,
+      () => Object.keys(astate.offers).forEach((id) => void loadOffers(id))
+    )
   )
   try {
     astate.history = await window.arh.actions.list(300)
@@ -215,8 +219,8 @@ async function preview(): Promise<void> {
     astate.records[r.runId] = r
     d.previewId = r.runId
   } catch (err) {
+    // the preview shown before stays: one still measuring reports its result when it ends
     d.error = message(err)
-    d.previewId = null
   } finally {
     d.busy = false
   }

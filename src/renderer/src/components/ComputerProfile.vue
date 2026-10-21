@@ -93,7 +93,7 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
 </script>
 
 <template>
-  <div class="space-y-5 p-6">
+  <div class="space-y-5 p-6" :aria-busy="state.profileLoading">
     <div class="flex items-center justify-between">
       <button class="text-xs text-mist-500 hover:text-gold-300" @click="dash.closeProfile()">
         ← All computers
@@ -138,7 +138,13 @@ const plain = (line: string): string => line.replace(/^#+\s*/, '')
               {{ connected ? '● connected now' : '○ not connected (showing what is on record)' }}
             </span>
             <div class="flex gap-2">
-              <button class="btn-ghost px-3 py-1" @click="dash.refreshProfile()">Refresh</button>
+              <button
+                class="btn-ghost px-3 py-1"
+                aria-label="Refresh this computer"
+                @click="dash.refreshProfile()"
+              >
+                Refresh
+              </button>
               <button
                 v-if="s.deviceId"
                 class="btn-gold px-3 py-1"
