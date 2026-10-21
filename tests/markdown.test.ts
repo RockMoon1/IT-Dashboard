@@ -611,6 +611,120 @@ test('a fence in a list item ends with the item', () => {
   assert.deepEqual(texts(next.items[2]!.c), [['para', 4, 'note']])
 })
 
+/** Every text node of a parsed note, in order. */
+function textNodes(blocks: Block[]): string[] {
+  const out: string[] = []
+  const inline = (c: Inline[]): void => {
+    for (const x of c) {
+      if (x.t === 'text') out.push(x.v)
+      else if ('c' in x) inline(x.c)
+    }
+  }
+  for (const b of blocks) {
+    if (b.t === 'para' || b.t === 'heading') inline(b.c)
+    else if (b.t === 'quote') out.push(...textNodes(b.c))
+    else if (b.t === 'callout') {
+      inline(b.title)
+      out.push(...textNodes(b.c))
+    } else if (b.t === 'list') for (const it of b.items) out.push(...textNodes(it.c))
+    else if (b.t === 'table') for (const row of [b.head, ...b.rows]) row.forEach(inline)
+  }
+  return out
+}
+
+test('hiding a comment at the start of a line does not make the rest a fence or code', () => {
+  // a fence and indented code must start their line; after a comment they are text
+  const fence = parseMarkdown('Steps:\n%% reviewed %%```\nCall %% patient John Doe %% back\n```')
+  assert.deepEqual(texts(fence.blocks), [
+    ['para', 1, 'Steps: ``` Call  back'],
+    ['code', 4, '']
+  ])
+  const indent = parseMarkdown(
+    'Steps:\n\n%% reviewed %%    net stop spooler\n    Call %% patient John Doe %% back'
+  )
+  assert.deepEqual(texts(indent.blocks), [
+    ['para', 1, 'Steps:'],
+    ['para', 3, 'net stop spooler Call  back']
+  ])
+  // the same in a callout and in a list item
+  const callout = parseMarkdown(
+    '> [!note] Steps\n>\n> %% reviewed %%    net stop spooler\n>     Call %% patient %% back'
+  ).blocks[0] as Callout
+  assert.deepEqual(texts(callout.c), [['para', 3, 'net stop spooler Call  back']])
+  const item = parseMarkdown('- %% reviewed %%```\n  Call %% patient John Doe %% back')
+    .blocks[0] as List
+  assert.deepEqual(texts(item.items[0]!.c), [['para', 1, '``` Call  back']])
+  // a line that held nothing but the comment is still a blank line
+  const blank = parseMarkdown('Steps:\n%% reviewed %%\n    net stop spooler')
+  assert.deepEqual(texts(blank.blocks), [
+    ['para', 1, 'Steps:'],
+    ['code', 3, 'net stop spooler']
+  ])
+})
+
+test('a table needs a delimiter row as written, and a list item looks two lines ahead', () => {
+  // "|---|---| %% checked %%" is not a delimiter row, so the line above it is no table head
+  const fence = parseMarkdown(
+    'Port | Use\n|---|---| %% checked 10/20 %%\n```| x\nCalled %% patient Jane Roe %% back'
+  )
+  assert.deepEqual(texts(fence.blocks), [
+    ['para', 1, 'Port | Use |---|---|'],
+    ['code', 3, 'Called %% patient Jane Roe %% back']
+  ])
+  const quoted = parseMarkdown('Port | Use\n|---|---| %% checked %%\n>     dir %%x%% | more')
+  assert.deepEqual(texts(quoted.blocks), [
+    ['para', 1, 'Port | Use |---|---|'],
+    ['quote', 3, '']
+  ])
+  const quote = quoted.blocks[1]
+  assert.deepEqual(quote?.t === 'quote' && texts(quote.c), [['code', 3, 'dir %%x%% | more']])
+  // a real delimiter row still makes one, and comments in the cells are hidden
+  const table = parseMarkdown('Port | Use %% note %%\n|---|---|\n| 445 | SMB %% patient %% |')
+    .blocks[0] as Extract<Block, { t: 'table' }>
+  assert.equal(table.t, 'table')
+  assert.deepEqual([...table.head, ...table.rows[0]!].map(inlineText), [
+    'Port',
+    'Use',
+    '445',
+    'SMB'
+  ])
+  // a table start after a list item ends the item, so the quote in it is not a table head
+  const md = '- Logs:\n- >     for %%f in (*.log) do type %%f | find "err"\n|---|---|\n|---|---|'
+  const p = parseMarkdown(md)
+  assert.deepEqual(kinds(p.blocks), ['list', 'table'])
+  const logs = (p.blocks[0] as List).items[1]!.c[0]
+  assert.deepEqual(logs?.t === 'quote' && texts(logs.c), [
+    ['code', 2, 'for %%f in (*.log) do type %%f | find "err"']
+  ])
+})
+
+test('a backtick is a code span here only where parseInline reads one', () => {
+  // \` is a backtick, not a span: the comment after it is text, so it is hidden
+  const esc = parseMarkdown('Run \\`%% patient John Doe %%` now').blocks
+  assert.deepEqual(texts(esc), [['para', 1, 'Run `` now']])
+  // \\ is a backslash, and the span after it keeps its comment markers
+  const both = parseMarkdown('Run \\\\`%% kept %%` now').blocks[0]
+  assert.deepEqual(both?.t === 'para' && both.c, [
+    { t: 'text', v: 'Run \\' },
+    { t: 'code', v: '%% kept %%' },
+    { t: 'text', v: ' now' }
+  ])
+  // a span opened on one line of a paragraph closes on the next: the backtick that starts the
+  // next line ends it, and what follows is text
+  const multi = parseMarkdown('Run `cmd\n` %% patient John Doe %% `').blocks
+  assert.deepEqual(textNodes(multi), ['Run ', '  `'])
+  assert.ok(multi[0]?.t === 'para' && multi[0].c.some((x) => x.t === 'code' && x.v === 'cmd\n'))
+  // a run left open in one paragraph does not reach into the next
+  const apart = parseMarkdown('Run `cmd\n\n`%% kept %%` and %% hidden %%').blocks
+  assert.deepEqual(textNodes(apart), ['Run `cmd', ' and'])
+})
+
+test('an indented fence takes off its indent, not the first letters of a tabbed line', () => {
+  // the fence is 2 spaces in; a tab is 4 columns but one character, which was cut with "f"
+  const top = parseMarkdown('  ```\n\tfor %%f in (*) do echo %%f\n   x\n  ```').blocks
+  assert.deepEqual(texts(top), [['code', 1, 'for %%f in (*) do echo %%f\n x']])
+})
+
 test('a line of 120000 quote markers parses in linear time', () => {
   for (const md of ['> '.repeat(120_000) + 'x', '>'.repeat(120_000) + ' x']) {
     const t0 = performance.now()
@@ -621,6 +735,19 @@ test('a line of 120000 quote markers parses in linear time', () => {
     const last = p.blocks.at(-1)
     assert.equal(last?.t === 'para' ? inlineText(last.c) : '', 'after')
   }
+})
+
+test('a list item looks at the line after next only for a delimiter row', () => {
+  // every lazy line with a pipe could start a table; a list item 64 deep would work out the
+  // line after it at every level, and that line's next one, and so on
+  const deep = Array.from({ length: 64 }, (_, d) => '  '.repeat(d) + '- x').join('\n')
+  const md = `${deep}\n${'a|b %% hidden %%\n'.repeat(2000)}after`
+  const t0 = performance.now()
+  const p = parseMarkdown(md)
+  const ms = performance.now() - t0
+  // about 250 ms; 2.5 s without that check, and 23 s for 20000 lines
+  assert.ok(ms < 1500, `took ${ms.toFixed(0)} ms`)
+  assert.ok(!textNodes(p.blocks).some((v) => v.includes('%%')))
 })
 
 test('links nested 10000 deep parse quickly and stop nesting at a limit', () => {
@@ -656,14 +783,20 @@ function random(seed: number): () => number {
 }
 
 /**
- * A random note of quotes, callouts, lists, indented code, fences, commands with %% in them and
- * comments. With `reshaping`, also comments that change the note's shape once hidden: lines
- * that hold only a comment, and comments over several lines.
+ * A random note of quotes, callouts, lists, indented code, fences, tables, commands with %% in
+ * them, code spans and comments, also a comment right before what would start a block. With
+ * `reshaping`, also comments that change the note's shape once hidden: lines that hold only a
+ * comment, comments over several lines, and comments that hold a table row's pipes. `deep`
+ * nests further.
  */
-function randomNote(rand: () => number, reshaping: boolean): string {
+function randomNote(rand: () => number, reshaping: boolean, deep: boolean): string {
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!
-  const prefixes = ['> ', '>', '>  ', '>     ', '- ', '1. ', '- [ ] ', ' ', '  ', '   ', '    ']
+  const prefixes = ['> ', '>', '>  ', '>     ', '- ', '1. ', '2. ', '- [ ] ', ' ', '  ', '   ']
+  prefixes.push('    ', '\t', '* ', '10) ', '    > ')
   let id = 0
+  // what a line could start once a comment before it is hidden
+  const starts = ['```', '~~~', '    for %%i in (c) do del "%%i"', '> x', '- x', '1. x', '# h']
+  starts.push('|---|---|', '[!note] t', '* * *', 'a | b', '`x`')
   const contents = [
     () => `text ${id++}`,
     () => `text %% secret ${id++} %% more`,
@@ -676,56 +809,83 @@ function randomNote(rand: () => number, reshaping: boolean): string {
     () => '1. step',
     () => pick(['- - -', '* * *', `# Step ${id++} %% secret %%`]),
     () => '',
-    ...(reshaping ? [() => `%% secret ${id++} %%`, () => '%%', () => '<!--', () => '-->'] : [])
+    () => pick(['|---|---|', '| - | - |', '|:-|-:|', '|---|---| %% secret %%', '|-|-| <!-- x -->']),
+    () => pick(['Port | Use', '| a | b |', 'x | y %% secret %%', '| c %% secret %% | d |', 'p|q']),
+    () => `%% secret ${id++} %%` + pick(starts),
+    () => `<!-- secret ${id++} -->` + pick(starts),
+    () => pick(['Run \\`%% secret %%` now', 'a \\\\`%% kept %%` b', 'tick `a', '` %% secret %% `']),
+    () => pick(['`%% kept %%` x %% secret %%', 'x `` y `%% kept %%` z', 'p `q %% kept %% r`']),
+    () => pick(['a \\%% secret %% b', '`` s `` %% secret %%', 'u ` v', '**b %% secret %%**']),
+    ...(reshaping
+      ? [() => `%% secret ${id++} %%`, () => '%%', () => '<!--', () => '-->', () => 'x %% a|b %% y']
+      : [])
   ]
   const lines: string[] = []
   for (let k = 2 + Math.floor(rand() * 14); k > 0; k--) {
     let prefix = ''
-    for (let d = Math.floor(rand() * 4); d > 0; d--) prefix += pick(prefixes)
+    for (let d = Math.floor(rand() * (deep ? 7 : 4)); d > 0; d--) prefix += pick(prefixes)
     lines.push(prefix + pick(contents)())
   }
   return lines.join('\n')
 }
 
-/** The text nodes and the code blocks ([line, lang, code]) of a parsed note, in order. */
-function textAndCode(blocks: Block[], text: string[], code: Array<[number, string, string]>): void {
+/**
+ * The text nodes and the code blocks ([line, lang, code]) of a parsed note, in order, and in
+ * `all` every string the viewer could show (code spans, links and wikilinks too).
+ */
+function textAndCode(
+  blocks: Block[],
+  text: string[],
+  code: Array<[number, string, string]>,
+  all: string[] = []
+): void {
   const inline = (c: Inline[]): void => {
     for (const x of c) {
       if (x.t === 'text') text.push(x.v)
-      else if ('c' in x) inline(x.c)
+      if (x.t === 'text' || x.t === 'code' || x.t === 'tag') all.push(x.v)
+      else if (x.t === 'link') all.push(x.href)
+      else if (x.t === 'wiki') all.push(x.target, x.heading ?? '', x.alias ?? '')
+      if ('c' in x) inline(x.c)
     }
   }
   for (const b of blocks) {
-    if (b.t === 'code') code.push([b.line, b.lang, b.v])
-    else if (b.t === 'para' || b.t === 'heading') inline(b.c)
-    else if (b.t === 'quote') textAndCode(b.c, text, code)
+    if (b.t === 'code') {
+      code.push([b.line, b.lang, b.v])
+      all.push(b.lang, b.v)
+    } else if (b.t === 'para' || b.t === 'heading') inline(b.c)
+    else if (b.t === 'quote') textAndCode(b.c, text, code, all)
     else if (b.t === 'callout') {
       inline(b.title)
-      textAndCode(b.c, text, code)
-    } else if (b.t === 'list') for (const it of b.items) textAndCode(it.c, text, code)
+      textAndCode(b.c, text, code, all)
+    } else if (b.t === 'list') for (const it of b.items) textAndCode(it.c, text, code, all)
+    else if (b.t === 'table') for (const row of [b.head, ...b.rows]) row.forEach(inline)
   }
 }
 
 test('comments are hidden wherever the note shows text, and code keeps every byte', () => {
   const rand = random(20261021)
-  for (let k = 0; k < 4000; k++) {
+  for (let k = 0; k < 6000; k++) {
     const reshaping = k % 2 === 1
-    const md = randomNote(rand, reshaping)
+    const md = randomNote(rand, reshaping, k % 4 >= 2)
     const text: string[] = []
     const code: Array<[number, string, string]> = []
-    textAndCode(parseMarkdown(md).blocks, text, code)
+    const all: string[] = []
+    textAndCode(parseMarkdown(md).blocks, text, code, all)
     const shown = text.find((v) => v.includes('%%') || v.includes('<!--'))
     assert.equal(shown, undefined, `a comment shows as text in:\n${md}`)
+    // what stands in for a hidden comment is never shown
+    assert.ok(!all.some((v) => v.includes('\uFDD0')), `a placeholder shows in:\n${md}`)
     if (reshaping) {
       // a command in a code block is whole
       for (const [, , v] of code) {
         for (const line of v.split('\n').filter((l) => l.includes('for '))) {
-          assert.match(line, /for %%(f in \(c\d+\) do echo %%f|i in \(c\d+\) do del "%%i")$/, md)
+          assert.match(line, /for %%(f in \(c\d*\) do echo %%f|i in \(c\d*\) do del "%%i")$/, md)
         }
       }
     } else {
-      // these comments leave each line's shape as it was, so the code blocks are the ones the
-      // note has when no comment is hidden at all
+      // these comments leave each line's shape as it was, even one that a fence, a delimiter
+      // row or indented code would follow, so the code blocks are the ones the note has when
+      // no comment is hidden at all
       const plain = md.replaceAll('%%', '§§').replaceAll('<!--', '‹!--')
       const want: Array<[number, string, string]> = []
       textAndCode(parseMarkdown(plain).blocks, [], want)
