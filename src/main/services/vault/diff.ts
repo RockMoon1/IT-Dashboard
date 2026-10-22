@@ -9,7 +9,8 @@ export function unifiedDiff(
   before: string,
   after: string,
   label: string,
-  context = 3
+  context = 3,
+  display?: { a: string[]; b: string[] }
 ): { text: string; stats: DiffStats } {
   const a = before.split(/\r?\n/)
   const b = after.split(/\r?\n/)
@@ -43,8 +44,8 @@ export function unifiedDiff(
       j++
     }
   }
-  while (i < n) ops.push({ kind: '-', line: a[i++]!, ai: i, bi: j })
-  while (j < m) ops.push({ kind: '+', line: b[j++]!, ai: i, bi: j })
+  for (; i < n; i++) ops.push({ kind: '-', line: a[i]!, ai: i, bi: j })
+  for (; j < m; j++) ops.push({ kind: '+', line: b[j]!, ai: i, bi: j })
 
   const stats: DiffStats = {
     added: ops.filter((o) => o.kind === '+').length,
@@ -75,7 +76,10 @@ export function unifiedDiff(
     const aCount = slice.filter((o) => o.kind !== '+').length
     const bCount = slice.filter((o) => o.kind !== '-').length
     out.push(`@@ -${aStart},${aCount} +${bStart},${bCount} @@`)
-    for (const o of slice) out.push(`${o.kind}${o.line}`)
+    for (const o of slice)
+      out.push(
+        `${o.kind}${display ? ((o.kind === '+' ? display.b[o.bi] : display.a[o.ai]) ?? '') : o.line}`
+      )
     k = hunkEnd
   }
   return { text: out.join('\n') + '\n', stats }

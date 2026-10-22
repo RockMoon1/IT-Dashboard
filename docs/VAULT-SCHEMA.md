@@ -224,7 +224,9 @@ or action** (writes happen only when you press Apply on a preview), or **Vault s
 ## 5. Safety rules the writer enforces (tested)
 
 - Never creates, renames or deletes a file in the vault.
-- The preview is the exact unified diff per note, available before any write.
+- The preview is the exact unified diff per note, available before any write. Its lines are shown
+  as the reader shows them: comments (`%%`, `<!-- -->`, YAML) are hidden there too, and the write
+  keeps them as typed.
 - Live writes require "schema approved" first (enforced in the settings loader, not only in the UI).
 - Before the first live write to a note, a copy goes to `%APPDATA%\ARH IT Dashboard\vault-backups`.
 - Writes are atomic: temp file in `%APPDATA%\ARH IT Dashboard\vault-tmp`, then replace, with retries

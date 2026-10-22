@@ -525,6 +525,23 @@ const placeholderOf = (line: string): { text: string; id?: string } | undefined 
 /** A block id on a line of its own, or the placeholder (kept only while it carries the list's). */
 const idLine = (line: string): boolean => BLOCK_ID_LINE.test(line) || !!placeholderOf(line)
 
+/** The dashboard's intro (not a placeholder), and a block id "Copy link to block" put on it. */
+const introOf = (line: string): { id: string } | undefined => {
+  const m = /^(_.*_)(?:\s+(\^[A-Za-z0-9-]+))?$/.exec(line.trim())
+  return m && ownItalic(m[1]!) && !PLACEHOLDERS.has(m[1]!) ? { id: m[2] ?? '' } : undefined
+}
+
+/** What follows the intro's text: its block id at the end of its line, or on the line under it. */
+function introIdOf(existingBody: string | null): string {
+  const all = (existingBody ?? '').split(/\r?\n/)
+  for (const [i, l] of all.entries()) {
+    const intro = introOf(l)
+    if (intro?.id) return ` ${intro.id}`
+    if (intro && BLOCK_ID_LINE.test(all[i + 1] ?? '')) return `\n${all[i + 1]!}`
+  }
+  return ''
+}
+
 /**
  * The block's lines without its heading, intro and blank lines, but the blank before an id. The
  * placeholder stays, as it is, while it carries the list's id: at the end of its line, or on the
@@ -535,6 +552,8 @@ function bodyLines(existingBody: string | null, heading: string): string[] {
   const all = (existingBody ?? '').split(/\r?\n/)
   const out: string[] = []
   all.forEach((l, i) => {
+    // the intro's own id goes with it (introIdOf)
+    if (introOf(l)?.id || (BLOCK_ID_LINE.test(l) && introOf(all[i - 1] ?? ''))) return
     const p = placeholderOf(l)
     const linked = !!p && (!!p.id || BLOCK_ID_LINE.test(all[i + 1] ?? ''))
     if (!linked && (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim()))) return
@@ -613,7 +632,7 @@ export function mergeLoops(
       added++
     }
   }
-  const intro = `_Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a line when it is fixed. The dashboard never edits a line once written; if a ticked problem shows up on a later scan it adds a new line. Device details: [[${opts.assetNoteName}]]._`
+  const intro = `_Written by the ARH IT Dashboard when a scan crosses a health threshold. Tick a line when it is fixed. The dashboard never edits a line once written; if a ticked problem shows up on a later scan it adds a new line. Device details: [[${opts.assetNoteName}]]._${introIdOf(existingBody)}`
   // new tasks join the list, above an id the list is linked by
   const all = [...lines.slice(0, end), ...lines.slice(kept), ...lines.slice(end, kept)]
   return {
@@ -1037,7 +1056,7 @@ export function mergeLog(
   }
   fresh.sort((a, b) => b.at.localeCompare(a.at))
   const all = [...fresh.flatMap((f) => f.lines), ...lines]
-  const intro = `_One entry per scan, action or custom command, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]], changes to [[${opts.changeLogNoteName}]]._`
+  const intro = `_One entry per scan, action or custom command, newest first (${opts.tzLabel}). Written by the ARH IT Dashboard; findings that need action go to [[${opts.openLoopsNoteName}]], changes to [[${opts.changeLogNoteName}]]._${introIdOf(existingBody)}`
   return {
     body: [HEADINGS.log, '', intro, '', ...listOr(all, NO_SCANS)].join('\n'),
     added: fresh.length

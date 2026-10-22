@@ -13,6 +13,14 @@ import { constants, type Dirent } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { unifiedDiff } from './diff.ts'
 import { findBlock, setBlock } from './markers.ts'
+import { shownLines } from './reader.ts'
+
+const MARKER_LINE = /^\s*<!--\s*DASH:[A-Z0-9_-]+:(START|END)\s*-->\s*$/
+/** A note's lines as the reader shows them, the dashboard's markers as written. */
+function shownForDiff(raw: string): string[] {
+  const rawLines = raw.split(/\r?\n/)
+  return shownLines(raw).map((l, i) => (MARKER_LINE.test(rawLines[i] ?? '') ? rawLines[i]! : l))
+}
 
 /**
  * Writes managed blocks into existing vault notes.
@@ -156,7 +164,10 @@ export class VaultWriter {
         const current = await readFile(notePath, 'utf8')
         for (const k of keys) findBlock(current, k) // throws on malformed markers
         const { text, created } = VaultWriter.render(current, notePlans)
-        const d = unifiedDiff(current, text, basename(notePath))
+        const d = unifiedDiff(current, text, basename(notePath), 3, {
+          a: shownForDiff(current),
+          b: shownForDiff(text)
+        })
         out.push({
           notePath,
           exists: true,
