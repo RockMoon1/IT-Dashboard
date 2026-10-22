@@ -974,6 +974,25 @@ test('a line read for its code spans and comments takes a few readings, not one 
   }
 })
 
+/**
+ * The best of 7 parses of each of two notes, taken in turn (a, b, a, b, ...), so that both see the
+ * same load: test files run side by side, and timed one after the other a busy moment can fall
+ * on one side only.
+ */
+function bestOfPair(a: string, b: string): [number, number] {
+  let ta = Infinity
+  let tb = Infinity
+  for (let k = 0; k < 7; k++) {
+    let t0 = performance.now()
+    parseMarkdown(a)
+    ta = Math.min(ta, performance.now() - t0)
+    t0 = performance.now()
+    parseMarkdown(b)
+    tb = Math.min(tb, performance.now() - t0)
+  }
+  return [ta, tb]
+}
+
 test('a paragraph read again costs about its own lines, not the whole note again', () => {
   // the paragraph only the whole paragraph reads differently (see above), after and before
   // 10000 lines with comments: read again in full, the note took twice as long as without it
@@ -981,18 +1000,8 @@ test('a paragraph read again costs about its own lines, not the whole note again
     i % 7 === 0 ? '' : `Line ${i}: run \`Get-Printer -Name P${i}\` see [[Ticket ${i}]] %% n ${i} %%`
   ).join('\n')
   const para = '*a `b* c\nd` e* %% patient Jane Roe %% `f`'
-  const best = (md: string): number => {
-    let ms = Infinity
-    for (let k = 0; k < 5; k++) {
-      const t0 = performance.now()
-      parseMarkdown(md)
-      ms = Math.min(ms, performance.now() - t0)
-    }
-    return ms
-  }
-  const alone = best(body)
   for (const md of [`${body}\n\n${para}`, `${para}\n\n${body}`]) {
-    const ms = best(md)
+    const [ms, alone] = bestOfPair(md, body)
     assert.ok(ms < alone * 1.5 + 10, `${ms.toFixed(0)} ms, ${alone.toFixed(0)} ms without it`)
     const text: string[] = []
     textAndCode(parseMarkdown(md).blocks, text, [])
@@ -1018,15 +1027,6 @@ test('a list nested deep reads its lines about as fast as a quote nested as deep
   // a line's indent worked out by regex, and twice, at each level (and an item match where the
   // item goes on), a list 16 deep took 2 to 4 times as long as the quote, and 5 times with one
   // comment when 64 deep; now about 1 and 2
-  const best = (md: string): number => {
-    let ms = Infinity
-    for (let k = 0; k < 5; k++) {
-      const t0 = performance.now()
-      parseMarkdown(md)
-      ms = Math.min(ms, performance.now() - t0)
-    }
-    return ms
-  }
   const nest = (d: number): string =>
     Array.from({ length: d }, (_, k) => '  '.repeat(k) + '- x').join('\n')
   const quote = (d: number, n: number): string => ('> '.repeat(d) + 'a step b\n').repeat(n)
@@ -1036,8 +1036,7 @@ test('a list nested deep reads its lines about as fast as a quote nested as deep
     [lazy, quote(64, 5000), 1.5],
     [`${lazy}end %% patient Jane Roe %%`, quote(64, 5000), 3.25]
   ] as const) {
-    const ms = best(md)
-    const alone = best(q)
+    const [ms, alone] = bestOfPair(md, q)
     assert.ok(ms < alone * most + 10, `${ms.toFixed(0)} ms, ${alone.toFixed(0)} ms for the quote`)
   }
   assert.ok(
