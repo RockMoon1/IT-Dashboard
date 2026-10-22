@@ -1,8 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile, mkdir, readdir } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, rm, writeFile, mkdir, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { mainProcess } from './helpers/electron.ts'
+import { IPC } from '../src/shared/api.ts'
+import { buildWritePlans } from '../src/main/services/vault/plans.ts'
+import { DEFAULT_SETTINGS } from '../src/main/services/settings.ts'
 import {
   findBlock,
   getBlock,
@@ -33,7 +37,7 @@ import {
   unescapeVaultText,
   vaultText
 } from '../src/main/services/vault/content.ts'
-import type { ScanRun } from '../src/shared/types.ts'
+import type { OpenLoopsView, ScanRun, SearchHit, WorkLogView } from '../src/shared/types.ts'
 
 const KEY = 'DEVICE-SCANS'
 
@@ -314,59 +318,157 @@ test('the search panel shows lines as the reader does: no comment, each at its o
   }
 })
 
-test('the Open Loops and Work Log tabs show the notes as the reader does: no comment', async () => {
-  const fixture = join(import.meta.dirname, 'fixtures', 'vault', 'ARH IT')
-  const read = async (name: string, edits: Array<[string, string]>): Promise<string> => {
-    let text = await readFile(join(fixture, name), 'utf8')
-    for (const [from, to] of edits) {
-      assert.ok(text.includes(from), from)
-      text = text.replace(from, to)
+test('the Open Loops, Work Log and search tabs, as the main process serves them: no comment', async () => {
+  const tmp = await mkdtemp(join(tmpdir(), 'arh-tabs-'))
+  const vault = join(tmp, 'ARH IT')
+  try {
+    await cp(join(import.meta.dirname, 'fixtures', 'vault', 'ARH IT'), vault, { recursive: true })
+    const edit = async (name: string, edits: Array<[string, string]>): Promise<string> => {
+      let text = await readFile(join(vault, name), 'utf8')
+      for (const [from, to] of edits) {
+        assert.ok(text.includes(from), from)
+        text = text.replace(from, to)
+      }
+      await writeFile(join(vault, name), text)
+      return text
     }
-    return text
-  }
-  // as the tabs read them (ipc.ts openLoops and workLog): the lines the reader shows
-  const loops = await read('ARH Open Loops.md', [
-    ['updated: 2026-10-13', 'updated: 2026-10-13 # Jane Roe'],
-    ['battery.**', 'battery.** %% for Jane Roe, MRN 445566 %%'],
-    ['switch ports.**', 'switch ports.** <!-- MRN 445566 -->'],
-    [
-      '## 🟠 This week',
-      '%%\n## Jane Roe\n- [ ] **Call Jane Roe back, MRN 445566**\n%%\n## 🟠 This week'
-    ]
-  ])
-  const tasks = parseTasks(shownLines(loops).join('\n'), 'ARH Open Loops.md', '2026-10-14')
-  assert.doesNotMatch(JSON.stringify(tasks), /Jane|MRN|445566/)
-  assert.equal(tasks.length, 7, 'a task in a comment is none')
-  for (const t of tasks) assert.ok(loops.split('\n')[t.line - 1]?.includes(t.text.slice(0, 20)))
-  assert.deepEqual(
-    tasks.filter((t) => /switch|battery/.test(t.text)).map((t) => [t.text, t.section]),
-    [
-      ['**Label the closet switch ports.**', '🟠 This week'],
+    // a patient's details in each kind of comment: %% %%, <!-- -->, a %% block over lines and a
+    // YAML comment after a property
+    const loops = await edit('ARH Open Loops.md', [
+      ['updated: 2026-10-13', 'updated: 2026-10-13 # Jane Roe'],
+      ['battery.**', 'battery.** %% for Jane Roe, MRN 445566 %%'],
+      ['switch ports.**', 'switch ports.** <!-- MRN 445566 -->'],
       [
-        '**ARH-T01 — order a replacement battery.**  → [[Ticket — ARH-T01 — battery — 2026-10-09]]',
-        '🟠 This week'
+        '## 🟠 This week',
+        '%%\n## Jane Roe\n- [ ] **Call Jane Roe back, MRN 445566**\n%%\n## 🟠 This week'
       ]
+    ])
+    const work = await edit('ARH Work Log.md', [
+      ['tags: [arh, worklog]', 'tags: [arh, worklog] # Jane Roe\n# 2026-10-20 visit by Jane Roe'],
+      ['capacity is low.', 'capacity is low. %% Jane Roe, MRN 445566 %%'],
+      ['- Status OK.', '- Status OK. <!-- Jane Roe called -->'],
+      ['## 2026-10-13', '%%\n## 2026-10-15 Jane Roe\n- ARH-T01 MRN 445566\n%%\n\n## 2026-10-13'],
+      // escaped as the writer escapes typed text: text in Obsidian, so no line after it hides
+      ['- [[T-0001 Front desk printer]]', '- [[T-0001 Front desk printer]] at 100\\%\\%% \\<!-- x']
+    ])
+    const typedDay = [
+      '### 09:10 MT — Front desk printer toner replaced',
+      '- [[T-0001 Front desk printer]] at 100\\%\\%% \\<!-- x',
+      '### ~(time approx) — MFA reset for the reception account',
+      '- Done by phone.'
     ]
-  )
+    const settingsFile = join(tmp, 'settings.json')
+    await writeFile(settingsFile, JSON.stringify({ settingsVersion: 2, vaultPath: vault }))
+    // the tabs call these channels; the main process (ipc.ts) reads the notes for them
+    const invoke = await mainProcess({
+      settingsFile,
+      appDataDir: join(tmp, 'appdata'),
+      profilesDir: join(tmp, 'profiles'),
+      actionsDir: join(tmp, 'actions'),
+      agentBinary: null,
+      agentDistDir: null
+    })
+    const loopsTab = async (): Promise<OpenLoopsView> => invoke(IPC.vaultOpenLoops)
+    const workTab = async (): Promise<WorkLogView> => invoke(IPC.vaultWorkLog, 30)
+    const search = async (q: string): Promise<SearchHit[]> => invoke(IPC.vaultSearch, q)
 
-  const work = await read('ARH Work Log.md', [
-    ['tags: [arh, worklog]', 'tags: [arh, worklog]\n# 2026-10-20 visit by Jane Roe, MRN 445566'],
-    ['capacity is low.', 'capacity is low. %% Jane Roe, MRN 445566 %%'],
-    ['- Status OK.', '- Status OK. <!-- Jane Roe called -->'],
-    ['## 2026-10-13', '%%\n## 2026-10-15 Jane Roe\n- MRN 445566\n%%\n\n## 2026-10-13']
-  ])
-  const entries = parseDatedEntries(shownLines(work).join('\n'), 'ARH Work Log.md')
-  assert.doesNotMatch(JSON.stringify(entries), /Jane|MRN|445566/)
-  assert.deepEqual(
-    entries.map((e) => e.date),
-    ['2026-10-14', '2026-10-13']
-  )
-  assert.deepEqual(entries[0]?.lines.slice(0, 4), [
-    '### 08:55 MT — Backup job checked',
-    '- Status OK. ',
-    '### 10:20 MT — ARH-T01 battery check',
-    '- Battery report run; capacity is low.  → [[Ticket — ARH-T01 — battery — 2026-10-09]]'
-  ])
+    const { tasks, error } = await loopsTab()
+    assert.equal(error, undefined)
+    assert.doesNotMatch(JSON.stringify(tasks), /Jane|MRN|445566/)
+    assert.equal(tasks.length, 7, 'a task in a comment is none')
+    for (const t of tasks) assert.ok(loops.split('\n')[t.line - 1]?.includes(t.text.slice(0, 20)))
+    assert.deepEqual(
+      tasks.filter((t) => /switch|battery/.test(t.text)).map((t) => [t.text, t.section]),
+      [
+        ['**Label the closet switch ports.**', '🟠 This week'],
+        [
+          '**ARH-T01 — order a replacement battery.**  → [[Ticket — ARH-T01 — battery — 2026-10-09]]',
+          '🟠 This week'
+        ]
+      ]
+    )
+
+    const log = await workTab()
+    assert.equal(log.error, undefined)
+    assert.doesNotMatch(JSON.stringify(log.entries), /Jane|MRN|445566/)
+    assert.deepEqual(
+      log.entries.map((e) => e.date),
+      ['2026-10-14', '2026-10-13']
+    )
+    assert.deepEqual(log.entries[0]?.lines.slice(0, 4), [
+      '### 08:55 MT — Backup job checked',
+      '- Status OK. ',
+      '### 10:20 MT — ARH-T01 battery check',
+      '- Battery report run; capacity is low.  → [[Ticket — ARH-T01 — battery — 2026-10-09]]'
+    ])
+    assert.match(log.entries[0]?.heading ?? '', /^2026-10-14/)
+    assert.deepEqual(log.entries[1]?.lines, typedDay)
+
+    const hits = await search('ARH-T01')
+    assert.ok(hits.length > 0)
+    assert.doesNotMatch(JSON.stringify(hits), /Jane|MRN|445566/)
+    const battery = hits.find((h) => h.file === 'ARH Work Log.md' && h.text.includes('10:20'))
+    assert.equal(work.split('\n')[(battery?.line ?? 0) - 1], '### 10:20 MT — ARH-T01 battery check')
+    assert.deepEqual(await search('Jane Roe'), [])
+
+    // what the dashboard writes there with a comment marker in it, escaped, hides nothing after
+    // it: every task and Work Log line it wrote shows
+    const writer = new VaultWriter({ appDataDir: join(tmp, 'appdata'), live: true })
+    const marked = run({
+      hostname: 'ARH-T09',
+      health: {
+        score: 'attention',
+        metrics: { OS: 'Windows 11' },
+        findings: [
+          {
+            id: 'storage:disk-c',
+            severity: 'warning',
+            category: 'Storage',
+            message: 'Disk C: has 9% free <!-- check the share',
+            loop: true
+          },
+          {
+            id: 'perf:batch',
+            severity: 'warning',
+            category: 'Performance',
+            message: 'Batch ran at 100%%% CPU',
+            loop: true
+          },
+          {
+            id: 'antivirus:defender-off',
+            severity: 'critical',
+            category: 'Antivirus',
+            message: 'Microsoft Defender antivirus is disabled',
+            loop: true
+          }
+        ]
+      }
+    })
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault }
+    const results = await writer.apply(
+      await buildWritePlans({ settings, devices: [], runs: [marked], actions: [] })
+    )
+    assert.ok(
+      results.every((r) => !r.error),
+      JSON.stringify(results)
+    )
+    // (as written: the tabs show a line's Markdown, escapes too)
+    const messages = marked.health!.findings.map((f) => vaultText(f.message))
+    const after = await loopsTab()
+    for (const m of messages)
+      assert.ok(
+        after.tasks.some((t) => t.text.includes(m)),
+        `Open Loops tab lost ${m}: ${JSON.stringify(after.tasks.map((t) => t.text))}`
+      )
+    // the Work Log's block (no dated section, so not in its tab) is found by the search
+    for (const q of ['Batch ran', 'Microsoft Defender']) {
+      const files = (await search(q)).map((h) => h.file)
+      for (const f of ['ARH Open Loops.md', 'ARH Work Log.md']) assert.ok(files.includes(f), q)
+    }
+    assert.deepEqual((await workTab()).entries[1]?.lines, typedDay)
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
 })
 
 function run(overrides: Partial<ScanRun> = {}): ScanRun {

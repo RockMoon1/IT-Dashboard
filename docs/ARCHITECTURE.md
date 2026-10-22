@@ -103,6 +103,7 @@ knows, resolves each `[[link]]` the way Obsidian does (exact path, else file nam
 first, then the shortest path) and lists backlinks, each shown as the reader shows its line, with
 its comments hidden.
 Every screen hides comments as the reader does (`notes.ts` `shownOf`, `reader.ts` `shownLines`).
+As in Obsidian, a `\` before `%%` or `<!--` makes it text (the writer escapes typed ones so).
 Opening Obsidian itself is a separate, explicit action.
 
 ## Actions (Phase 3)

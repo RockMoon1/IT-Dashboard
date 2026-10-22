@@ -8,8 +8,8 @@
  * nested lists with task boxes, tables, rules, **bold** *italic* ~~strike~~ ==highlight==
  * `code`, [links](), bare https:// links, [[wikilinks|alias]] [[Note#Heading]] ![[embeds]],
  * #tags. Hidden like in Obsidian's reading view: <!-- comments --> (including the dashboard's
- * markers), %% comments %% and ^block-ids. Every block keeps its 1-based source line so the
- * viewer can jump to a line.
+ * markers), %% comments %% (a \ before one makes it text) and ^block-ids. Every block keeps its
+ * 1-based source line so the viewer can jump to a line.
  */
 
 export type Inline =
@@ -474,8 +474,22 @@ interface Hidden {
 type Ranges = Array<[number, number]>
 
 /**
+ * Whether the character at `at` of `s` is escaped: the run of backslashes (from `from` on) right
+ * before it is odd, as parseInline reads it (\\ is a backslash). So is it in Obsidian: a \ before
+ * the first character of %% or <!-- makes it text, and the vault writer escapes a typed %% or <
+ * that way (\%\%, \<) so that it never becomes a comment. A backslash is never part of a code
+ * span's end or start, so a run before an opener outside the spans is outside them too.
+ */
+function escapedAt(s: string, at: number, from: number): boolean {
+  let p = at
+  while (p > from && s.charCodeAt(p - 1) === 92) p--
+  return (at - p) % 2 === 1
+}
+
+/**
  * Adds to `cut` the comments of `raw` from `i` on: one opens at %% or <!-- outside the code
- * `spans` and runs to its end, or past the end of the line, and then that is returned.
+ * `spans`, unless a \ escapes its first character, and runs to its end, or past the end of the
+ * line, and then that is returned. Its end is found as written: in a comment, nothing escapes.
  */
 function findComments(raw: string, i: number, spans: Ranges, cut: Ranges): Open {
   // where the next opener of each kind is from i, found again only once i has passed it
@@ -492,6 +506,11 @@ function findComments(raw: string, i: number, spans: Ranges, cut: Ranges): Open 
     // a span that starts before the opener holds it (one that starts in a comment is none)
     if (span && span[0] >= i && span[0] < at) {
       i = span[1]
+      continue
+    }
+    // \%% and \<!-- are text: the next % may still open one (\%%% is "%" and an opener)
+    if (escapedAt(raw, at, i)) {
+      i = at + 1
       continue
     }
     const close = at === pct ? '%%' : '-->'
@@ -524,10 +543,34 @@ function readSpans(raw: string, cut: Ranges, at: number): Probe {
   return probe
 }
 
+/**
+ * `s` with KEPT before each %% and <!-- in it that would open a comment outside a code span (an
+ * escaped one is text there too), found as findComments finds them.
+ */
+function markKept(s: string): string {
+  let out = ''
+  let from = 0
+  let pct = -2
+  let html = -2
+  for (let i = 0; ; ) {
+    if (pct !== -1 && pct < i) pct = s.indexOf('%%', i)
+    if (html !== -1 && html < i) html = s.indexOf('<!--', i)
+    const at = pct === -1 ? html : html === -1 ? pct : Math.min(pct, html)
+    if (at === -1) break
+    if (escapedAt(s, at, 0)) {
+      i = at + 1
+      continue
+    }
+    out += s.slice(from, at) + KEPT
+    from = at
+    i = at + (at === pct ? 2 : 4)
+  }
+  return out + s.slice(from)
+}
+
 /** `raw` with the comments in `cut` hidden, and KEPT before each %% and <!-- it keeps. */
 function written(raw: string, cut: Ranges, open: Open, tick: string | null): Hidden {
-  const keep = (s: string): string =>
-    s.includes('%%') || s.includes('<!--') ? s.replace(/%%|<!--/g, `${KEPT}$&`) : s
+  const keep = (s: string): string => (hasMarker(s) ? markKept(s) : s)
   let bare = ''
   let marked = ''
   let i = 0

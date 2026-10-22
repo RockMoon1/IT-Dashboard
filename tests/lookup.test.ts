@@ -17,6 +17,7 @@ import {
   termRegex,
   zonedToIso
 } from '../src/main/services/lookup/computers.ts'
+import { parseMarkdown } from '../src/shared/markdown.ts'
 import { seriesBreach } from '../src/shared/types.ts'
 import {
   currentRuns,
@@ -901,7 +902,12 @@ test('a serial or name the vault writes respaced or cut short is still one compu
   }
 })
 
-function change(runId: string, at: string): ActionEntry {
+function change(
+  runId: string,
+  at: string,
+  reason = 'Fix: Firewall profile "Public" is disabled',
+  on: EnrolledDevice = device
+): ActionEntry {
   const measured = (value: string): Measurement => ({
     items: [{ item: 'Firewall Public', value }],
     exitCode: 0
@@ -911,17 +917,17 @@ function change(runId: string, at: string): ActionEntry {
       runId,
       kind: 'action',
       mode: 'apply',
-      deviceId: device.id,
-      serial: device.serial,
-      hostname: device.hostname,
-      displayName: device.displayName,
+      deviceId: on.id,
+      serial: on.serial,
+      hostname: on.hostname,
+      displayName: on.displayName,
       os: 'windows',
       link: 'cable',
       action: 'windows-firewall-on',
       version: 1,
       title: 'Turn on firewall profiles that are off',
       access: 'write',
-      reason: 'Fix: Firewall profile "Public" is disabled',
+      reason,
       technician: 'Lisandro',
       requestedAt: at,
       startedAt: at,
@@ -1296,6 +1302,78 @@ test('the computer page shows no comment: tickets, mentions, Change Log, Work Lo
     )
     assert.equal(lookup('Jane Roe', [], notes).vaultNotes, 0)
     assert.ok(lookup('ARH-T01', [], notes).vaultNotes > 0)
+  } finally {
+    await done()
+    await rm(appData, { recursive: true, force: true })
+  }
+})
+
+test('what the writer escaped (\\<!--, an odd %%%) hides no row the dashboard wrote after it', async () => {
+  const { vault, done } = await copyVault()
+  const appData = await mkdtemp(join(tmpdir(), 'arh-lookup-appdata-'))
+  try {
+    // a technician's reasons and a device name with comment markers in them: the writer escapes
+    // them, so in Obsidian they are text and every row after them shows
+    const desk = { ...device, displayName: 'Front desk laptop <!-- desk 2' }
+    const back: EnrolledDevice = {
+      ...device,
+      id: 'fp-t02',
+      serial: 'SN-T02',
+      hostname: 'ARH-T02',
+      displayName: 'Back office'
+    }
+    const reasons = ['Audit item <!-- see ticket 12', 'Paged 100%%% of staff', 'Third change']
+    const settings = { ...DEFAULT_SETTINGS, vaultPath: vault }
+    const writer = new VaultWriter({ appDataDir: appData, live: true })
+    const actions = [
+      ...reasons.map((r, k) => change(`a_${k + 1}`, `2026-10-14T1${6 + k}:00:00.000Z`, r, desk)),
+      change('a_4', '2026-10-14T19:00:00.000Z', 'Back office change', back)
+    ]
+    const results = await writer.apply(
+      await buildWritePlans({ settings, devices: [desk, back], runs: [], actions })
+    )
+    assert.ok(
+      results.every((r) => !r.error),
+      JSON.stringify(results)
+    )
+    const notes = await new VaultIndex().notes(vault)
+    // the fixture has no comment: each note reads as written but for the dashboard's markers
+    for (const n of notes)
+      assert.deepEqual(
+        parseMarkdown(n.text).lines,
+        n.lines.map((l) => (/^<!-- DASH:[A-Z0-9_-]+:(START|END) -->$/.test(l.trim()) ? '' : l)),
+        n.rel
+      )
+
+    const roles = noteRoles(notes, settings)
+    const inventory = inventoryRows(roles.assets!)
+    assert.deepEqual(
+      buildComputers([], [], inventory)
+        .map((c) => c.names[0])
+        .sort(),
+      ['ARH-T01', 'ARH-T02']
+    )
+    const computers = buildComputers([desk, back], [], inventory)
+    const page = (deviceId: string): ComputerProfile =>
+      buildProfile({ target: { deviceId }, computers, notes, settings, connected: () => false })
+    const p = page(desk.id)
+    assert.deepEqual(
+      p.changes
+        .filter((c) => /run a_/.test(c.cells['By'] ?? ''))
+        .map((c) => c.cells['Why'])
+        .sort(),
+      [...reasons].sort()
+    )
+    assert.ok(p.inventory.some((r) => r.cells['Room / role'] === 'Front desk laptop <!-- desk 2'))
+    const b = page(back.id)
+    assert.deepEqual(
+      b.changes.map((c) => c.cells['Why']),
+      ['Back office change']
+    )
+    assert.deepEqual(
+      b.inventory.map((r) => r.cells['Room / role']),
+      ['Back office']
+    )
   } finally {
     await done()
     await rm(appData, { recursive: true, force: true })

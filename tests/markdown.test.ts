@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { vaultText } from '../src/main/services/vault/content.ts'
 import {
   headingKey,
   inlineText,
@@ -298,6 +299,67 @@ test('comment markers inside code are text and hide nothing', () => {
   assert.deepEqual(texts(item.c), [['para', 12, 'task  after']])
   const cmd = parseInline('`for %%f in (*.log) do del %%f`')
   assert.deepEqual(cmd, [{ t: 'code', v: 'for %%f in (*.log) do del %%f' }])
+})
+
+test('an escaped \\%% or \\<!-- is text, as in Obsidian: what the writer escaped hides no row', () => {
+  // what a technician typed, as the vault writer puts it in a table cell
+  for (const typed of [
+    'Audit item <!-- see ticket 12',
+    'a <!-- b --> c',
+    'odd 100%%% run',
+    'pair 50%% ok',
+    'Front desk laptop <!-- desk 2',
+    '%%%%% <!--%% x'
+  ]) {
+    const md = `| A | B |\n|---|---|\n| 1 | ${vaultText(typed)} |\n| 2 | next row |\n\nafter`
+    const p = parseMarkdown(md)
+    assert.deepEqual(p.lines, md.split('\n'), typed)
+    const table = p.blocks[0]
+    assert.ok(table?.t === 'table', typed)
+    assert.deepEqual(
+      table.rows.map((r) => r.map(inlineText)),
+      [
+        ['1', typed],
+        ['2', 'next row']
+      ]
+    )
+    assert.deepEqual(texts(p.blocks.slice(1)), [['para', 6, 'after']], typed)
+  }
+  // typed in a note: a \ before the first character of a marker makes it text; an escaped \
+  // before one does not, and a marker in a comment still ends it as written
+  const md = [
+    'Shown \\<!-- not a comment --> here',
+    'Shown \\%% too',
+    'Hidden \\\\<!-- secret --> b',
+    'Hidden \\\\%% secret %% c',
+    'Shown \\%\\%% d',
+    'In %% secret \\%% e',
+    '- [ ] Call back \\<!-- not a comment'
+  ].join('\n\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(texts(p.blocks), [
+    ['para', 1, 'Shown <!-- not a comment --> here'],
+    ['para', 3, 'Shown %% too'],
+    ['para', 5, 'Hidden \\ b'],
+    ['para', 7, 'Hidden \\ c'],
+    ['para', 9, 'Shown %%% d'],
+    ['para', 11, 'In  e'],
+    ['list', 13, '']
+  ])
+  const item = (p.blocks[6] as Extract<Block, { t: 'list' }>).items[0]!
+  assert.deepEqual(texts(item.c), [['para', 13, 'Call back <!-- not a comment']])
+  assert.deepEqual(
+    p.lines.filter((l) => l),
+    [
+      'Shown \\<!-- not a comment --> here',
+      'Shown \\%% too',
+      'Hidden \\\\ b',
+      'Hidden \\\\ c',
+      'Shown \\%\\%% d',
+      'In  e',
+      '- [ ] Call back \\<!-- not a comment'
+    ]
+  )
 })
 
 test('a fence opened on a list item keeps the comments after it hidden', () => {
@@ -1418,7 +1480,15 @@ function randomNote(rand: () => number, reshaping: boolean, deep: boolean): stri
     () => `<!-- secret ${id++} -->` + pick(starts),
     () => pick(['Run \\`%% secret %%` now', 'a \\\\`%% kept %%` b', 'tick `a', '` %% secret %% `']),
     () => pick(['`%% kept %%` x %% secret %%', 'x `` y `%% kept %%` z', 'p `q %% kept %% r`']),
-    () => pick(['a \\%% secret %% b', '`` s `` %% secret %%', 'u ` v', '**b %% secret %%**']),
+    // \\ before a comment is a backslash; escaped markers are text (each "shown"), as the vault
+    // writer escapes typed ones
+    () =>
+      pick([
+        'a \\\\%% secret %% b \\<!-- shown \\%% shown \\%\\%% shown',
+        '`` s `` %% secret %%',
+        'u ` v',
+        '**b %% secret %%**'
+      ]),
     () =>
       pick(['See [the `n escape](https://x.org)', 'See [[Run`book]]', 'See https://x.org/a`b']) +
       pick(['', ' `c` %% secret %% `d`', ' %% secret %% `e`', ' [x](https://x.org/a`b) `f`']),
@@ -1495,7 +1565,9 @@ test('comments are hidden wherever the note shows text, and code keeps every byt
     const code: Array<[number, string, string]> = []
     const all: string[] = []
     textAndCode(parseMarkdown(md).blocks, text, code, all)
-    const shown = text.find((v) => v.includes('%%') || v.includes('<!--'))
+    const shown = text
+      .map((v) => v.replaceAll('<!-- shown', '').replaceAll('%% shown', ''))
+      .find((v) => v.includes('%%') || v.includes('<!--'))
     assert.equal(shown, undefined, `a comment shows as text in:\n${md}`)
     // what stands in for a hidden comment, or marks a kept one, is never shown
     assert.ok(!all.some((v) => /[\uFDD0\uFDD1]/.test(v)), `a placeholder shows in:\n${md}`)
