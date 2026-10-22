@@ -1297,7 +1297,34 @@ test('a list or quote line with a lone \\r or U+2028 in it is still that line: i
   }
 })
 
-test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at its end', () => {
+test('a note with \\r\\r\\n endings reads as Obsidian reads it, numbered as the dashboard numbers it', () => {
+  // task boxes stay task boxes
+  const tasks = parseMarkdown('## Calls\r\r\n\r\r\n- [ ] call back\r\r\n- [x] printer reset\r\r\n')
+  const list = tasks.blocks.find((b) => b.t === 'list')
+  assert.deepEqual(list?.t === 'list' ? list.items.map((i) => [i.line, i.task]) : [], [
+    [3, ' '],
+    [4, 'x']
+  ])
+  assert.equal(tasks.lines.length, 5)
+  // a link keeps its own line, and its line is its snippet
+  const md = '## Calls\r\r\n\r\r\n- %% Jane Roe, MRN 445566 %%\r\r\n  see [[Ticket 12]]\r\r\n'
+  const p = parseMarkdown(md)
+  assert.deepEqual(p.linkLines, [{ target: 'Ticket 12', line: 4 }])
+  assert.match(p.lines[3] ?? '', /^ {2}see \[\[Ticket 12\]\]/)
+  assert.doesNotMatch(p.lines.join('\n'), /Jane|445566/)
+  // a quote line of spaces, a lone \r, then a comment: a blank quote line, then the comment hidden
+  for (const q of ['## Calls\n\n>     \r%% Jane Roe, MRN 445566 %%\n', '> \t\r%% Jane Roe %%\n']) {
+    const r = parseMarkdown(q)
+    assert.doesNotMatch(JSON.stringify([r.blocks, r.lines]), /Jane/, JSON.stringify(q))
+    assert.equal(r.lines.length, q.split(/\r?\n/).length)
+  }
+  // U+2028 is a character: a task with one keeps its box
+  const ls = parseMarkdown('- [ ] call back\u2028later')
+  assert.deepEqual(ls.blocks[0]?.t === 'list' ? ls.blocks[0].items.map((i) => i.task) : [], [' '])
+  assert.deepEqual(ls.lines, ['- [ ] call back\u2028later'])
+})
+
+test('a heading reads as in Obsidian: closing #s, tabs, a lone \\r ends it, U+2028 is a character', () => {
   const heads = (md: string): Array<[number, string]> =>
     parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))
   assert.deepEqual(heads('# Title ##'), [[1, 'Title']])
@@ -1309,9 +1336,13 @@ test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at i
     [1, 'Title'],
     [0, 'para']
   ])
-  assert.deepEqual(heads('# a \u2028'), [[1, 'a']])
-  assert.deepEqual(heads('# a\u2028#'), [[1, 'a']])
-  assert.deepEqual(heads('# a\u2028b'), [[0, 'para']])
+  assert.deepEqual(heads('# a \u2028'), [[1, 'a \u2028']])
+  assert.deepEqual(heads('# a\u2028#'), [[1, 'a\u2028#']])
+  assert.deepEqual(heads('# a\u2028b'), [[1, 'a\u2028b']])
+  assert.deepEqual(heads('# a\rb'), [
+    [1, 'a'],
+    [0, 'para']
+  ])
   assert.deepEqual(heads('#Title'), [[0, 'para']])
 })
 

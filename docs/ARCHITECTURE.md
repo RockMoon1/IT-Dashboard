@@ -180,6 +180,9 @@ and first lines of System/Security events, not message bodies of application log
   one-shot systemd has unloaded since its run reads as never started.
 - Actions need the Phase 3 agent on each device (reinstall with a new token); older agents stay
   read only, and the security-check profile is now v2.
+- A block link on the dashboard's own intro line of an empty Work Log or Open Loops list keeps one
+  id: the one at the end of that line, or the one on the line under it. A second id typed there,
+  or a second linked copy of the intro that the Phase 2 build leaves, is not kept as typed.
 - Saving Settings in an older build (Phase 2) drops the settings it does not know, the settings
   version among them. The next time this build starts it is back at full access, live vault
   writes and the shipped Change Log note.

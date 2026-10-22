@@ -1189,9 +1189,9 @@ export function inlineText(c: Inline[]): string {
 /** A heading's #s and the spaces after them; its text is the rest of the line. */
 const HEADING = /^\s{0,3}(#{1,6})\s+/
 const HR = /^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/
-const QUOTE = /^\s{0,3}>\s?([^]*)$/
-const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*([^]*)$/
-const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+([^]*))?$/
+const QUOTE = /^\s{0,3}>\s?(.*)$/
+const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/
+const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+(.*))?$/
 
 /**
  * A heading line's level and text, without the closing #s after a space and the spaces at its
@@ -1690,7 +1690,7 @@ function keptShown(blocks: Block[], last: number): Ranges {
 /** How many times parseMarkdown reads a note again before it hides every comment in it. */
 const MAX_REREADS = 3
 
-export function parseMarkdown(text: string): ParsedNote {
+function parseNote(text: string): ParsedNote {
   // HIDDEN and KEPT are the parser's own: a note's own are not taken for them
   const raw = text
     .replace(/^﻿/, '')
@@ -1764,6 +1764,68 @@ export function parseMarkdown(text: string): ParsedNote {
     linkLines,
     // (not spread: a 1 MB note of short lines parsed 3% slower)
     lines: fm.shown.length ? fm.shown.concat(body) : body
+  }
+}
+
+/**
+ * A note as the viewer reads it. Obsidian ends a line at a lone \r too (a note saved with \r\r\n
+ * endings has one in every line), but the dashboard numbers a note's lines split on \r?\n. Such
+ * a note is read with a lone \r as a line end, and its blocks, links and lines are numbered back
+ * as the dashboard numbers them: a line holding a lone \r is shown as its parts joined by \r.
+ * U+2028 and U+2029 are characters there, as in Obsidian.
+ */
+export function parseMarkdown(text: string): ParsedNote {
+  // Obsidian reads U+2028 and U+2029 as characters, but \s takes them for spaces: they are read
+  // as two noncharacters of the parser's own (a note's own are not taken for them)
+  if (/[\u2028\u2029]/.test(text)) {
+    const own = text
+      .replace(/[\uFDD2\uFDD3]/g, '\uFFFD')
+      .replace(/\u2028/g, '\uFDD2')
+      .replace(/\u2029/g, '\uFDD3')
+    return separatorsBack(byLines(own))
+  }
+  return byLines(text)
+}
+
+/** U+2028 and U+2029 back in every text of a note read with them as the parser's own. */
+function separatorsBack<T>(v: T): T {
+  if (typeof v === 'string') return v.replace(/\uFDD2/g, '\u2028').replace(/\uFDD3/g, '\u2029') as T
+  if (Array.isArray(v)) return v.map(separatorsBack) as T
+  if (v && typeof v === 'object')
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, separatorsBack(x)])) as T
+  return v
+}
+
+/** parseNote, with a lone \r read as a line end as Obsidian reads it (see parseMarkdown). */
+function byLines(text: string): ParsedNote {
+  if (!/\r(?!\n)/.test(text)) return parseNote(text)
+  const parts = text.split(/\r?\n/).map((l) => l.split('\r'))
+  // the dashboard's line (1-based) of each line read
+  const lineOf: number[] = []
+  parts.forEach((p, i) => p.forEach(() => lineOf.push(i + 1)))
+  const at = (n: number): number => (n >= 1 ? (lineOf[n - 1] ?? n) : n)
+  const note = parseNote(parts.map((p) => p.join('\n')).join('\n'))
+  renumber(note.blocks, at)
+  const lines = parts.map((): string[] => [])
+  note.lines.forEach((l, k) => lines[(lineOf[k] ?? k + 1) - 1]?.push(l))
+  return {
+    ...note,
+    linkLines: note.linkLines.map((l) => ({ ...l, line: at(l.line) })),
+    lines: lines.map((p) => p.join('\r'))
+  }
+}
+
+/** Gives every block, list item and table row the line `at` gives for its own. */
+function renumber(blocks: Block[], at: (n: number) => number): void {
+  for (const b of blocks) {
+    b.line = at(b.line)
+    if (b.t === 'quote' || b.t === 'callout') renumber(b.c, at)
+    else if (b.t === 'list')
+      for (const it of b.items) {
+        it.line = at(it.line)
+        renumber(it.c, at)
+      }
+    else if (b.t === 'table') b.rowLines = b.rowLines.map(at)
   }
 }
 
