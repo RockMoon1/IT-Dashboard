@@ -1280,6 +1280,23 @@ test("a link's line counts the note's line breaks: not a <br>, and those in a co
   assert.ok(para?.t === 'para' && para.c.some((x) => x.t === 'br'))
 })
 
+test('a list or quote line with a lone \\r or U+2028 in it is still that line: its comments stay hidden', () => {
+  // Obsidian ends a line at a lone \\r and reads U+2028 as a character; split on \\n only, such a
+  // line failed the item and quote patterns, so it and the indented lines after it read as code
+  const secret = /Jane|445566/
+  for (const md of [
+    '## Calls\n\n\t- [ ] call back %% Jane Roe, MRN 445566 %%\r\r\nnext\n',
+    '## Calls\n\n\t- [ ] call back\u2028later %% Jane Roe, MRN 445566 %%\n',
+    '## Calls\r\r\n\r\r\n\t- [ ] call back %% Jane Roe, MRN 445566 %%\r\r\n',
+    '## Calls\n\n\t- printer\u2028reset\n\t- call back %% Jane Roe, MRN 445566 %%\n',
+    '- called\r\r\n\r\r\n\tfollow-up %% Jane Roe, MRN 445566 %%\r\r\n'
+  ]) {
+    const p = parseMarkdown(md)
+    assert.doesNotMatch(JSON.stringify(p.blocks), secret, JSON.stringify(md))
+    assert.doesNotMatch(p.lines.join('\n'), secret, JSON.stringify(md))
+  }
+})
+
 test('a heading reads as it did: closing #s, tabs, and a \\r or U+2028 only at its end', () => {
   const heads = (md: string): Array<[number, string]> =>
     parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))

@@ -1189,9 +1189,9 @@ export function inlineText(c: Inline[]): string {
 /** A heading's #s and the spaces after them; its text is the rest of the line. */
 const HEADING = /^\s{0,3}(#{1,6})\s+/
 const HR = /^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/
-const QUOTE = /^\s{0,3}>\s?(.*)$/
-const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*(.*)$/
-const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+(.*))?$/
+const QUOTE = /^\s{0,3}>\s?([^]*)$/
+const CALLOUT = /^\[!([A-Za-z0-9_-]+)\]([+-]?)\s*([^]*)$/
+const ITEM = /^(\s*)([-*+]|(\d{1,9})[.)])(\s+([^]*))?$/
 
 /**
  * A heading line's level and text, without the closing #s after a space and the spaces at its

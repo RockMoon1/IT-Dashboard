@@ -531,15 +531,34 @@ const introOf = (line: string): { id: string } | undefined => {
   return m && ownItalic(m[1]!) && !PLACEHOLDERS.has(m[1]!) ? { id: m[2] ?? '' } : undefined
 }
 
-/** What follows the intro's text: its block id at the end of its line, or on the line under it. */
-function introIdOf(existingBody: string | null): string {
-  const all = (existingBody ?? '').split(/\r?\n/)
+/**
+ * The first intro that carries a block id: its line, the end of the id lines right under it (one
+ * paragraph with it), and what follows its text (the id at the end of its line and those lines).
+ */
+function linkedIntro(all: string[]): { at: number; end: number; tail: string } | undefined {
   for (const [i, l] of all.entries()) {
     const intro = introOf(l)
-    if (intro?.id) return ` ${intro.id}`
-    if (intro && BLOCK_ID_LINE.test(all[i + 1] ?? '')) return `\n${all[i + 1]!}`
+    if (!intro) continue
+    let end = i + 1
+    while (end < all.length && BLOCK_ID_LINE.test(all[end]!)) end++
+    if (intro.id || end > i + 1)
+      return {
+        at: i,
+        end,
+        tail:
+          (intro.id ? ` ${intro.id}` : '') +
+          all
+            .slice(i + 1, end)
+            .map((x) => `\n${x}`)
+            .join('')
+      }
   }
-  return ''
+  return undefined
+}
+
+/** What follows the intro's text: its block id at the end of its line, or on the lines under it. */
+function introIdOf(existingBody: string | null): string {
+  return linkedIntro((existingBody ?? '').split(/\r?\n/))?.tail ?? ''
 }
 
 /**
@@ -551,9 +570,10 @@ function bodyLines(existingBody: string | null, heading: string): string[] {
   const headings = new Set([heading, ...(OLD_HEADINGS[heading] ?? [])])
   const all = (existingBody ?? '').split(/\r?\n/)
   const out: string[] = []
+  const own = linkedIntro(all)
   all.forEach((l, i) => {
-    // the intro's own id goes with it (introIdOf)
-    if (introOf(l)?.id || (BLOCK_ID_LINE.test(l) && introOf(all[i - 1] ?? ''))) return
+    // the intro's own ids go with it (introIdOf); another copy's stay as typed
+    if (own && i >= own.at && i < own.end) return
     const p = placeholderOf(l)
     const linked = !!p && (!!p.id || BLOCK_ID_LINE.test(all[i + 1] ?? ''))
     if (!linked && (!l.trim() || headings.has(l.trim()) || ownItalic(l.trim()))) return

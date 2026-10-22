@@ -203,3 +203,35 @@ test('"Copy link to block" on the empty Work Log or Open Loops intro keeps the i
 
 test("an id typed right under the empty Work Log or Open Loops intro stays the intro's", () =>
   linkedIntro((intro) => `${intro}\n^intro1`, '^intro1'))
+
+/** Ids the technician typed with the empty list's intro: every one is kept by a write. */
+async function introIds(
+  link: (intro: string) => string,
+  ids: string[],
+  same: boolean
+): Promise<void> {
+  await withVault(async (vault, _writer, write) => {
+    const paths = notePaths({ ...DEFAULT_SETTINGS, vaultPath: vault })
+    await write([])
+    for (const [note, key] of [
+      [paths.workLog, BLOCK_KEYS.log],
+      [paths.openLoops, BLOCK_KEYS.loops]
+    ] as const) {
+      const text = await readFile(note, 'utf8')
+      const intro = (findBlock(text, key)?.body ?? '').split('\n')[2] ?? ''
+      const typed = text.replace(intro, link(intro))
+      await writeFile(note, typed)
+      await write([])
+      const after = await readFile(note, 'utf8')
+      for (const id of ids) assert.ok(after.includes(id), `${note}: ${id} kept`)
+      if (same) assert.equal(after, typed, `${note}: nothing new, nothing written`)
+    }
+  })
+}
+
+test('every id typed with the empty list intro is kept: at its end and on the lines under it', async () => {
+  await introIds((i) => `${i} ^a1\n^b1`, ['^a1', '^b1'], true)
+  await introIds((i) => `${i}\n^a1\n^b1`, ['^a1', '^b1'], true)
+  // a build before this one kept a second copy of a linked intro, each with its own id
+  await introIds((i) => `${i} ^a1\n\n${i} ^b1`, ['^a1', '^b1'], false)
+})
