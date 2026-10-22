@@ -1324,6 +1324,35 @@ test('a note with \\r\\r\\n endings reads as Obsidian reads it, numbered as the 
   assert.deepEqual(ls.lines, ['- [ ] call back\u2028later'])
 })
 
+test('a frontmatter as long as the reader takes is read in a \\r\\r\\n note too', () => {
+  // read with a lone \\r as a line end, each such line is two: the 400-line cap counts the note's
+  const md = [
+    '---',
+    'id: T-1042',
+    'status: open',
+    '# caller: Jane Roe, MRN 445566',
+    'apps:',
+    ...Array.from({ length: 220 }, (_, i) => `  - App ${i}`),
+    '---',
+    '# Printer offline',
+    ''
+  ].join('\r\r\n')
+  const p = parseMarkdown(md)
+  assert.deepEqual(p.frontmatter.slice(0, 2), [
+    ['id', 'T-1042'],
+    ['status', 'open']
+  ])
+  assert.doesNotMatch(JSON.stringify([p.blocks, p.lines, p.linkLines]), /445566/)
+  assert.deepEqual(
+    p.blocks.filter((b) => b.t === 'heading').map((b) => [b.text, b.line]),
+    [['Printer offline', 227]]
+  )
+  // a U+2028 in it is put back in its text, and only there
+  const ls = parseMarkdown(`${md}a\u2028b`)
+  assert.equal(ls.lines.at(-1), 'a\u2028b')
+  assert.doesNotMatch(JSON.stringify(ls), /[\uFDD2\uFDD3]/)
+})
+
 test('a heading reads as in Obsidian: closing #s, tabs, a lone \\r ends it, U+2028 is a character', () => {
   const heads = (md: string): Array<[number, string]> =>
     parseMarkdown(md).blocks.map((b) => (b.t === 'heading' ? [b.level, b.text] : [0, b.t]))

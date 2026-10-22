@@ -158,7 +158,10 @@ function inScalar(scalar: Scalar, line: string): boolean {
 const keyComment = (key: string): boolean => commentAt(key, 0) < key.length
 
 /** The properties, where the frontmatter ends, and its lines without their YAML comments. */
-function frontmatter(lines: string[]): {
+function frontmatter(
+  lines: string[],
+  cap = 400
+): {
   data: Array<[string, string]>
   end: number
   shown: string[]
@@ -167,7 +170,7 @@ function frontmatter(lines: string[]): {
   const data: Array<[string, string]> = []
   const shown = [lines[0] ?? '']
   let scalar: Scalar | null = null
-  for (let i = 1; i < lines.length && i < 400; i++) {
+  for (let i = 1; i < lines.length && i < cap; i++) {
     const line = lines[i] ?? ''
     const last = data[data.length - 1]
     if (scalar && last) {
@@ -1690,13 +1693,13 @@ function keptShown(blocks: Block[], last: number): Ranges {
 /** How many times parseMarkdown reads a note again before it hides every comment in it. */
 const MAX_REREADS = 3
 
-function parseNote(text: string): ParsedNote {
+function parseNote(text: string, fmCap = 400): ParsedNote {
   // HIDDEN and KEPT are the parser's own: a note's own are not taken for them
   const raw = text
     .replace(/^﻿/, '')
     .replace(/[\uFDD0\uFDD1]/g, '\uFFFD')
     .split(/\r?\n/)
-  const fm = frontmatter(raw)
+  const fm = frontmatter(raw, fmCap)
   const src = raw.slice(fm.end)
   const lineAt = (s: string, k: number): Line => ({ n: fm.end + k + 1, s })
   const readTop = (lines: string[], again?: Again<TopLevel>): TopLevel => {
@@ -1789,10 +1792,14 @@ export function parseMarkdown(text: string): ParsedNote {
 
 /** U+2028 and U+2029 back in every text of a note read with them as the parser's own. */
 function separatorsBack<T>(v: T): T {
-  if (typeof v === 'string') return v.replace(/\uFDD2/g, '\u2028').replace(/\uFDD3/g, '\u2029') as T
-  if (Array.isArray(v)) return v.map(separatorsBack) as T
-  if (v && typeof v === 'object')
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, separatorsBack(x)])) as T
+  if (typeof v === 'string')
+    return (
+      /[\uFDD2\uFDD3]/.test(v) ? v.replace(/\uFDD2/g, '\u2028').replace(/\uFDD3/g, '\u2029') : v
+    ) as T
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    for (const k in o) o[k] = separatorsBack(o[k])
+  }
   return v
 }
 
@@ -1804,7 +1811,11 @@ function byLines(text: string): ParsedNote {
   const lineOf: number[] = []
   parts.forEach((p, i) => p.forEach(() => lineOf.push(i + 1)))
   const at = (n: number): number => (n >= 1 ? (lineOf[n - 1] ?? n) : n)
-  const note = parseNote(parts.map((p) => p.join('\n')).join('\n'))
+  const cap = lineOf.findIndex((n) => n > 400)
+  const note = parseNote(
+    parts.map((p) => p.join('\n')).join('\n'),
+    cap === -1 ? lineOf.length : cap
+  )
   renumber(note.blocks, at)
   const lines = parts.map((): string[] => [])
   note.lines.forEach((l, k) => lines[(lineOf[k] ?? k + 1) - 1]?.push(l))
